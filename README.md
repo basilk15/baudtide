@@ -5,7 +5,7 @@
 <h1 align="center">BaudTide</h1>
 
 <p align="center">
-  A Linux-first desktop serial monitor for capturing, viewing, and saving data from multiple devices at once.
+  BaudTide (also written <strong>Baud Tide</strong>) is a Linux desktop serial monitor for ESP32, Arduino, USB/TTY devices, and multi-port serial logging.
 </p>
 
 <p align="center">
@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/status-active%20development-5ac8ae?style=flat-square" alt="Active development" />
 </p>
 
-BaudTide replaces the clipped, single-device serial-monitor experience with a calm local workspace: discover ports, open several live terminals side by side, retain complete raw captures, and export a log whenever you need it.
+BaudTide is an open-source Linux serial monitor and serial terminal. It replaces the clipped, single-device serial-monitor experience with a calm local workspace: discover USB and TTY ports, open several live terminals side by side, retain complete raw captures, and export a log whenever you need it. It is useful for ESP32 and Arduino development, embedded debugging, UART/USB serial communication, and monitoring serial data streams.
 
 ## Highlights
 
@@ -67,3 +67,7 @@ If `npm run tauri dev` reports missing `glib`, `gio`, `gdk`, `webkit`, or `libud
 - Rust + `serialport` for native Linux serial access
 - React + TypeScript + Vite UI
 - Local file-based raw capture library
+
+## Search terms
+
+**BaudTide / Baud Tide** is a Linux serial monitor, UART terminal, USB serial terminal, and multi-port serial logger for ESP32, Arduino, and embedded-device development.
