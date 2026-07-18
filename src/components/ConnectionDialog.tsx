@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { AlertCircle, CheckCircle2, LoaderCircle, Radio, RefreshCw, ShieldAlert, Usb, X } from 'lucide-react';
+import { ThemedSelect } from './ThemedSelect';
 import './connection-dialog.css';
 
 export type SerialPortOption = {
@@ -29,17 +30,20 @@ export type ConnectionDialogProps = {
   initialSessionName?: string;
   /** Makes every UI scan state easy to exercise without a backend. */
   initialScanState?: PortScanState;
+  nativeEnabled?: boolean;
 };
 
-const fallbackPorts: SerialPortOption[] = [
-  { path: '/dev/ttyUSB0', label: 'CP2102 USB to UART', manufacturer: 'Silicon Labs' },
-  { path: '/dev/ttyACM0', label: 'Arduino LLC', manufacturer: 'Arduino' },
-];
-
-const baudRates = [300, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600];
+const baudRates = [300, 600, 1200, 2400, 4800, 9600, 14400, 19200, 28800, 31250, 38400, 57600, 74880, 115200, 230400, 250000, 460800, 500000, 921600, 1_000_000, 2_000_000];
+const emptyPorts: SerialPortOption[] = [];
 
 function nameForPort(port: string, ports: SerialPortOption[]) {
   return ports.find((item) => item.path === port)?.label ?? '';
+}
+
+function errorMessage(error: unknown) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  try { return JSON.stringify(error); } catch { return 'Unknown error.'; }
 }
 
 export function ConnectionDialog({
@@ -47,11 +51,12 @@ export function ConnectionDialog({
   onClose,
   onStartMonitoring,
   onScan,
-  initialPorts = fallbackPorts,
+  initialPorts = emptyPorts,
   initialPort,
   initialBaudRate = 115200,
   initialSessionName = '',
   initialScanState = 'ready',
+  nativeEnabled = false,
 }: ConnectionDialogProps) {
   const titleId = useId();
   const descriptionId = useId();
@@ -62,6 +67,7 @@ export function ConnectionDialog({
   const [port, setPort] = useState(initialPort ?? initialPorts[0]?.path ?? '');
   const [manualPort, setManualPort] = useState(false);
   const [baudRate, setBaudRate] = useState(String(initialBaudRate));
+  const [customBaud, setCustomBaud] = useState(!baudRates.includes(initialBaudRate));
   const [sessionName, setSessionName] = useState(initialSessionName || nameForPort(initialPort ?? initialPorts[0]?.path ?? '', initialPorts));
   const [errors, setErrors] = useState<{ port?: string; baudRate?: string; sessionName?: string }>({});
   const [isSubmitting, setSubmitting] = useState(false);
@@ -74,12 +80,17 @@ export function ConnectionDialog({
     setPort(initialPort ?? initialPorts[0]?.path ?? '');
     setManualPort(false);
     setBaudRate(String(initialBaudRate));
+    setCustomBaud(!baudRates.includes(initialBaudRate));
     setSessionName(initialSessionName || nameForPort(initialPort ?? initialPorts[0]?.path ?? '', initialPorts));
     setErrors({});
     setSubmitError('');
     setSubmitting(false);
     window.setTimeout(() => sessionNameRef.current?.focus(), 0);
   }, [isOpen, initialPorts, initialPort, initialBaudRate, initialSessionName, initialScanState]);
+
+  useEffect(() => {
+    if (isOpen && onScan) void scanPorts();
+  }, [isOpen, onScan]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -112,12 +123,12 @@ export function ConnectionDialog({
     }
   };
 
-  const scanPorts = async () => {
+  async function scanPorts() {
     if (scanState === 'loading') return;
     setScanState('loading');
     setSubmitError('');
     try {
-      const found = onScan ? await onScan() : await new Promise<SerialPortOption[]>((resolve) => window.setTimeout(() => resolve(fallbackPorts), 750));
+      const found = onScan ? await onScan() : [];
       setPorts(found);
       setScanState(found.length ? 'ready' : 'empty');
       if (found.length && !found.some((item) => item.path === port)) {
@@ -125,10 +136,11 @@ export function ConnectionDialog({
         if (!sessionName) setSessionName(nameForPort(found[0].path, found));
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : '';
+      const message = errorMessage(error);
       setScanState(/permission|access|denied/i.test(message) ? 'permission-denied' : 'error');
+      setSubmitError(`Could not scan serial ports: ${message}`);
     }
-  };
+  }
 
   const selectPort = (nextPort: string) => {
     setPort(nextPort);
@@ -153,7 +165,7 @@ export function ConnectionDialog({
     try {
       await onStartMonitoring({ port: port.trim(), baudRate: numericBaud, sessionName: sessionName.trim(), manualPort });
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : 'Could not start this session. Check the port and try again.');
+      setSubmitError(errorMessage(error));
       setSubmitting(false);
     }
   };
@@ -181,9 +193,9 @@ export function ConnectionDialog({
       >
         <button className="sd-dialog-close" type="button" onClick={onClose} aria-label="Close connection dialog"><X size={18} /></button>
         <div className="sd-dialog-icon"><Radio size={21} /></div>
-        <p className="sd-dialog-eyebrow">NEW SERIAL SESSION</p>
+        <p className="sd-dialog-eyebrow">NEW LIVE TERMINAL</p>
         <h2 id={titleId}>Connect a device</h2>
-        <p id={descriptionId} className="sd-dialog-subtitle">Choose a port, name the session, and start monitoring. This is currently a UI preview: no device is opened.</p>
+        <p id={descriptionId} className="sd-dialog-subtitle">{nativeEnabled ? 'Choose a port and name the session. SignalDeck will open it and start a raw local log immediately.' : 'Choose a port, name the session, and start monitoring. This browser preview does not open devices.'}</p>
 
         <form onSubmit={submit} noValidate>
           <div className="sd-dialog-scan-row">
@@ -196,22 +208,22 @@ export function ConnectionDialog({
 
           <div className="sd-form-grid">
             <label className="sd-form-field sd-full-width">Port
-              <select value={manualPort ? '__manual__' : port} onChange={(event) => event.target.value === '__manual__' ? setManualPort(true) : selectPort(event.target.value)} aria-invalid={Boolean(errors.port)}>
-                {ports.map((item) => <option key={item.path} value={item.path}>{item.path}{item.label ? ` · ${item.label}` : ''}</option>)}
-                <option value="__manual__">Enter a port path manually…</option>
-              </select>
+              <ThemedSelect label="Serial port" value={manualPort ? '__manual__' : port} placeholder="Enter a port path manually…" invalid={Boolean(errors.port)} onChange={(value) => value === '__manual__' ? setManualPort(true) : selectPort(value)} options={[...ports.map((item) => ({ value: item.path, label: `${item.path}${item.label ? ` · ${item.label}` : ''}` })), { value: '__manual__', label: 'Enter a port path manually…' }]} />
               {errors.port && <small className="sd-field-error">{errors.port}</small>}
             </label>
             {manualPort && <label className="sd-form-field sd-full-width">Manual port path
               <input autoComplete="off" value={port} onChange={(event) => { setPort(event.target.value); setErrors((current) => ({ ...current, port: undefined })); }} placeholder="e.g. /dev/ttyUSB0" aria-invalid={Boolean(errors.port)} />
             </label>}
             <label className="sd-form-field">Baud rate
-              <input list="sd-baud-rates" inputMode="numeric" value={baudRate} onChange={(event) => { setBaudRate(event.target.value); setErrors((current) => ({ ...current, baudRate: undefined })); }} aria-invalid={Boolean(errors.baudRate)} />
-              <datalist id="sd-baud-rates">{baudRates.map((rate) => <option key={rate} value={rate} />)}</datalist>
+              <ThemedSelect label="Baud rate" value={customBaud ? '__custom__' : baudRate} placeholder="Select a baud rate" invalid={Boolean(errors.baudRate)} onChange={(value) => {
+                if (value === '__custom__') { setCustomBaud(true); setBaudRate(''); } else { setCustomBaud(false); setBaudRate(value); }
+                setErrors((current) => ({ ...current, baudRate: undefined }));
+              }} options={[...baudRates.map((rate) => ({ value: String(rate), label: `${rate.toLocaleString()} baud` })), { value: '__custom__', label: 'Custom baud rate…' }]} />
+              {customBaud && <input inputMode="numeric" value={baudRate} onChange={(event) => { setBaudRate(event.target.value); setErrors((current) => ({ ...current, baudRate: undefined })); }} placeholder="Enter a baud rate" aria-invalid={Boolean(errors.baudRate)} />}
               {errors.baudRate && <small className="sd-field-error">{errors.baudRate}</small>}
             </label>
             <label className="sd-form-field">Session name
-              <input ref={sessionNameRef} autoComplete="off" value={sessionName} onChange={(event) => { setSessionName(event.target.value); setErrors((current) => ({ ...current, sessionName: undefined })); }} placeholder="e.g. ESP32 DevKitC" aria-invalid={Boolean(errors.sessionName)} />
+              <input ref={sessionNameRef} autoComplete="off" value={sessionName} onChange={(event) => { setSessionName(event.target.value); setErrors((current) => ({ ...current, sessionName: undefined })); }} placeholder="e.g. Main controller" aria-invalid={Boolean(errors.sessionName)} />
               {errors.sessionName && <small className="sd-field-error">{errors.sessionName}</small>}
             </label>
           </div>

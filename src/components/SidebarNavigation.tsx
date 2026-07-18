@@ -11,11 +11,13 @@ import {
   X,
 } from 'lucide-react';
 import type { NavigationItem, SignalDeckPage } from './phase3Types';
+import signalDeckMark from '../assets/signaldeck-mark.png';
 import './phase3-controls.css';
+import './sidebar-recovery.css';
 
 const defaultItems: NavigationItem[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'sessions', label: 'Sessions', icon: TerminalSquare, badge: '3' },
+  { id: 'sessions', label: 'Live terminal', icon: TerminalSquare },
   { id: 'logs', label: 'Saved logs', icon: FileText },
 ];
 
@@ -73,14 +75,25 @@ export function SidebarNavigation({
     <>
       <aside className={`sd-sidebar ${isCompact ? 'is-compact' : ''}`} aria-label="SignalDeck sidebar">
         <div className="sd-sidebar-brand">
-          <strong aria-hidden="true">SD</strong><span>signal<span>deck</span></span>
-          <button className="sd-icon-control" onClick={() => setCompact((value) => !value)} aria-label={isCompact ? 'Expand sidebar' : 'Collapse sidebar'}>
-            {isCompact ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+          <img className="sd-brand-mark" src={signalDeckMark} alt="SignalDeck" /><span>signal<span>deck</span></span>
+          <button className="sd-icon-control" onClick={() => setCompact(true)} aria-label="Collapse sidebar" title="Collapse sidebar">
+            <PanelLeftClose size={18} />
           </button>
         </div>
         {menu()}
-        <p className="sd-sidebar-mock">Local UI preview</p>
+        <p className="sd-sidebar-status">Local workspace</p>
       </aside>
+      {isCompact && (
+        <button
+          className="sd-sidebar-expand-tab"
+          type="button"
+          onClick={() => setCompact(false)}
+          aria-label="Expand sidebar"
+          title="Expand sidebar"
+        >
+          <PanelLeftOpen size={18} aria-hidden="true" />
+        </button>
+      )}
 
       <button className="sd-mobile-menu-button" onClick={() => setDrawerOpen(true)} aria-label="Open navigation">
         <Menu size={20} />
@@ -88,9 +101,9 @@ export function SidebarNavigation({
       {isDrawerOpen && (
         <div className="sd-drawer-backdrop" onMouseDown={() => setDrawerOpen(false)}>
           <aside className="sd-mobile-drawer" aria-label="Mobile navigation" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="sd-drawer-heading"><strong>signal<span>deck</span></strong><button className="sd-icon-control" onClick={() => setDrawerOpen(false)} aria-label="Close navigation"><X size={19} /></button></div>
+            <div className="sd-drawer-heading"><strong><img className="sd-brand-mark" src={signalDeckMark} alt="SignalDeck" />signal<span>deck</span></strong><button className="sd-icon-control" onClick={() => setDrawerOpen(false)} aria-label="Close navigation"><X size={19} /></button></div>
             {menu(true)}
-            <p className="sd-sidebar-mock">Navigation is local-only in this preview.</p>
+            <p className="sd-sidebar-status">Local workspace</p>
           </aside>
         </div>
       )}

@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Check, FolderOpen, RotateCcw, Settings2 } from 'lucide-react';
+import { Check, FolderOpen, Moon, RotateCcw, Settings2, Sun } from 'lucide-react';
+import { ThemedSelect } from './ThemedSelect';
 import './phase3-controls.css';
 
 type PreferenceValues = {
@@ -7,7 +8,6 @@ type PreferenceValues = {
   lineEnding: string;
   encoding: string;
   timestamps: boolean;
-  theme: string;
   reconnect: boolean;
   storagePath: string;
   storageLimit: string;
@@ -15,11 +15,10 @@ type PreferenceValues = {
 
 const defaults: PreferenceValues = {
   baud: '115200', lineEnding: 'LF (\\n)', encoding: 'UTF-8', timestamps: true,
-  theme: 'System', reconnect: true, storagePath: '~/Documents/SignalDeck', storageLimit: '10 GB',
+  reconnect: true, storagePath: '', storageLimit: '10 GB',
 };
 
-/** A settings form with intentionally local, non-persisted preview state. */
-export function PreferencesScreen() {
+export function PreferencesScreen({ theme, onThemeChange }: { theme: 'dark' | 'light'; onThemeChange: (theme: 'dark' | 'light') => void }) {
   const [values, setValues] = useState(defaults);
   const [saved, setSaved] = useState(false);
   const update = <K extends keyof PreferenceValues>(key: K, value: PreferenceValues[K]) => {
@@ -30,26 +29,26 @@ export function PreferencesScreen() {
 
   return (
     <section className="sd-preferences" aria-labelledby="preferences-heading">
-      <div className="sd-screen-heading"><span className="sd-section-icon"><Settings2 size={19} /></span><div><p>LOCAL UI PREVIEW</p><h1 id="preferences-heading">Preferences</h1><small>Changes are held only in this screen until the settings backend is added.</small></div></div>
+      <div className="sd-screen-heading"><span className="sd-section-icon"><Settings2 size={19} /></span><div><p>APPLICATION SETTINGS</p><h1 id="preferences-heading">Preferences</h1><small>Settings persistence will be added with the local workspace store.</small></div></div>
       <div className="sd-settings-grid">
         <fieldset className="sd-settings-card"><legend>Serial defaults</legend>
-          <label>Default baud rate<select value={values.baud} onChange={(e) => update('baud', e.target.value)}><option>9600</option><option>57600</option><option>115200</option><option>230400</option></select></label>
-          <label>Line ending<select value={values.lineEnding} onChange={(e) => update('lineEnding', e.target.value)}><option>LF (\n)</option><option>CRLF (\r\n)</option><option>CR (\r)</option><option>None</option></select></label>
-          <label>Encoding<select value={values.encoding} onChange={(e) => update('encoding', e.target.value)}><option>UTF-8</option><option>ASCII</option><option>Hexadecimal</option></select></label>
+          <label>Default baud rate<ThemedSelect label="Default baud rate" value={values.baud} onChange={(value) => update('baud', value)} placeholder="Select a baud rate" options={['9600', '57600', '115200', '230400'].map((value) => ({ value, label: `${Number(value).toLocaleString()} baud` }))} /></label>
+          <label>Line ending<ThemedSelect label="Line ending" value={values.lineEnding} onChange={(value) => update('lineEnding', value)} placeholder="Select line ending" options={[{ value: 'LF (\\n)', label: 'LF (\\n)' }, { value: 'CRLF (\\r\\n)', label: 'CRLF (\\r\\n)' }, { value: 'CR (\\r)', label: 'CR (\\r)' }, { value: 'None', label: 'None' }]} /></label>
+          <label>Encoding<ThemedSelect label="Encoding" value={values.encoding} onChange={(value) => update('encoding', value)} placeholder="Select encoding" options={['UTF-8', 'ASCII', 'Hexadecimal'].map((value) => ({ value, label: value }))} /></label>
           <Toggle label="Show timestamps by default" checked={values.timestamps} onChange={(value) => update('timestamps', value)} />
         </fieldset>
         <fieldset className="sd-settings-card"><legend>Appearance & reconnect</legend>
-          <label>Theme<select value={values.theme} onChange={(e) => update('theme', e.target.value)}><option>System</option><option>Dark</option><option>Light</option></select></label>
+          <div className="sd-theme-setting"><div><strong>Theme</strong><span>Choose the workspace appearance.</span></div><div className="sd-theme-switcher" role="group" aria-label="Application theme"><button type="button" className={theme === 'dark' ? 'is-active' : ''} aria-pressed={theme === 'dark'} onClick={() => { onThemeChange('dark'); setSaved(false); }}><Moon size={14} /> Dark</button><button type="button" className={theme === 'light' ? 'is-active' : ''} aria-pressed={theme === 'light'} onClick={() => { onThemeChange('light'); setSaved(false); }}><Sun size={14} /> Light</button></div></div>
           <Toggle label="Reconnect when a device returns" checked={values.reconnect} onChange={(value) => update('reconnect', value)} />
-          <p className="sd-field-hint">A future serial backend will control reconnect attempts.</p>
+          <p className="sd-field-hint">Reconnect behavior will be controlled by the session manager.</p>
         </fieldset>
         <fieldset className="sd-settings-card sd-storage-settings"><legend>Local storage</legend>
-          <label>Log folder<div className="sd-path-control"><input value={values.storagePath} onChange={(e) => update('storagePath', e.target.value)} /><button type="button" aria-label="Choose mock log folder" title="Folder picker will be connected later"><FolderOpen size={17} /></button></div></label>
-          <label>Storage limit<select value={values.storageLimit} onChange={(e) => update('storageLimit', e.target.value)}><option>2 GB</option><option>5 GB</option><option>10 GB</option><option>25 GB</option></select></label>
+          <label>Log folder<div className="sd-path-control"><input value={values.storagePath} onChange={(e) => update('storagePath', e.target.value)} placeholder="Use SignalDeck's default log location" /><button type="button" aria-label="Choose log folder" title="Folder picker will be connected later"><FolderOpen size={17} /></button></div></label>
+          <label>Storage limit<ThemedSelect label="Storage limit" value={values.storageLimit} onChange={(value) => update('storageLimit', value)} placeholder="Select a storage limit" options={['2 GB', '5 GB', '10 GB', '25 GB'].map((value) => ({ value, label: value }))} /></label>
           <p className="sd-field-hint">No files will be created, moved, or removed by this UI.</p>
         </fieldset>
       </div>
-      <div className="sd-settings-actions"><button className="sd-secondary-button" onClick={() => { setValues(defaults); setSaved(false); }}><RotateCcw size={16} /> Reset preview</button><button className="sd-primary-button" onClick={save}>{saved ? <><Check size={16} /> Saved locally for preview</> : 'Save mock preferences'}</button></div>
+      <div className="sd-settings-actions"><button className="sd-secondary-button" onClick={() => { setValues(defaults); onThemeChange('dark'); setSaved(false); }}><RotateCcw size={16} /> Reset settings</button><button className="sd-primary-button" onClick={save}>{saved ? <><Check size={16} /> Saved for this session</> : 'Save preferences'}</button></div>
     </section>
   );
 }

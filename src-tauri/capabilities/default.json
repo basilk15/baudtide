@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-capability",
+  "description": "Allows the main SignalDeck window to receive native serial-session events.",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:default"]
+}

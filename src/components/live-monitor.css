@@ -25,3 +25,9 @@
 .sd-monitor .sd-go-to-end { color: #a8e6d4; background: #17372f; }
 .sd-monitor .sd-go-to-end:hover:not(:disabled) { background: #1f4a3f; }
 @media (max-width: 720px) { .sd-monitor .sd-monitor-header-actions { gap: 3px; }.sd-monitor .sd-monitor-header-actions .sd-monitor-secondary, .sd-monitor .sd-monitor-header-actions .sd-monitor-danger-button { padding: 0 8px; }.sd-monitor .sd-terminal-toolbar { align-items: flex-start; flex-direction: column; }.sd-monitor .sd-terminal-controls { width: 100%; justify-content: flex-end; overflow-x: auto; }.sd-monitor .sd-terminal-controls .sd-autoscroll-toggle { margin-right: auto; } }
+
+/* Confirmations stay over the monitor instead of extending the page below the terminal. */
+.sd-monitor .sd-inline-confirm { position: fixed; z-index: 45; top: 50%; left: 50%; width: min(440px, calc(100vw - 32px)); margin: 0; padding: 18px; border-color: #705344; border-radius: 12px; background: #1b222d; box-shadow: 0 24px 60px #02060dcc, 0 0 0 1px #ffd2b10d, 0 0 0 100vmax #060a10a8; transform: translate(-50%, -50%); }
+.sd-monitor .sd-inline-confirm > div:first-child { gap: 11px; }.sd-monitor .sd-inline-confirm > div:first-child > svg { width: 32px; height: 32px; margin: 0; padding: 7px; border-radius: 8px; color: #f0bd8a; background: #3a2b20; }
+.sd-monitor .sd-inline-confirm p { gap: 5px; font-size: 12px; }.sd-monitor .sd-inline-confirm p span { line-height: 1.5; }.sd-monitor .sd-inline-confirm > div:last-child { margin-top: 4px; }.sd-monitor .sd-inline-confirm > div:last-child button { min-height: 34px; }
+@media (max-width: 560px) { .sd-monitor .sd-inline-confirm { padding: 16px; }.sd-monitor .sd-inline-confirm > div:last-child { display: grid; grid-template-columns: 1fr 1fr; }.sd-monitor .sd-inline-confirm > div:last-child button { width: 100%; } }

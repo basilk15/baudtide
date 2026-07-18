@@ -9,7 +9,7 @@ export type NavigationItem = {
   badge?: string;
 };
 
-export type MockWorkspace = {
+export type Workspace = {
   id: string;
   name: string;
   description: string;

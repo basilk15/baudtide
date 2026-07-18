@@ -30,8 +30,8 @@ export function CommandPalette({ actions = defaultActions, onAction }: CommandPa
   return <>
     <button className="sd-command-trigger" onClick={() => setOpen(true)} aria-haspopup="dialog"><Search size={16} /><span>Search commands</span><kbd><Command size={11} />K</kbd></button>
     {open && <div className="sd-palette-backdrop" onMouseDown={() => setOpen(false)}><section className="sd-command-palette" role="dialog" aria-modal="true" aria-label="Command palette" onMouseDown={(e) => e.stopPropagation()}>
-      <div className="sd-palette-search"><Search size={18} /><input ref={input} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search actions, sessions, or logs…" /><button onClick={() => setOpen(false)} aria-label="Close command palette"><X size={17} /></button></div>
-      <p className="sd-palette-note">A local UI preview — search results will be connected to your workspace later.</p>
+      <div className="sd-palette-search"><Search size={18} /><input ref={input} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search actions, terminals, or logs…" /><button onClick={() => setOpen(false)} aria-label="Close command palette"><X size={17} /></button></div>
+      <p className="sd-palette-note">Use keyboard commands to navigate SignalDeck.</p>
       <div className="sd-palette-results">{filtered.length ? filtered.map((action) => <button key={action.id} onClick={() => execute(action)}><PaletteIcon icon={action.icon} /><span><strong>{action.label}</strong><small>{action.description}</small></span>{action.shortcut && <kbd>{action.shortcut}</kbd>}</button>) : <p className="sd-empty-result">No matching local actions.</p>}</div>
       <footer><span><kbd>↑↓</kbd> navigate</span><span><kbd>↵</kbd> choose</span><span><kbd>esc</kbd> close</span></footer>
     </section></div>}
