@@ -93,7 +93,7 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
       setNotice(message);
       window.setTimeout(() => setNotice(''), 2_400);
     } catch {
-      setError('Your system did not allow SignalDeck to copy to the clipboard.');
+      setError('Your system did not allow BaudTide to copy to the clipboard.');
     }
   };
 
@@ -117,7 +117,7 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
   };
 
   if (!nativeEnabled) {
-    return <section className="sd-empty-workspace"><div className="sd-empty-workspace-icon"><FileText size={28} /></div><p>SAVED LOGS</p><h1>Open SignalDeck desktop to browse captures.</h1><span>Saved logs live on the local machine and are available in the desktop app, where the serial backend can access them.</span></section>;
+    return <section className="sd-empty-workspace"><div className="sd-empty-workspace-icon"><FileText size={28} /></div><p>SAVED LOGS</p><h1>Open BaudTide desktop to browse captures.</h1><span>Saved logs live on the local machine and are available in the desktop app, where the serial backend can access them.</span></section>;
   }
 
   return <section className="sd-saved-logs" aria-label="Saved serial logs">

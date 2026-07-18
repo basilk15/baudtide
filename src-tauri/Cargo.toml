@@ -1,5 +1,5 @@
 [package]
-name = "signaldeck"
+name = "baudtide"
 version = "0.1.0"
 description = "A focused, multi-port serial monitor for Linux"
 authors = ["Basil"]

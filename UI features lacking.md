@@ -1,8 +1,8 @@
-# SignalDeck UI feature gap and implementation plan
+# BaudTide UI feature gap and implementation plan
 
 ## Project scope confirmed
 
-SignalDeck is intended to be a Linux-first desktop workspace for monitoring one or more serial devices. Its core promise is to connect to a serial port, stream and display every byte, and retain searchable local records. The current app is a React UI prototype: the Tauri backend only starts an empty application shell and has no serial-port, session, storage, or settings commands.
+BaudTide is intended to be a Linux-first desktop workspace for monitoring one or more serial devices. Its core promise is to connect to a serial port, stream and display every byte, and retain searchable local records. The current app is a React UI prototype: the Tauri backend only starts an empty application shell and has no serial-port, session, storage, or settings commands.
 
 ## UI-only implementation update — 17 July 2026
 

@@ -11,7 +11,7 @@ import {
   X,
 } from 'lucide-react';
 import type { NavigationItem, SignalDeckPage } from './phase3Types';
-import signalDeckMark from '../assets/signaldeck-mark.png';
+import baudTideMark from '../assets/signaldeck-mark.png';
 import './phase3-controls.css';
 import './sidebar-recovery.css';
 
@@ -73,9 +73,9 @@ export function SidebarNavigation({
 
   return (
     <>
-      <aside className={`sd-sidebar ${isCompact ? 'is-compact' : ''}`} aria-label="SignalDeck sidebar">
+      <aside className={`sd-sidebar ${isCompact ? 'is-compact' : ''}`} aria-label="BaudTide sidebar">
         <div className="sd-sidebar-brand">
-          <img className="sd-brand-mark" src={signalDeckMark} alt="SignalDeck" /><span>signal<span>deck</span></span>
+          <img className="sd-brand-mark" src={baudTideMark} alt="BaudTide" /><span>baud<span>tide</span></span>
           <button className="sd-icon-control" onClick={() => setCompact(true)} aria-label="Collapse sidebar" title="Collapse sidebar">
             <PanelLeftClose size={18} />
           </button>
@@ -101,7 +101,7 @@ export function SidebarNavigation({
       {isDrawerOpen && (
         <div className="sd-drawer-backdrop" onMouseDown={() => setDrawerOpen(false)}>
           <aside className="sd-mobile-drawer" aria-label="Mobile navigation" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="sd-drawer-heading"><strong><img className="sd-brand-mark" src={signalDeckMark} alt="SignalDeck" />signal<span>deck</span></strong><button className="sd-icon-control" onClick={() => setDrawerOpen(false)} aria-label="Close navigation"><X size={19} /></button></div>
+            <div className="sd-drawer-heading"><strong><img className="sd-brand-mark" src={baudTideMark} alt="BaudTide" />baud<span>tide</span></strong><button className="sd-icon-control" onClick={() => setDrawerOpen(false)} aria-label="Close navigation"><X size={19} /></button></div>
             {menu(true)}
             <p className="sd-sidebar-status">Local workspace</p>
           </aside>

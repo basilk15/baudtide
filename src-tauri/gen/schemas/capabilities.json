@@ -1,1 +1,1 @@
-{"main-capability":{"identifier":"main-capability","description":"Allows the main SignalDeck window to receive native serial-session events.","local":true,"windows":["main"],"permissions":["core:default","dialog:default"]}}
+{"main-capability":{"identifier":"main-capability","description":"Allows the main BaudTide window to receive native serial-session events.","local":true,"windows":["main"],"permissions":["core:default","dialog:default"]}}

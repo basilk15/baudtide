@@ -43,7 +43,7 @@ struct StartSessionRequest {
     session_name: String,
     #[serde(default)]
     settings: SerialSettings,
-    /// An absolute user-selected path. If omitted, SignalDeck stores the raw log in its app-data directory.
+    /// An absolute user-selected path. If omitted, BaudTide stores the raw log in its app-data directory.
     log_path: Option<String>,
 }
 
@@ -211,11 +211,6 @@ fn list_active_sessions(state: State<'_, SerialState>) -> CommandResult<Vec<Sess
 
 #[tauri::command]
 fn list_saved_logs(app: AppHandle, state: State<'_, SerialState>) -> CommandResult<Vec<SavedLog>> {
-    let directory = log_directory(&app)?;
-    if !directory.exists() {
-        return Ok(Vec::new());
-    }
-
     let active_sessions: HashMap<String, SessionInfo> = state
         .sessions
         .lock()
@@ -225,50 +220,55 @@ fn list_saved_logs(app: AppHandle, state: State<'_, SerialState>) -> CommandResu
         .collect();
     let mut logs = Vec::new();
 
-    for entry in read_dir(&directory)
-        .map_err(|error| format!("Could not read {}: {error}", directory.display()))?
-    {
-        let entry = entry.map_err(|error| format!("Could not read a saved log entry: {error}"))?;
-        let path = entry.path();
-        if !path.is_file()
-            || path.extension().and_then(|extension| extension.to_str()) != Some("log")
-        {
+    for directory in saved_log_directories(&app)? {
+        if !directory.exists() {
             continue;
         }
-        let metadata = entry
-            .metadata()
-            .map_err(|error| format!("Could not inspect {}: {error}", path.display()))?;
-        let modified_at: chrono::DateTime<Utc> = metadata
-            .modified()
-            .map_err(|error| {
-                format!(
-                    "Could not read the timestamp for {}: {error}",
-                    path.display()
-                )
-            })?
-            .into();
-        let path_string = path.display().to_string();
-        let active = active_sessions.get(&path_string);
-        logs.push(SavedLog {
-            path: path_string,
-            file_name: path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("serial-capture.log")
-                .into(),
-            session_name: active
-                .map(|session| session.session_name.clone())
-                .unwrap_or_else(|| log_name_from_path(&path)),
-            port: active.map(|session| session.port.clone()),
-            baud_rate: active.map(|session| session.baud_rate),
-            size_bytes: metadata.len(),
-            modified_at: modified_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            state: if active.is_some() {
-                "capturing".into()
-            } else {
-                "saved".into()
-            },
-        });
+        for entry in read_dir(&directory)
+            .map_err(|error| format!("Could not read {}: {error}", directory.display()))?
+        {
+            let entry = entry.map_err(|error| format!("Could not read a saved log entry: {error}"))?;
+            let path = entry.path();
+            if !path.is_file()
+                || path.extension().and_then(|extension| extension.to_str()) != Some("log")
+            {
+                continue;
+            }
+            let metadata = entry
+                .metadata()
+                .map_err(|error| format!("Could not inspect {}: {error}", path.display()))?;
+            let modified_at: chrono::DateTime<Utc> = metadata
+                .modified()
+                .map_err(|error| {
+                    format!(
+                        "Could not read the timestamp for {}: {error}",
+                        path.display()
+                    )
+                })?
+                .into();
+            let path_string = path.display().to_string();
+            let active = active_sessions.get(&path_string);
+            logs.push(SavedLog {
+                path: path_string,
+                file_name: path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("serial-capture.log")
+                    .into(),
+                session_name: active
+                    .map(|session| session.session_name.clone())
+                    .unwrap_or_else(|| log_name_from_path(&path)),
+                port: active.map(|session| session.port.clone()),
+                baud_rate: active.map(|session| session.baud_rate),
+                size_bytes: metadata.len(),
+                modified_at: modified_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                state: if active.is_some() {
+                    "capturing".into()
+                } else {
+                    "saved".into()
+                },
+            });
+        }
     }
     logs.sort_by(|left, right| right.modified_at.cmp(&left.modified_at));
     Ok(logs)
@@ -336,7 +336,7 @@ fn start_serial_session(
         .any(|session| session.info.port == request.port)
     {
         return Err(format!(
-            "{} is already being monitored by SignalDeck.",
+            "{} is already being monitored by BaudTide.",
             request.port
         ));
     }
@@ -582,17 +582,36 @@ fn log_directory(app: &AppHandle) -> CommandResult<PathBuf> {
         .map(|directory| directory.join("logs"))
 }
 
+fn saved_log_directories(app: &AppHandle) -> CommandResult<Vec<PathBuf>> {
+    let current = log_directory(app)?;
+    let legacy = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .and_then(|directory| {
+            directory
+                .parent()
+                .map(|parent| parent.join("com.basil.signaldeck").join("logs"))
+        });
+    let mut directories = vec![current.clone()];
+    if let Some(directory) = legacy.filter(|directory| directory != &current) {
+        directories.push(directory);
+    }
+    Ok(directories)
+}
+
 fn resolve_saved_log_path(app: &AppHandle, path: &str) -> CommandResult<PathBuf> {
-    let root = log_directory(app)?
-        .canonicalize()
-        .map_err(|error| format!("Could not access SignalDeck's log directory: {error}"))?;
     let path = PathBuf::from(path)
         .canonicalize()
         .map_err(|error| format!("Could not open the saved log: {error}"))?;
-    if !path.starts_with(&root)
+    let roots: Vec<PathBuf> = saved_log_directories(app)?
+        .into_iter()
+        .filter_map(|directory| directory.canonicalize().ok())
+        .collect();
+    if !roots.iter().any(|root| path.starts_with(root))
         || path.extension().and_then(|extension| extension.to_str()) != Some("log")
     {
-        return Err("That file is not in SignalDeck's saved-log library.".into());
+        return Err("That file is not in BaudTide's saved-log library.".into());
     }
     Ok(path)
 }
@@ -636,7 +655,7 @@ fn emit_status(app: &AppHandle, info: &SessionInfo, status: &'static str, messag
 }
 
 fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
-    "SignalDeck's serial session state is unavailable. Restart the app to recover.".into()
+    "BaudTide's serial session state is unavailable. Restart the app to recover.".into()
 }
 
 fn main() {
@@ -655,5 +674,5 @@ fn main() {
             disconnect_serial_session
         ])
         .run(tauri::generate_context!())
-        .expect("error while running SignalDeck");
+        .expect("error while running BaudTide");
 }

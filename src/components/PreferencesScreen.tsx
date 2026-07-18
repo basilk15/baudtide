@@ -43,7 +43,7 @@ export function PreferencesScreen({ theme, onThemeChange }: { theme: 'dark' | 'l
           <p className="sd-field-hint">Reconnect behavior will be controlled by the session manager.</p>
         </fieldset>
         <fieldset className="sd-settings-card sd-storage-settings"><legend>Local storage</legend>
-          <label>Log folder<div className="sd-path-control"><input value={values.storagePath} onChange={(e) => update('storagePath', e.target.value)} placeholder="Use SignalDeck's default log location" /><button type="button" aria-label="Choose log folder" title="Folder picker will be connected later"><FolderOpen size={17} /></button></div></label>
+          <label>Log folder<div className="sd-path-control"><input value={values.storagePath} onChange={(e) => update('storagePath', e.target.value)} placeholder="Use BaudTide's default log location" /><button type="button" aria-label="Choose log folder" title="Folder picker will be connected later"><FolderOpen size={17} /></button></div></label>
           <label>Storage limit<ThemedSelect label="Storage limit" value={values.storageLimit} onChange={(value) => update('storageLimit', value)} placeholder="Select a storage limit" options={['2 GB', '5 GB', '10 GB', '25 GB'].map((value) => ({ value, label: value }))} /></label>
           <p className="sd-field-hint">No files will be created, moved, or removed by this UI.</p>
         </fieldset>

@@ -56,7 +56,7 @@ export function isTauriRuntime() {
 }
 
 function ensureNativeRuntime() {
-  if (!isTauriRuntime()) throw new Error('Serial ports are available only in the SignalDeck desktop app.');
+  if (!isTauriRuntime()) throw new Error('Serial ports are available only in the BaudTide desktop app.');
 }
 
 export async function listNativeSerialPorts() {

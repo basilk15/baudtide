@@ -1,15 +1,40 @@
-# SignalDeck
+<p align="center">
+  <img src="src-tauri/icons/icon.svg" width="128" alt="BaudTide logo" />
+</p>
 
-SignalDeck is a Linux-first desktop serial-monitor workspace. It has a native Tauri serial backend plus a browser-safe UI preview.
+<h1 align="center">BaudTide</h1>
 
-## Run the UI
+<p align="center">
+  A Linux-first desktop serial monitor for capturing, viewing, and saving data from multiple devices at once.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/platform-Linux-1f6f61?style=flat-square" alt="Linux" />
+  <img src="https://img.shields.io/badge/runtime-Tauri%20%2B%20React-1f6f61?style=flat-square" alt="Tauri and React" />
+  <img src="https://img.shields.io/badge/status-active%20development-5ac8ae?style=flat-square" alt="Active development" />
+</p>
+
+BaudTide replaces the clipped, single-device serial-monitor experience with a calm local workspace: discover ports, open several live terminals side by side, retain complete raw captures, and export a log whenever you need it.
+
+## Highlights
+
+- Discover Linux serial ports, including `/dev/ttyUSB*`, `/dev/ttyACM*`, Bluetooth, and PCI serial devices.
+- Monitor multiple distinct ports concurrently, each with its own reader and live terminal.
+- Set common baud rates, send data back to the device, pause rendering without pausing capture, and jump straight to the latest output.
+- Write every received byte to a raw local log from the moment monitoring begins.
+- Browse saved captures, preview them, copy their contents, or save a copy with the native file chooser.
+- Choose a polished dark or light workspace theme.
+
+## Run locally
+
+Install dependencies and start the browser preview:
 
 ```bash
 npm install
 npm run dev
 ```
 
-To run it in the Tauri desktop shell once Linux desktop dependencies are available:
+Run the complete desktop app with native serial-port access:
 
 ```bash
 npm run tauri dev
@@ -17,24 +42,28 @@ npm run tauri dev
 
 ## Native serial backend
 
-When started through Tauri, SignalDeck can:
+When launched through Tauri, BaudTide can:
 
-- discover Linux serial ports (`/dev/ttyUSB*`, `/dev/ttyACM*`, Bluetooth and PCI serial ports)
-- open several distinct ports at once, with an independent reader thread per port
+- discover local serial ports
+- open several distinct ports at once with independent reader threads
 - emit session-tagged serial data and connection-status events to the UI
-- send text or raw bytes back to an open session
-- write every received byte directly to a raw log file, independent of display pause or scrollback
-- disconnect a single session without affecting the others
+- send text or raw bytes to an open session
+- write received bytes directly to a raw log file, independent of display pause or scrollback
+- disconnect one live terminal without affecting the others
 
-Each session accepts an optional absolute `logPath`. When omitted, its raw log is stored in SignalDeck's Linux app-data directory under `logs/`.
+Each session accepts an optional absolute `logPath`. When one is not supplied, BaudTide saves the raw capture beneath its Linux app-data `logs/` directory. The Saved logs page makes those files easy to browse and export.
 
-The desktop runtime needs the standard GTK/WebKit Linux development libraries. On Ubuntu/Debian, SignalDeck's serial-port support additionally needs `libudev-dev` for device enumeration. If `npm run tauri dev` reports missing `glib`, `gio`, `gdk`, `webkit`, or `libudev` packages, install the corresponding development package before trying again.
+Existing captures from the previous SignalDeck-branded build remain available in Saved logs; they are kept in place while new captures are written under the BaudTide identity.
 
-## Current UI
+## Linux prerequisites
 
-- Dark-first workspace dashboard
-- Recent serial-device cards and saved workspace previews
-- Responsive layout
-- Connection setup dialog with port, baud rate, and session-name controls
-- Native discovery, connect, send, receive, and disconnect integration when launched with Tauri
-- Browser-preview fallback data when launched only with `npm run dev`
+BaudTide needs the normal GTK/WebKit development libraries for the Tauri desktop shell. On Ubuntu/Debian, serial-port discovery also requires `libudev-dev`.
+
+If `npm run tauri dev` reports missing `glib`, `gio`, `gdk`, `webkit`, or `libudev` packages, install the matching development package and run it again. Your user account may also need to be in the `dialout` group to access USB serial devices.
+
+## Stack
+
+- Tauri v2 desktop shell
+- Rust + `serialport` for native Linux serial access
+- React + TypeScript + Vite UI
+- Local file-based raw capture library

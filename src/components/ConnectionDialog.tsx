@@ -195,7 +195,7 @@ export function ConnectionDialog({
         <div className="sd-dialog-icon"><Radio size={21} /></div>
         <p className="sd-dialog-eyebrow">NEW LIVE TERMINAL</p>
         <h2 id={titleId}>Connect a device</h2>
-        <p id={descriptionId} className="sd-dialog-subtitle">{nativeEnabled ? 'Choose a port and name the session. SignalDeck will open it and start a raw local log immediately.' : 'Choose a port, name the session, and start monitoring. This browser preview does not open devices.'}</p>
+        <p id={descriptionId} className="sd-dialog-subtitle">{nativeEnabled ? 'Choose a port and name the session. BaudTide will open it and start a raw local log immediately.' : 'Choose a port, name the session, and start monitoring. This browser preview does not open devices.'}</p>
 
         <form onSubmit={submit} noValidate>
           <div className="sd-dialog-scan-row">

@@ -2,10 +2,10 @@ import { useState } from 'react';
 import { Check, ChevronDown, CircleHelp, Clipboard, ExternalLink, MessageSquareText } from 'lucide-react';
 import './phase3-controls.css';
 
-const diagnostics = `SignalDeck\nPlatform: Linux\nSerial backend: managed by the desktop app\nWorkspace: local`;
+const diagnostics = `BaudTide\nPlatform: Linux\nSerial backend: managed by the desktop app\nWorkspace: local`;
 const topics = [
   ['Linux serial permissions', 'Most USB serial devices appear as /dev/ttyUSB* or /dev/ttyACM*. Access commonly requires your account to be in the dialout group.'],
-  ['Choosing a baud rate', 'Your device firmware must use the same baud rate configured in SignalDeck.'],
+  ['Choosing a baud rate', 'Your device firmware must use the same baud rate configured in BaudTide.'],
   ['Panel controls', 'Pause stops rendering while logging continues. Clear affects only the visible display.'],
 ];
 

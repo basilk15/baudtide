@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "SignalDeck",
+  "productName": "BaudTide",
   "version": "0.1.0",
-  "identifier": "com.basil.signaldeck",
+  "identifier": "com.basil.baudtide",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "SignalDeck",
+        "title": "BaudTide",
         "width": 1320,
         "height": 850,
         "minWidth": 900,

@@ -53,7 +53,7 @@ export function PortDiscoveryDashboard({ nativeEnabled, onScan, onConnect, onReq
   }, [nativeEnabled]);
 
   if (!nativeEnabled) {
-    return <section className="sd-empty-workspace"><div className="sd-empty-workspace-icon"><Radio size={28} /></div><p>MONITOR READY</p><h1>Open SignalDeck desktop to detect devices.</h1><span>Serial-port discovery is available in the desktop app, where SignalDeck can inspect local hardware.</span></section>;
+    return <section className="sd-empty-workspace"><div className="sd-empty-workspace-icon"><Radio size={28} /></div><p>MONITOR READY</p><h1>Open BaudTide desktop to detect devices.</h1><span>Serial-port discovery is available in the desktop app, where BaudTide can inspect local hardware.</span></section>;
   }
 
   return <section className="sd-port-dashboard" aria-label="Detected serial ports">
