@@ -5,7 +5,7 @@
 <h1 align="center">BaudTide</h1>
 
 <p align="center">
-  BaudTide (also written <strong>Baud Tide</strong>) is a Linux desktop serial monitor for ESP32, Arduino, USB/TTY devices, and multi-port serial logging.
+  BaudTide is a Linux desktop serial monitor for ESP32, Arduino, USB/TTY devices, and multi-port serial logging.
 </p>
 
 <p align="center">
