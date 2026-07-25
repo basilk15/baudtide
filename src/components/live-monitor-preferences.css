@@ -1,0 +1,3 @@
+.sd-terminal-output.no-timestamps .sd-terminal-line {
+  grid-template-columns: minmax(0, 1fr);
+}

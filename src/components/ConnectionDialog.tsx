@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { AlertCircle, CheckCircle2, LoaderCircle, Radio, RefreshCw, ShieldAlert, Usb, X } from 'lucide-react';
 import { ThemedSelect } from './ThemedSelect';
+import { defaultSerialConnectionSettings, type SerialConnectionSettings } from '../lib/serial';
 import './connection-dialog.css';
 
 export type SerialPortOption = {
@@ -16,6 +17,7 @@ export type ConnectionRequest = {
   baudRate: number;
   sessionName: string;
   manualPort: boolean;
+  settings: SerialConnectionSettings;
 };
 
 export type ConnectionDialogProps = {
@@ -31,10 +33,13 @@ export type ConnectionDialogProps = {
   /** Makes every UI scan state easy to exercise without a backend. */
   initialScanState?: PortScanState;
   nativeEnabled?: boolean;
+  /** Ports with an open terminal; duplicate connections would otherwise orphan a tab. */
+  activePorts?: string[];
 };
 
 const baudRates = [300, 600, 1200, 2400, 4800, 9600, 14400, 19200, 28800, 31250, 38400, 57600, 74880, 115200, 230400, 250000, 460800, 500000, 921600, 1_000_000, 2_000_000];
 const emptyPorts: SerialPortOption[] = [];
+const noActivePorts: string[] = [];
 
 function nameForPort(port: string, ports: SerialPortOption[]) {
   return ports.find((item) => item.path === port)?.label ?? '';
@@ -57,6 +62,7 @@ export function ConnectionDialog({
   initialSessionName = '',
   initialScanState = 'ready',
   nativeEnabled = false,
+  activePorts = noActivePorts,
 }: ConnectionDialogProps) {
   const titleId = useId();
   const descriptionId = useId();
@@ -68,6 +74,7 @@ export function ConnectionDialog({
   const [manualPort, setManualPort] = useState(false);
   const [baudRate, setBaudRate] = useState(String(initialBaudRate));
   const [customBaud, setCustomBaud] = useState(!baudRates.includes(initialBaudRate));
+  const [settings, setSettings] = useState<SerialConnectionSettings>(defaultSerialConnectionSettings);
   const [sessionName, setSessionName] = useState(initialSessionName || nameForPort(initialPort ?? initialPorts[0]?.path ?? '', initialPorts));
   const [errors, setErrors] = useState<{ port?: string; baudRate?: string; sessionName?: string }>({});
   const [isSubmitting, setSubmitting] = useState(false);
@@ -81,6 +88,7 @@ export function ConnectionDialog({
     setManualPort(false);
     setBaudRate(String(initialBaudRate));
     setCustomBaud(!baudRates.includes(initialBaudRate));
+    setSettings(defaultSerialConnectionSettings);
     setSessionName(initialSessionName || nameForPort(initialPort ?? initialPorts[0]?.path ?? '', initialPorts));
     setErrors({});
     setSubmitError('');
@@ -154,6 +162,7 @@ export function ConnectionDialog({
     if (isSubmitting) return;
     const nextErrors: typeof errors = {};
     if (!port.trim()) nextErrors.port = 'Enter a serial-port path.';
+    else if (activePorts.includes(port.trim())) nextErrors.port = `${port.trim()} is already open in a BaudTide terminal.`;
     const numericBaud = Number(baudRate);
     if (!Number.isInteger(numericBaud) || numericBaud < 300 || numericBaud > 4000000) nextErrors.baudRate = 'Use a baud rate between 300 and 4,000,000.';
     if (!sessionName.trim()) nextErrors.sessionName = 'Give this session a name.';
@@ -163,7 +172,7 @@ export function ConnectionDialog({
     setSubmitting(true);
     setSubmitError('');
     try {
-      await onStartMonitoring({ port: port.trim(), baudRate: numericBaud, sessionName: sessionName.trim(), manualPort });
+      await onStartMonitoring({ port: port.trim(), baudRate: numericBaud, sessionName: sessionName.trim(), manualPort, settings });
     } catch (error) {
       setSubmitError(errorMessage(error));
       setSubmitting(false);
@@ -226,6 +235,24 @@ export function ConnectionDialog({
               <input ref={sessionNameRef} autoComplete="off" value={sessionName} onChange={(event) => { setSessionName(event.target.value); setErrors((current) => ({ ...current, sessionName: undefined })); }} placeholder="e.g. Main controller" aria-invalid={Boolean(errors.sessionName)} />
               {errors.sessionName && <small className="sd-field-error">{errors.sessionName}</small>}
             </label>
+            <fieldset className="sd-serial-settings sd-full-width">
+              <legend>Serial framing</legend>
+              <p>Use your device's documented framing and flow-control settings. Defaults are 8N1 with no flow control.</p>
+              <div className="sd-serial-settings-grid">
+                <label>Data bits
+                  <ThemedSelect label="Data bits" value={String(settings.dataBits)} placeholder="Select data bits" onChange={(value) => setSettings((current) => ({ ...current, dataBits: Number(value) as SerialConnectionSettings['dataBits'] }))} options={[5, 6, 7, 8].map((value) => ({ value: String(value), label: String(value) }))} />
+                </label>
+                <label>Parity
+                  <ThemedSelect label="Parity" value={settings.parity} placeholder="Select parity" onChange={(value) => setSettings((current) => ({ ...current, parity: value as SerialConnectionSettings['parity'] }))} options={[{ value: 'none', label: 'None' }, { value: 'odd', label: 'Odd' }, { value: 'even', label: 'Even' }]} />
+                </label>
+                <label>Stop bits
+                  <ThemedSelect label="Stop bits" value={settings.stopBits} placeholder="Select stop bits" onChange={(value) => setSettings((current) => ({ ...current, stopBits: value as SerialConnectionSettings['stopBits'] }))} options={[{ value: 'one', label: '1' }, { value: 'two', label: '2' }]} />
+                </label>
+                <label>Flow control
+                  <ThemedSelect label="Flow control" value={settings.flowControl} placeholder="Select flow control" onChange={(value) => setSettings((current) => ({ ...current, flowControl: value as SerialConnectionSettings['flowControl'] }))} options={[{ value: 'none', label: 'None' }, { value: 'software', label: 'Software (XON/XOFF)' }, { value: 'hardware', label: 'Hardware (RTS/CTS)' }]} />
+                </label>
+              </div>
+            </fieldset>
           </div>
           {submitError && <div className="sd-submit-error" role="alert"><AlertCircle size={15} />{submitError}</div>}
           <div className="sd-dialog-actions">

@@ -10,6 +10,20 @@ export type NativeSerialPort = {
   transport: 'usb' | 'bluetooth' | 'pci' | 'unknown';
 };
 
+export type SerialConnectionSettings = {
+  dataBits: 5 | 6 | 7 | 8;
+  parity: 'none' | 'odd' | 'even';
+  stopBits: 'one' | 'two';
+  flowControl: 'none' | 'software' | 'hardware';
+};
+
+export const defaultSerialConnectionSettings: SerialConnectionSettings = {
+  dataBits: 8,
+  parity: 'none',
+  stopBits: 'one',
+  flowControl: 'none',
+};
+
 export type StartedSerialSession = {
   id: string;
   port: string;
@@ -19,18 +33,40 @@ export type StartedSerialSession = {
   state: 'connected';
 };
 
+/**
+ * A session-scoped, read-only LAN link for the mobile companion. The pairing
+ * token is deliberately contained only in `url`; do not display or persist it
+ * separately.
+ */
+export type MobileShareInfo = {
+  sessionId: string;
+  url: string;
+  host: string;
+  port: number;
+  clientCount: number;
+  enabled: boolean;
+};
+
 export type SerialDataEvent = {
   sessionId: string;
   port: string;
+  /** Monotonic per native session; used to merge startup replay with live data. */
+  sequence: number;
   timestamp: string;
   text: string;
   bytes: number[];
 };
 
+export type PendingSerialData = {
+  events: SerialDataEvent[];
+  droppedEventCount: number;
+  nextSequence: number;
+};
+
 export type SerialStatusEvent = {
   sessionId: string;
   port: string;
-  status: 'connected' | 'disconnected' | 'error';
+  status: 'connected' | 'disconnected' | 'error' | 'storage-limit';
   message: string;
 };
 
@@ -42,13 +78,43 @@ export type SavedLog = {
   baudRate?: number;
   sizeBytes: number;
   modifiedAt: string;
-  state: 'capturing' | 'saved';
+  sessionId?: string;
+  startedAt?: string;
+  endedAt?: string;
+  metadataAvailable: boolean;
+  state: 'capturing' | 'disconnected' | 'error' | 'quota-reached' | 'interrupted' | 'saved' | 'unknown';
 };
 
 export type SavedLogContent = {
   path: string;
   text: string;
   truncated: boolean;
+};
+
+export type SavedLogSearchMatch = {
+  source: 'content' | 'metadata';
+  byteOffset?: number;
+  snippet?: string;
+};
+
+export type SavedLogSearchResult = {
+  log: SavedLog;
+  metadataMatch: boolean;
+  contentMatchCount: number;
+  contentMatches: SavedLogSearchMatch[];
+  contentSearchTruncated: boolean;
+};
+
+export type SavedLogSearchResponse = {
+  results: SavedLogSearchResult[];
+  scannedLogCount: number;
+  scannedBytes: number;
+  fullSearch: boolean;
+  truncated: boolean;
+  resultLimitReached: boolean;
+  perLogByteLimit: number | null;
+  totalByteLimit: number | null;
+  resultLimit: number;
 };
 
 export function isTauriRuntime() {
@@ -64,9 +130,26 @@ export async function listNativeSerialPorts() {
   return invoke<NativeSerialPort[]>('list_serial_ports');
 }
 
-export async function startNativeSerialSession(request: { port: string; baudRate: number; sessionName: string; logPath?: string }) {
+export type StartNativeSerialSessionRequest = {
+  port: string;
+  baudRate: number;
+  sessionName: string;
+  settings: SerialConnectionSettings;
+};
+
+export async function startNativeSerialSession(request: StartNativeSerialSessionRequest) {
   ensureNativeRuntime();
   return invoke<StartedSerialSession>('start_serial_session', { request });
+}
+
+export async function takePendingNativeSerialData(sessionId: string) {
+  ensureNativeRuntime();
+  return invoke<PendingSerialData>('take_pending_serial_data', { sessionId });
+}
+
+export async function chooseNativeLogDirectory() {
+  ensureNativeRuntime();
+  return invoke<string | null>('select_log_directory');
 }
 
 export async function sendNativeSerialText(sessionId: string, text: string) {
@@ -79,9 +162,34 @@ export async function disconnectNativeSerialSession(sessionId: string) {
   return invoke<StartedSerialSession>('disconnect_serial_session', { sessionId });
 }
 
+export async function startMobileShare(sessionId: string) {
+  ensureNativeRuntime();
+  return invoke<MobileShareInfo>('start_mobile_share', { sessionId });
+}
+
+export async function getMobileShareStatus(sessionId: string) {
+  ensureNativeRuntime();
+  return invoke<MobileShareInfo>('get_mobile_share_status', { sessionId });
+}
+
+export async function stopMobileShare(sessionId: string) {
+  ensureNativeRuntime();
+  return invoke<MobileShareInfo>('stop_mobile_share', { sessionId });
+}
+
 export async function listNativeSavedLogs() {
   ensureNativeRuntime();
   return invoke<SavedLog[]>('list_saved_logs');
+}
+
+export async function searchNativeSavedLogs(query: string, fullSearch = false, searchId?: string) {
+  ensureNativeRuntime();
+  return invoke<SavedLogSearchResponse>('search_saved_logs', { query, options: { fullSearch, searchId } });
+}
+
+export async function cancelNativeSavedLogSearch(searchId: string) {
+  ensureNativeRuntime();
+  return invoke<void>('cancel_saved_log_search', { searchId });
 }
 
 export async function readNativeSavedLog(path: string) {
@@ -89,9 +197,14 @@ export async function readNativeSavedLog(path: string) {
   return invoke<SavedLogContent>('read_saved_log', { path });
 }
 
-export async function saveNativeSavedLog(sourcePath: string, destinationPath: string) {
+export async function saveNativeSavedLog(sourcePath: string) {
   ensureNativeRuntime();
-  return invoke<string>('save_saved_log', { sourcePath, destinationPath });
+  const savedPath = await invoke<string | null>('save_saved_log', { sourcePath });
+  if (!savedPath) return null;
+  window.dispatchEvent(new CustomEvent<{ sourcePath: string; savedPath: string }>('baudtide:log-exported', {
+    detail: { sourcePath, savedPath },
+  }));
+  return savedPath;
 }
 
 export async function listenForSerialData(sessionId: string, handler: (event: SerialDataEvent) => void): Promise<UnlistenFn> {

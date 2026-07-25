@@ -3,5 +3,5 @@
   "identifier": "main-capability",
   "description": "Allows the main BaudTide window to receive native serial-session events.",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
 }

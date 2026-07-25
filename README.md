@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/status-active%20development-5ac8ae?style=flat-square" alt="Active development" />
 </p>
 
-BaudTide is an open-source Linux serial monitor and serial terminal. It replaces the clipped, single-device serial-monitor experience with a calm local workspace: discover USB and TTY ports, open several live terminals side by side, retain complete raw captures, and export a log whenever you need it. It is useful for ESP32 and Arduino development, embedded debugging, UART/USB serial communication, and monitoring serial data streams.
+BaudTide is an open-source Linux serial monitor and serial terminal. It replaces the clipped, single-device serial-monitor experience with a calm local workspace: discover USB and TTY ports, open several live terminals in tabs, retain complete raw captures, and export a log whenever you need it. It is useful for ESP32 and Arduino development, embedded debugging, UART/USB serial communication, and monitoring serial data streams.
 
 ## Highlights
 
@@ -39,6 +39,18 @@ Run the complete desktop app with native serial-port access:
 ```bash
 npm run tauri dev
 ```
+
+## View a live capture on a phone
+
+BaudTide can share one live terminal with a phone on the same local network.
+Open the terminal's **Mobile sharing** panel, choose **Start sharing**, and scan
+the displayed QR code from the phone. The phone view is read-only: it shows the
+live output and lets the paired device download the active raw capture. It
+cannot send data to the serial device.
+
+Each share gets a new unguessable pairing URL. Stop sharing to immediately
+revoke it; sharing also stops automatically when its serial session disconnects
+or BaudTide exits. Only use the feature on a network you trust.
 
 ## Native serial backend
 

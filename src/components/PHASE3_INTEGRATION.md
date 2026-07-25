@@ -1,6 +1,6 @@
-# Phase 3 control integration
+# Supporting-control integration
 
-These components are UI-only. They contain local React state and deliberately do not call Tauri, serial APIs, storage APIs, or accounts.
+The application shell already integrates these components with the native serial, preference, and local-notification flows. This file is a compact reference for their intended placement, not a setup guide for mock controls.
 
 Import the shared stylesheet once with the components (each component already imports it) and place controls in the existing app shell as follows:
 
@@ -13,8 +13,8 @@ import { PreferencesScreen } from './components/PreferencesScreen';
 import { HelpFeedbackPanel } from './components/HelpFeedbackPanel';
 ```
 
-- Replace the current sidebar with `SidebarNavigation`, storing `activePage` in `App` and passing `onNavigate`.
-- Place `CommandPalette`, `NotificationsPanel`, and `WorkspaceProfileMenu` in the top-bar actions.
-- Render `PreferencesScreen` for the `preferences` page and `HelpFeedbackPanel` for the `help` page.
-- In the future, pass a real handler through `CommandPalette`'s `onAction`; use its `actions` prop to add sessions/devices/logs from application data.
-- `WorkspaceProfileMenu` is intentionally a local-workspace mock. If local workspaces are deferred, omit it rather than exposing an account-like control.
+- Keep `SidebarNavigation` controlled by the application page state.
+- Keep `CommandPalette`, `NotificationsPanel`, and `WorkspaceProfileMenu` in the top-bar actions.
+- Render `PreferencesScreen` for the `preferences` page and `HelpFeedbackPanel` for the `help` page, passing current native/session state where needed.
+- Provide real commands through `CommandPalette`'s `onAction`; add actions only when they are backed by application data and handlers.
+- `WorkspaceProfileMenu` is a compact Preferences trigger. It deliberately does not imply workspace switching or account support.

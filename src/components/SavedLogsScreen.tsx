@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
-import { save as chooseSavePath } from '@tauri-apps/plugin-dialog';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Check, Clock3, Copy, FileText, FolderOpen, HardDrive, LoaderCircle, Radio, RefreshCw, Save, Search, X } from 'lucide-react';
-import { listNativeSavedLogs, readNativeSavedLog, saveNativeSavedLog, type SavedLog, type SavedLogContent } from '../lib/serial';
+import { cancelNativeSavedLogSearch, listNativeSavedLogs, readNativeSavedLog, saveNativeSavedLog, searchNativeSavedLogs, type SavedLog, type SavedLogContent, type SavedLogSearchResponse } from '../lib/serial';
 import './saved-logs.css';
 
 type SavedLogsScreenProps = {
@@ -32,6 +31,9 @@ async function copyText(value: string) {
 export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnection }: SavedLogsScreenProps) {
   const [logs, setLogs] = useState<SavedLog[]>([]);
   const [query, setQuery] = useState('');
+  const [fullSearch, setFullSearch] = useState(false);
+  const [searchResponse, setSearchResponse] = useState<{ query: string; response: SavedLogSearchResponse } | null>(null);
+  const [isSearching, setSearching] = useState(false);
   const [isLoading, setLoading] = useState(nativeEnabled);
   const [isRefreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
@@ -39,6 +41,8 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
   const [isOpening, setOpening] = useState<string | null>(null);
   const [isSaving, setSaving] = useState<string | null>(null);
   const [notice, setNotice] = useState('');
+  const fullSearchSequence = useRef(0);
+  const activeFullSearch = useRef<{ id: string; cancel: () => void } | null>(null);
 
   const refresh = async (showSpinner = true) => {
     if (!nativeEnabled) return;
@@ -67,11 +71,69 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeLogPath, nativeEnabled]);
 
+  useEffect(() => {
+    const normalized = query.trim();
+    if (!nativeEnabled || !normalized) {
+      setSearchResponse(null);
+      setSearching(false);
+      return undefined;
+    }
+    let cancelled = false;
+    let settled = false;
+    let timer: number | undefined;
+    const searchId = fullSearch ? `full-search-${Date.now()}-${++fullSearchSequence.current}` : undefined;
+    const cancel = () => {
+      if (cancelled || settled) return;
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      if (searchId) void cancelNativeSavedLogSearch(searchId).catch(() => undefined);
+    };
+    if (searchId) activeFullSearch.current = { id: searchId, cancel };
+    // A response describes exactly one query. Drop the prior response before
+    // debouncing so its results cannot be rendered under the new query, even
+    // if the new native search subsequently fails.
+    setSearchResponse(null);
+    setSearching(true);
+    timer = window.setTimeout(() => {
+      void searchNativeSavedLogs(normalized, fullSearch, searchId)
+        .then((response) => {
+          if (!cancelled) {
+            setSearchResponse({ query: normalized, response });
+            setError('');
+          }
+        })
+        .catch((reason) => {
+          if (!cancelled) {
+            setSearchResponse(null);
+            setError(reason instanceof Error ? reason.message : 'Could not search saved logs.');
+          }
+        })
+        .finally(() => {
+          settled = true;
+          if (!cancelled) setSearching(false);
+        });
+    }, 220);
+    return () => {
+      cancel();
+      if (activeFullSearch.current?.id === searchId) activeFullSearch.current = null;
+    };
+  }, [fullSearch, nativeEnabled, query]);
+
+  const cancelCompleteSearch = () => {
+    const activeSearch = activeFullSearch.current;
+    if (!activeSearch) return;
+    activeSearch.cancel();
+    activeFullSearch.current = null;
+    setSearchResponse(null);
+    setSearching(false);
+  };
+
+  const activeSearchResponse = searchResponse?.query === query.trim() ? searchResponse.response : null;
   const filteredLogs = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return logs;
-    return logs.filter((log) => `${log.sessionName} ${log.fileName} ${log.port ?? ''}`.toLowerCase().includes(normalized));
-  }, [logs, query]);
+    if (!query.trim()) return logs;
+    return activeSearchResponse?.results.map((result) => result.log) ?? [];
+  }, [activeSearchResponse, logs, query]);
+  const searchResultsByPath = useMemo(() => new Map(activeSearchResponse?.results.map((result) => [result.log.path, result]) ?? []), [activeSearchResponse]);
   const activeCount = logs.filter((log) => log.state === 'capturing').length;
 
   const openLog = async (log: SavedLog) => {
@@ -100,12 +162,8 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
   const saveCopy = async (log: SavedLog) => {
     setSaving(log.path);
     try {
-      const destination = await chooseSavePath({
-        defaultPath: log.fileName,
-        filters: [{ name: 'Serial log', extensions: ['log', 'txt'] }],
-      });
-      if (!destination) return;
-      const savedPath = await saveNativeSavedLog(log.path, destination);
+      const savedPath = await saveNativeSavedLog(log.path);
+      if (!savedPath) return;
       setNotice(`Saved a copy to ${savedPath}.`);
       window.setTimeout(() => setNotice(''), 3_600);
       setError('');
@@ -131,18 +189,28 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
     {activeCount > 0 && <section className="sd-active-capture-summary"><span><Radio size={17} /></span><div><strong>{activeCount === 1 ? '1 capture is active' : `${activeCount} captures are active`}</strong><p>Its raw log is already listed below and grows while monitoring continues.</p></div><button type="button" onClick={() => void refresh(false)}>Update size</button></section>}
 
     <section className="sd-saved-logs-toolbar">
-      <label className="sd-saved-logs-search"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by session, port, or file name" /></label>
-      <span>{filteredLogs.length} {filteredLogs.length === 1 ? 'log' : 'logs'}</span>
+      <label className="sd-saved-logs-search"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search metadata and captured content" /></label>
+      <label className="sd-saved-logs-search-scope"><input type="checkbox" checked={fullSearch} onChange={(event) => setFullSearch(event.target.checked)} /> Search complete captures</label>
+      {isSearching && fullSearch && <button className="sd-secondary-button" type="button" onClick={cancelCompleteSearch}>Cancel search</button>}
+      <span>{isSearching ? 'Searching…' : `${filteredLogs.length} ${filteredLogs.length === 1 ? 'log' : 'logs'}`}</span>
     </section>
 
-    {isLoading ? <div className="sd-saved-logs-loading"><LoaderCircle className="sd-spin" size={21} /> Loading local captures…</div>
+    {activeSearchResponse && <p className="sd-saved-logs-search-note">{activeSearchResponse.fullSearch
+      ? `Complete-capture search scanned ${formatBytes(activeSearchResponse.scannedBytes)} across ${activeSearchResponse.scannedLogCount} logs. Large libraries can take longer.`
+      : `Quick search streams up to ${formatBytes(activeSearchResponse.perLogByteLimit ?? 0)} per log and ${formatBytes(activeSearchResponse.totalByteLimit ?? 0)} total. Turn on “Search complete captures” for an exact full-library scan.`} {activeSearchResponse.truncated ? 'Some log bytes were not scanned within the quick-search limit.' : ''}{activeSearchResponse.resultLimitReached ? ` The first ${activeSearchResponse.resultLimit} matching logs are shown.` : ''}</p>}
+
+    {isLoading || (isSearching && !activeSearchResponse) ? <div className="sd-saved-logs-loading"><LoaderCircle className="sd-spin" size={21} /> {isLoading ? 'Loading local captures…' : 'Searching local captures…'}</div>
       : filteredLogs.length ? <div className="sd-saved-log-list" role="list">
-        {filteredLogs.map((log) => <article className="sd-saved-log-row" role="listitem" key={log.path}>
+        {filteredLogs.map((log) => {
+          const searchResult = searchResultsByPath.get(log.path);
+          const firstContentMatch = searchResult?.contentMatches[0];
+          return <article className="sd-saved-log-row" role="listitem" key={log.path}>
           <div className={`sd-saved-log-icon ${log.state}`}><FileText size={20} /></div>
-          <div className="sd-saved-log-primary"><div className="sd-saved-log-name"><strong>{log.sessionName}</strong>{log.state === 'capturing' && <span><i /> Capturing now</span>}</div><p>{log.port ? `${log.port} · ${log.baudRate?.toLocaleString()} baud` : log.fileName}</p><small>{log.fileName}</small></div>
-          <div className="sd-saved-log-meta"><span><Clock3 size={14} /> {formatCapturedAt(log.modifiedAt)}</span><span><HardDrive size={14} /> {formatBytes(log.sizeBytes)}</span></div>
+           <div className="sd-saved-log-primary"><div className="sd-saved-log-name"><strong>{log.sessionName}</strong>{log.state === 'capturing' && <span><i /> Capturing now</span>}{log.state === 'error' && <span className="is-error">Ended with error</span>}{log.state === 'quota-reached' && <span className="is-error">Stopped at storage limit</span>}{log.state === 'interrupted' && <span className="is-muted">Capture interrupted</span>}</div><p>{log.port ? `${log.port} · ${log.baudRate?.toLocaleString()} baud` : log.metadataAvailable ? 'Connection metadata unavailable' : 'Legacy capture · metadata unavailable'}</p><small>{log.fileName}</small>{firstContentMatch?.snippet && <mark className="sd-saved-log-match">{firstContentMatch.snippet}</mark>}{searchResult && searchResult.contentMatchCount > 1 && <small className="sd-saved-log-match-count">{searchResult.contentMatchCount} content matches in searched bytes</small>}</div>
+          <div className="sd-saved-log-meta"><span><Clock3 size={14} /> {formatCapturedAt(log.startedAt ?? log.modifiedAt)}</span><span><HardDrive size={14} /> {formatBytes(log.sizeBytes)}</span>{log.endedAt && <span>Ended {formatCapturedAt(log.endedAt)}</span>}</div>
           <div className="sd-saved-log-actions"><button className="sd-secondary-button" type="button" onClick={() => void openLog(log)} disabled={isOpening === log.path}>{isOpening === log.path ? <LoaderCircle className="sd-spin" size={15} /> : <FileText size={15} />} Preview</button><button className="sd-secondary-button" type="button" onClick={() => void saveCopy(log)} disabled={isSaving === log.path}>{isSaving === log.path ? <LoaderCircle className="sd-spin" size={15} /> : <Save size={15} />} Save copy</button><button className="sd-saved-log-copy" type="button" onClick={() => void copy(log.path, 'Log file path copied.')} title="Copy log file path" aria-label={`Copy path for ${log.fileName}`}><Copy size={16} /></button></div>
-        </article>)}
+        </article>;
+        })}
       </div> : <section className="sd-saved-logs-empty"><div><FolderOpen size={26} /></div><h2>{logs.length ? 'No logs match that search.' : 'No saved captures yet.'}</h2><p>{logs.length ? 'Clear or adjust the search to see your local capture library.' : 'Start a serial session and its raw log will appear here immediately—even while it is still recording.'}</p>{logs.length ? <button className="sd-secondary-button" type="button" onClick={() => setQuery('')}>Clear search</button> : <button className="sd-primary-button" type="button" onClick={onRequestConnection}><Radio size={16} /> Start monitoring</button>}</section>}
 
     {selected && <div className="sd-log-preview-backdrop" role="presentation" onMouseDown={() => setSelected(null)}><section className="sd-log-preview" role="dialog" aria-modal="true" aria-label={`${selected.sessionName} log preview`} onMouseDown={(event) => event.stopPropagation()}><header><div><p>RAW LOG PREVIEW</p><h2>{selected.sessionName}</h2><span>{selected.port ?? selected.fileName} · {formatBytes(selected.sizeBytes)}</span></div><button type="button" className="sd-saved-log-copy" aria-label="Close preview" onClick={() => setSelected(null)}><X size={18} /></button></header>{selected.truncated && <div className="sd-log-preview-note"><AlertTriangle size={15} /> Showing the first 1 MB for a responsive preview. The full raw capture remains at the file path below.</div>}<pre>{selected.text || 'The capture has not received any bytes yet.'}</pre><footer><code>{selected.path}</code><div><button className="sd-secondary-button" type="button" onClick={() => void copy(selected.path, 'Log file path copied.')}><FolderOpen size={15} /> Copy path</button><button className="sd-primary-button" type="button" onClick={() => void copy(selected.text, 'Preview text copied.')}><Copy size={15} /> Copy preview</button></div></footer></section></div>}
