@@ -9,6 +9,7 @@ import { PreferencesScreen } from './components/PreferencesScreen';
 import { SavedLogsScreen } from './components/SavedLogsScreen';
 import { PortDiscoveryDashboard } from './components/PortDiscoveryDashboard';
 import { SidebarNavigation } from './components/SidebarNavigation';
+import { WelcomeScreen } from './components/WelcomeScreen';
 import { WorkspaceProfileMenu } from './components/WorkspaceProfileMenu';
 import type { SignalDeckPage } from './components/phase3Types';
 import { defaultPreferences, loadPreferences, savePreferences, type BaudTidePreferences, type DisplayEncoding, type LineEnding } from './lib/preferences';
@@ -93,6 +94,7 @@ function previewSessionId() {
 
 function App() {
   const [page, setPage] = useState<SignalDeckPage>('dashboard');
+  const [isWelcomeVisible, setWelcomeVisible] = useState(true);
   const [isConnectionDialogOpen, setConnectionDialogOpen] = useState(false);
   const [connectionDefaults, setConnectionDefaults] = useState<Pick<ConnectionRequest, 'port' | 'sessionName'> | null>(null);
   const [liveSessions, setLiveSessions] = useState<LiveSessions>({});
@@ -114,7 +116,10 @@ function App() {
     setConnectionDefaults(port ? { port: port.path, sessionName: port.label } : null);
     setConnectionDialogOpen(true);
   };
-  const navigate = (nextPage: SignalDeckPage) => setPage(nextPage);
+  const navigate = (nextPage: SignalDeckPage) => {
+    setPage(nextPage);
+    if (nextPage !== 'dashboard') setWelcomeVisible(false);
+  };
   const selectedMonitor = () => selectedSessionId ? monitorRefs.current[selectedSessionId] : null;
   const commandActions = useMemo<CommandPaletteAction[]>(() => [
     { id: 'new-connection', label: 'New terminal', description: 'Choose a serial port and start monitoring', shortcut: 'N', icon: 'new' },
@@ -460,7 +465,8 @@ function App() {
         {page !== 'sessions' && (page === 'preferences' ? <PreferencesScreen preferences={preferences} nativeEnabled={nativeRuntime} onSave={saveAppPreferences} onThemePreview={setTheme} onChooseLogDirectory={chooseLogDirectory} />
           : page === 'help' ? <HelpFeedbackPanel nativeEnabled={nativeRuntime} openSessionCount={sessions.length} activeSessionCount={sessions.filter((session) => session.native && session.connectionState === 'connected').length} />
             : page === 'logs' ? <SavedLogsScreen nativeEnabled={nativeRuntime} activeLogPath={activeLogPath} onRequestConnection={openConnectionDialog} />
-              : <PortDiscoveryDashboard nativeEnabled={nativeRuntime} onScan={listNativeSerialPorts} onConnect={openConnectionDialog} onRequestConnection={openConnectionDialog} />)}
+              : isWelcomeVisible ? <WelcomeScreen nativeEnabled={nativeRuntime} onConnect={openConnectionDialog} onExplore={() => setWelcomeVisible(false)} />
+                : <PortDiscoveryDashboard nativeEnabled={nativeRuntime} onScan={listNativeSerialPorts} onConnect={openConnectionDialog} onRequestConnection={openConnectionDialog} />)}
       </div>
     </section>
     <ConnectionDialog isOpen={isConnectionDialogOpen} onClose={() => { setConnectionDialogOpen(false); setConnectionDefaults(null); }} onStartMonitoring={startMonitoring} onScan={nativeRuntime ? listNativeSerialPorts : undefined} initialPort={connectionDefaults?.port} initialBaudRate={preferences.serial.baudRate} initialSessionName={connectionDefaults?.sessionName} nativeEnabled={nativeRuntime} activePorts={sessions.filter((session) => session.native ? session.nativeSessionOpen : true).map((session) => session.port)} />
