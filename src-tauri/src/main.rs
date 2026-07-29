@@ -2,7 +2,7 @@
 #![allow(clippy::items_after_test_module)]
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::{create_dir_all, read_dir, File, OpenOptions},
     io::{self, BufReader, BufWriter, Read, Write},
     net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket},
@@ -147,7 +147,7 @@ impl Default for AppearancePreferenceSettings {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SerialSettings {
     #[serde(default = "default_data_bits")]
@@ -175,7 +175,7 @@ fn default_data_bits() -> u8 {
     8
 }
 
-#[derive(Clone, Debug, Deserialize, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum ParitySetting {
     #[default]
@@ -194,7 +194,7 @@ impl From<ParitySetting> for Parity {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum StopBitsSetting {
     #[default]
@@ -211,7 +211,7 @@ impl From<StopBitsSetting> for StopBits {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum FlowControlSetting {
     #[default]
@@ -239,6 +239,7 @@ struct SessionInfo {
     session_name: String,
     log_path: String,
     state: &'static str,
+    settings: SerialSettings,
 }
 
 #[derive(Clone, Serialize)]
@@ -264,7 +265,9 @@ enum SerialEventDelivery {
         dropped_event_count: u64,
         next_sequence: u64,
     },
-    Live,
+    Live {
+        next_sequence: u64,
+    },
 }
 
 #[derive(Serialize)]
@@ -408,6 +411,7 @@ impl Default for CaptureQuota {
 #[derive(Default)]
 struct SerialState {
     sessions: Arc<Mutex<HashMap<String, ActiveSession>>>,
+    closing_log_paths: Arc<Mutex<HashSet<String>>>,
     mobile_shares: Arc<Mutex<HashMap<String, ActiveMobileShare>>>,
     saved_log_searches: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     capture_quota: Arc<Mutex<CaptureQuota>>,
@@ -445,6 +449,30 @@ struct ActiveSavedLogSearch {
     searches: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
 
+struct ClosingLogGuard {
+    key: String,
+    paths: Arc<Mutex<HashSet<String>>>,
+}
+
+impl Drop for ClosingLogGuard {
+    fn drop(&mut self) {
+        if let Ok(mut paths) = self.paths.lock() {
+            paths.remove(&self.key);
+        }
+    }
+}
+
+fn mark_log_closing(
+    paths: &Arc<Mutex<HashSet<String>>>,
+    key: String,
+) -> CommandResult<ClosingLogGuard> {
+    paths.lock().map_err(lock_error)?.insert(key.clone());
+    Ok(ClosingLogGuard {
+        key,
+        paths: Arc::clone(paths),
+    })
+}
+
 impl Drop for ActiveSavedLogSearch {
     fn drop(&mut self) {
         if let Ok(mut searches) = self.searches.lock() {
@@ -468,10 +496,25 @@ fn list_serial_ports() -> CommandResult<Vec<AvailablePort>> {
 #[tauri::command]
 fn list_active_sessions(state: State<'_, SerialState>) -> CommandResult<Vec<SessionInfo>> {
     let sessions = state.sessions.lock().map_err(lock_error)?;
-    Ok(sessions
-        .values()
-        .map(|session| session.info.clone())
-        .collect())
+    let mut active = Vec::with_capacity(sessions.len());
+    for session in sessions.values() {
+        // A WebView reload drops its event listeners while the native reader
+        // keeps running. Discovery is the recovery boundary: bytes received
+        // after this point use the same bounded replay handoff as a new
+        // session, while the on-disk raw capture remains authoritative for the
+        // earlier listener gap.
+        let mut delivery = session.event_delivery.lock().map_err(lock_error)?;
+        if let SerialEventDelivery::Live { next_sequence } = &*delivery {
+            *delivery = SerialEventDelivery::Buffering {
+                events: Vec::new(),
+                buffered_bytes: 0,
+                dropped_event_count: 0,
+                next_sequence: *next_sequence,
+            };
+        }
+        active.push(session.info.clone());
+    }
+    Ok(active)
 }
 
 /// Atomically returns bytes received before the WebView registered its event
@@ -506,17 +549,17 @@ fn activate_serial_event_delivery(delivery: &mut SerialEventDelivery) -> Pending
             let buffered = std::mem::take(events);
             let dropped_event_count = *dropped_event_count;
             let next_sequence = *next_sequence;
-            *delivery = SerialEventDelivery::Live;
+            *delivery = SerialEventDelivery::Live { next_sequence };
             PendingSerialData {
                 events: buffered,
                 dropped_event_count,
                 next_sequence,
             }
         }
-        SerialEventDelivery::Live => PendingSerialData {
+        SerialEventDelivery::Live { next_sequence } => PendingSerialData {
             events: Vec::new(),
             dropped_event_count: 0,
-            next_sequence: 1,
+            next_sequence: *next_sequence,
         },
     }
 }
@@ -752,6 +795,55 @@ fn read_saved_log(app: AppHandle, path: String) -> CommandResult<SavedLogContent
         text: String::from_utf8_lossy(&bytes).into_owned(),
         truncated: metadata.len() > PREVIEW_LIMIT,
     })
+}
+
+#[tauri::command]
+fn delete_saved_log(
+    app: AppHandle,
+    state: State<'_, SerialState>,
+    path: String,
+) -> CommandResult<()> {
+    let path = resolve_saved_log_path(&app, &path)?;
+    let key = path_key(&path);
+    let deleted_bytes = path
+        .metadata()
+        .map_err(|error| format!("Could not inspect the saved log: {error}"))?
+        .len();
+    // Keep the session lock through removal so a newly starting capture cannot
+    // race the active-path check. The start path uses the same lock through
+    // capture creation and insertion.
+    let sessions = state.sessions.lock().map_err(lock_error)?;
+    let is_active = sessions
+        .values()
+        .any(|session| path_key(Path::new(&session.info.log_path)) == key);
+    let is_closing = state
+        .closing_log_paths
+        .lock()
+        .map_err(lock_error)?
+        .contains(&key);
+    if is_active || is_closing {
+        return Err(
+            "This capture is still recording. Disconnect the serial session before deleting it."
+                .into(),
+        );
+    }
+    let mut quota = state.capture_quota.lock().map_err(lock_error)?;
+    std::fs::remove_file(&path)
+        .map_err(|error| format!("Could not delete the saved log: {error}"))?;
+    release_capture_quota(&mut quota, deleted_bytes);
+    drop(quota);
+    drop(sessions);
+
+    // The raw capture is the source of truth. A stale sidecar is harmless and
+    // must not make the UI report that deletion failed after the file is gone.
+    if let Err(error) = remove_log_index_records_for_path(&app, &key) {
+        eprintln!("{error}");
+    }
+    Ok(())
+}
+
+fn release_capture_quota(quota: &mut CaptureQuota, deleted_bytes: u64) {
+    quota.used_bytes = quota.used_bytes.saturating_sub(deleted_bytes);
 }
 
 #[tauri::command]
@@ -1511,6 +1603,7 @@ fn start_serial_session(
         session_name: request.session_name.clone(),
         log_path: log_path.display().to_string(),
         state: "connected",
+        settings: request.settings.clone(),
     };
     let mut index_record = LogIndexRecord::new(&info);
     let log_file = open_log_file(&log_path)?;
@@ -1640,7 +1733,7 @@ fn disconnect_serial_session(
     state: State<'_, SerialState>,
     session_id: String,
 ) -> CommandResult<SessionInfo> {
-    let session = {
+    let (session, _closing_log) = {
         let mut sessions = state.sessions.lock().map_err(lock_error)?;
         let session = sessions
             .get(&session_id)
@@ -1648,9 +1741,14 @@ fn disconnect_serial_session(
         // Set this before removing the entry so a concurrent reader failure knows this
         // is a user-requested shutdown and must not emit a terminal error.
         session.stop.store(true, Ordering::Release);
-        sessions
+        let closing_log = mark_log_closing(
+            &state.closing_log_paths,
+            path_key(Path::new(&session.info.log_path)),
+        )?;
+        let session = sessions
             .remove(&session_id)
-            .expect("session existed while its state lock was held")
+            .expect("session existed while its state lock was held");
+        (session, closing_log)
     };
     let info = session.info.clone();
     let ActiveSession {
@@ -1834,7 +1932,10 @@ fn deliver_serial_data(
                 }
                 None
             }
-            SerialEventDelivery::Live => Some(event),
+            SerialEventDelivery::Live { next_sequence } => {
+                *next_sequence = event.sequence.saturating_add(1);
+                Some(event)
+            }
         },
         // The reader must continue capturing even if an in-memory display
         // handoff lock is poisoned. The raw log remains the source of truth.
@@ -1890,8 +1991,9 @@ mod tests {
     };
     use super::{
         begin_saved_log_search, data_bits, disconnect_status_message, ensure_search_not_cancelled,
-        generated_log_path, index_records_by_path, normalize_application_settings, search_raw_log,
-        validate_preference_log_directory, websocket_accept_key, ApplicationSettings,
+        generated_log_path, index_records_by_path, mark_log_closing,
+        normalize_application_settings, release_capture_quota, search_raw_log,
+        validate_preference_log_directory, websocket_accept_key, ApplicationSettings, CaptureQuota,
         FlowControlSetting, LogIndexRecord, ParitySetting, SerialState, StartSessionRequest,
         StopBitsSetting, GIBIBYTE, SEARCH_CANCELLED_MESSAGE, SEARCH_PER_LOG_BYTE_LIMIT,
         SEARCH_READ_BUFFER_SIZE,
@@ -1930,6 +2032,31 @@ mod tests {
         );
         drop(cancelled);
         assert!(state.saved_log_searches.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn deleting_a_capture_releases_only_its_bytes_from_the_live_quota() {
+        let mut quota = CaptureQuota {
+            used_bytes: 1_024,
+            limit_bytes: 4_096,
+        };
+
+        release_capture_quota(&mut quota, 256);
+        assert_eq!(quota.used_bytes, 768);
+        assert_eq!(quota.limit_bytes, 4_096);
+
+        release_capture_quota(&mut quota, 2_048);
+        assert_eq!(quota.used_bytes, 0);
+    }
+
+    #[test]
+    fn disconnecting_capture_remains_protected_until_shutdown_finishes() {
+        let paths = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let guard = mark_log_closing(&paths, "/tmp/capture.log".into()).unwrap();
+
+        assert!(paths.lock().unwrap().contains("/tmp/capture.log"));
+        drop(guard);
+        assert!(!paths.lock().unwrap().contains("/tmp/capture.log"));
     }
 
     #[test]
@@ -2030,10 +2157,13 @@ mod tests {
         );
         assert_eq!(replay.next_sequence, 3);
         assert_eq!(replay.dropped_event_count, 0);
-        assert!(matches!(delivery, SerialEventDelivery::Live));
-        assert!(activate_serial_event_delivery(&mut delivery)
-            .events
-            .is_empty());
+        assert!(matches!(
+            delivery,
+            SerialEventDelivery::Live { next_sequence: 3 }
+        ));
+        let second_handoff = activate_serial_event_delivery(&mut delivery);
+        assert!(second_handoff.events.is_empty());
+        assert_eq!(second_handoff.next_sequence, 3);
     }
 
     #[test]
@@ -2660,6 +2790,44 @@ fn read_log_index_records(app: &AppHandle) -> CommandResult<Vec<LogIndexRecord>>
     Ok(records)
 }
 
+/// Delete only metadata records that belong to a raw capture just removed from
+/// the managed library. A corrupt or unrelated sidecar is deliberately left
+/// alone; it cannot make arbitrary files deletable.
+fn remove_log_index_records_for_path(app: &AppHandle, log_key: &str) -> CommandResult<()> {
+    let directory = log_index_directory(app)?;
+    if !directory.exists() {
+        return Ok(());
+    }
+    for entry in read_dir(&directory)
+        .map_err(|error| format!("Could not read the saved-log index: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("Could not read saved-log metadata: {error}"))?;
+        let sidecar_path = entry.path();
+        if !sidecar_path.is_file()
+            || sidecar_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                != Some("json")
+        {
+            continue;
+        }
+        let Ok(contents) = std::fs::read(&sidecar_path) else {
+            continue;
+        };
+        let Ok(record) = serde_json::from_slice::<LogIndexRecord>(&contents) else {
+            continue;
+        };
+        if record.schema_version == 1 && path_key(Path::new(&record.log_path)) == log_key {
+            std::fs::remove_file(&sidecar_path).map_err(|error| {
+                format!(
+                    "The capture was deleted, but its saved-log metadata could not be removed: {error}"
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
 fn path_key(path: &Path) -> String {
     path.canonicalize()
         .unwrap_or_else(|_| path.to_path_buf())
@@ -3088,6 +3256,7 @@ fn main() {
             search_saved_logs,
             cancel_saved_log_search,
             read_saved_log,
+            delete_saved_log,
             save_saved_log,
             start_mobile_share,
             get_mobile_share_status,

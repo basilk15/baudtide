@@ -20,9 +20,10 @@ BaudTide is an open-source Linux serial monitor and serial terminal. It replaces
 
 - Discover Linux serial ports, including `/dev/ttyUSB*`, `/dev/ttyACM*`, Bluetooth, and PCI serial devices.
 - Monitor multiple distinct ports concurrently, each with its own reader and live terminal.
-- Set common baud rates, send data back to the device, pause rendering without pausing capture, and jump straight to the latest output.
+- Set common baud rates, send data back to the device, pause rendering without pausing capture, filter noisy output, and jump straight to the latest data.
 - Write every received byte to a raw local log from the moment monitoring begins.
-- Browse saved captures, preview them, copy their contents, or save a copy with the native file chooser.
+- Browse saved captures, preview them, copy their contents, save a copy with the native file chooser, or safely delete captures that are no longer active.
+- Recover native terminal tabs after a frontend reload without reopening their serial ports.
 - Choose a polished dark or light workspace theme.
 
 ## Run locally
@@ -59,6 +60,7 @@ When launched through Tauri, BaudTide can:
 - discover local serial ports
 - open several distinct ports at once with independent reader threads
 - emit session-tagged serial data and connection-status events to the UI
+- reattach the frontend to native sessions that survive a WebView reload
 - send text or raw bytes to an open session
 - write received bytes directly to a raw log file, independent of display pause or scrollback
 - disconnect one live terminal without affecting the others

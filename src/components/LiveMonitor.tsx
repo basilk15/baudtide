@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type FormEvent } from 'react';
+import { forwardRef, useEffect, useId, useImperativeHandle, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { AlertTriangle, Check, ChevronsDown, CirclePause, CirclePlay, Eraser, LoaderCircle, PlugZap, RotateCw, Search, Send, TerminalSquare, WifiOff, X } from 'lucide-react';
 import { listenForSerialData, listenForSerialStatus, takePendingNativeSerialData, type SerialDataEvent } from '../lib/serial';
 import { lineEndingText, type DisplayEncoding, type LineEnding } from '../lib/preferences';
@@ -20,6 +20,8 @@ type DisplayChange = {
   type: 'append' | 'replace';
 };
 
+type OutputFilterPreset = 'all' | 'errors' | 'wifi' | 'custom';
+
 // The terminal keeps at most 500 rendered rows. Bound an unfinished logical
 // line as well: serial devices are free to send a continuous stream without a
 // CR or LF, and hexadecimal rendering expands every byte into three characters.
@@ -28,6 +30,51 @@ const CONTINUATION_PREFIX = '↪ ';
 const CONTINUATION_SUFFIX = ' ↪ continued';
 const MAX_QUEUED_DISPLAY_CHANGES = 2_048;
 const MAX_PENDING_SERIAL_EVENTS = 256;
+const ERROR_FILTER_SOURCE = String.raw`(?<![\p{L}\p{N}_])(?:error|err|fail(?:ed|ure)?|panic|fatal|exception|abort(?:ed)?)(?![\p{L}\p{N}_])`;
+const WIFI_FILTER_SOURCE = String.raw`(?<![\p{L}\p{N}_])(?:wi-?fi|wlan|ssid|bssid|rssi|ip address|disconnect(?:ed|ion)?|reconnect(?:ed|ing)?)(?![\p{L}\p{N}_])`;
+const ERROR_LINE_PATTERN = new RegExp(ERROR_FILTER_SOURCE, 'iu');
+const WIFI_LINE_PATTERN = new RegExp(WIFI_FILTER_SOURCE, 'iu');
+
+function literalPattern(text: string, global = false) {
+  const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(escaped, global ? 'giu' : 'iu');
+}
+
+function outputMatchPattern(preset: OutputFilterPreset, customFilter: string) {
+  if (preset === 'errors') return ERROR_LINE_PATTERN;
+  if (preset === 'wifi') return WIFI_LINE_PATTERN;
+  if (preset === 'custom' && customFilter) return literalPattern(customFilter);
+  return null;
+}
+
+function lineMatchesOutputFilter(line: MonitorLine, preset: OutputFilterPreset, pattern: RegExp | null) {
+  if (preset === 'all') return true;
+  if (preset === 'errors' && line.kind === 'error') return true;
+  return !pattern || pattern.test(line.text);
+}
+
+function outputHighlightPattern(preset: OutputFilterPreset, customFilter: string) {
+  if (preset === 'errors') return new RegExp(ERROR_FILTER_SOURCE, 'giu');
+  if (preset === 'wifi') return new RegExp(WIFI_FILTER_SOURCE, 'giu');
+  if (preset !== 'custom' || !customFilter) return null;
+  return literalPattern(customFilter, true);
+}
+
+function HighlightedOutput({ text, pattern }: { text: string; pattern: RegExp | null }) {
+  if (!pattern) return text;
+  const matches = [...text.matchAll(pattern)];
+  if (!matches.length) return text;
+  const output: ReactNode[] = [];
+  let cursor = 0;
+  matches.forEach((match, index) => {
+    const start = match.index ?? 0;
+    if (start > cursor) output.push(text.slice(cursor, start));
+    output.push(<mark className="sd-terminal-match" key={`${start}-${index}`}>{match[0]}</mark>);
+    cursor = start + match[0].length;
+  });
+  if (cursor < text.length) output.push(text.slice(cursor));
+  return <>{output}</>;
+}
 
 function sliceWithoutSplittingSurrogatePair(text: string, maxLength: number) {
   let end = Math.min(text.length, maxLength);
@@ -131,8 +178,13 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
   const [isReconnecting, setReconnecting] = useState(false);
   const [isFindOpen, setFindOpen] = useState(false);
+  const [filterPreset, setFilterPreset] = useState<OutputFilterPreset>('all');
   const [outputFilter, setOutputFilter] = useState('');
+  const filterPanelId = useId();
+  const filterInputId = useId();
+  const filterStatusId = useId();
   const outputRef = useRef<HTMLDivElement>(null);
+  const filterButtonRef = useRef<HTMLButtonElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
   // A serial read is an arbitrary byte chunk, so a terminal line can span many
   // events. Keep the visible, unfinished line separate from line termination.
@@ -171,11 +223,13 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   };
 
   const visibleLines = useMemo(() => isPaused ? pausedLines : lines, [isPaused, lines, pausedLines]);
+  const normalizedOutputFilter = outputFilter.trim();
+  const matchPattern = useMemo(() => outputMatchPattern(filterPreset, normalizedOutputFilter), [filterPreset, normalizedOutputFilter]);
   const filteredLines = useMemo(() => {
-    const normalized = outputFilter.trim().toLocaleLowerCase();
-    if (!normalized) return visibleLines;
-    return visibleLines.filter((line) => `${line.timestamp} ${line.text}`.toLocaleLowerCase().includes(normalized));
-  }, [outputFilter, visibleLines]);
+    return visibleLines.filter((line) => lineMatchesOutputFilter(line, filterPreset, matchPattern));
+  }, [filterPreset, matchPattern, visibleLines]);
+  const highlightPattern = useMemo(() => outputHighlightPattern(filterPreset, normalizedOutputFilter), [filterPreset, normalizedOutputFilter]);
+  const filterIsActive = filterPreset !== 'all' && (filterPreset !== 'custom' || Boolean(normalizedOutputFilter));
 
   const applyQueuedDisplayChanges = () => {
     const batch = queuedChangesRef.current.splice(0);
@@ -451,7 +505,14 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
                 kind: 'error',
               });
             }
-            continueAfterSequence(handoff.nextSequence);
+            // A recovered session may already have been in live-delivery mode
+            // when this WebView registered its listener. If an event reached
+            // that listener just before the handoff response, resume at that
+            // earliest queued sequence instead of advancing past it.
+            const resumeSequence = handoff.events.length
+              ? handoff.nextSequence
+              : Math.min(handoff.nextSequence, ...pendingEvents.keys());
+            continueAfterSequence(resumeSequence);
           })
           .catch(() => {
             if (!disposed) reportFrontendStartupFailure();
@@ -478,7 +539,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
 
   useEffect(() => {
     if (!isPaused && autoScroll && outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight;
-  }, [visibleLines, isPaused, autoScroll]);
+  }, [filteredLines, isPaused, autoScroll]);
 
   const toggleDisplayPause = () => {
     if (isPaused) {
@@ -578,7 +639,36 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
 
   const focusFind = () => {
     setFindOpen(true);
+    setFilterPreset('custom');
     window.setTimeout(() => findInputRef.current?.focus(), 0);
+  };
+
+  const selectFilterPreset = (preset: OutputFilterPreset) => {
+    setFilterPreset(preset);
+    if (preset === 'custom') {
+      window.setTimeout(() => findInputRef.current?.focus(), 0);
+    }
+  };
+
+  const toggleFilterPanel = () => {
+    if (isFindOpen) {
+      setFindOpen(false);
+      return;
+    }
+    setFindOpen(true);
+    if (filterPreset === 'custom') {
+      window.setTimeout(() => findInputRef.current?.focus(), 0);
+    }
+  };
+
+  const closeFilterPanel = () => {
+    setFindOpen(false);
+    window.setTimeout(() => filterButtonRef.current?.focus(), 0);
+  };
+
+  const clearOutputFilter = () => {
+    setFilterPreset('all');
+    setOutputFilter('');
   };
 
   useImperativeHandle(ref, () => ({
@@ -623,19 +713,79 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
             <label className="sd-autoscroll-toggle"><input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} /> Auto-scroll</label>
             {(!autoScroll || isPaused) && <button className="sd-monitor-secondary sd-go-to-end" type="button" onClick={goToEnd} title="Resume the display and jump to the newest data"><ChevronsDown size={15} /> Go to end</button>}
             <button className={`sd-monitor-secondary ${isPaused ? 'active' : ''}`} type="button" onClick={toggleDisplayPause}>{isPaused ? <CirclePlay size={15} /> : <CirclePause size={15} />}{isPaused ? 'Resume display' : 'Pause display'}</button>
-            <button className={`sd-monitor-icon-button ${isFindOpen ? 'active' : ''}`} type="button" onClick={focusFind} aria-label="Find in monitor output" title="Find in output"><Search size={16} /></button>
+            <button
+              ref={filterButtonRef}
+              className={`sd-monitor-icon-button ${isFindOpen || filterIsActive ? 'active' : ''}`}
+              type="button"
+              onClick={toggleFilterPanel}
+              aria-controls={filterPanelId}
+              aria-expanded={isFindOpen}
+              aria-label={isFindOpen
+                ? 'Hide live output filters'
+                : filterIsActive
+                  ? `Open live output filters. ${filteredLines.length} of ${visibleLines.length} displayed lines match.`
+                  : 'Open live output filters'}
+              title={isFindOpen ? 'Hide filter controls' : 'Filter live output'}
+            >
+              <Search size={16} />
+            </button>
             <button className="sd-monitor-icon-button" type="button" onClick={() => setShowClearConfirm(true)} aria-label="Clear monitor display" title="Clear display"><Eraser size={16} /></button>
           </div>
         </div>
         <div className="sd-terminal-logging"><Check size={13} /> Logging continues independently of this display{isPaused ? <strong> · display paused</strong> : ''}</div>
-        {isFindOpen && <div className="sd-terminal-find"><Search size={15} /><input ref={findInputRef} value={outputFilter} onChange={(event) => setOutputFilter(event.target.value)} placeholder="Filter visible output" aria-label="Filter monitor output" /><span>{outputFilter ? `${filteredLines.length} matches` : 'Type to filter'}</span><button type="button" onClick={() => { setFindOpen(false); setOutputFilter(''); }} aria-label="Close output filter"><X size={15} /></button></div>}
+        {isFindOpen && (
+          <section
+            className="sd-terminal-find"
+            id={filterPanelId}
+            aria-label="Live output filters"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') closeFilterPanel();
+            }}
+          >
+            <div className="sd-terminal-filter-row">
+              <span className="sd-terminal-filter-label"><Search size={15} aria-hidden="true" /> Live filters</span>
+              <div className="sd-terminal-filter-presets" role="group" aria-label="Filter preset">
+                <button className={filterPreset === 'all' ? 'active' : ''} type="button" aria-pressed={filterPreset === 'all'} onClick={() => selectFilterPreset('all')}>All</button>
+                <button className={filterPreset === 'errors' ? 'active error' : ''} type="button" aria-pressed={filterPreset === 'errors'} onClick={() => selectFilterPreset('errors')}>Errors</button>
+                <button className={filterPreset === 'wifi' ? 'active wifi' : ''} type="button" aria-pressed={filterPreset === 'wifi'} onClick={() => selectFilterPreset('wifi')}>Wi-Fi</button>
+                <button className={filterPreset === 'custom' ? 'active' : ''} type="button" aria-pressed={filterPreset === 'custom'} onClick={() => selectFilterPreset('custom')}>Custom</button>
+              </div>
+            </div>
+            {filterPreset === 'custom' && (
+              <div className="sd-terminal-filter-query">
+                <label htmlFor={filterInputId}><Search size={15} aria-hidden="true" /><span className="sd-visually-hidden">Custom filter text</span></label>
+                <input
+                  ref={findInputRef}
+                  id={filterInputId}
+                  value={outputFilter}
+                  onChange={(event) => setOutputFilter(event.target.value)}
+                  placeholder="Find ERROR, sensor name, or any text"
+                  aria-describedby={filterStatusId}
+                  maxLength={256}
+                />
+                <span aria-hidden="true">{normalizedOutputFilter ? `${filteredLines.length} match${filteredLines.length === 1 ? '' : 'es'}` : 'Type to filter'}</span>
+              </div>
+            )}
+            <div className="sd-terminal-filter-footer">
+              <span id={filterStatusId} role="status" aria-live="polite">
+                {filterIsActive
+                  ? `${filteredLines.length} of ${visibleLines.length} displayed lines match. Raw capture is unchanged.`
+                  : 'Choose a filter to focus the live display. Raw capture is unchanged.'}
+              </span>
+              <div className="sd-terminal-filter-actions">
+                {filterIsActive && <button className="sd-terminal-filter-clear" type="button" onClick={clearOutputFilter}>Clear filter</button>}
+                <button className="sd-terminal-filter-close" type="button" onClick={closeFilterPanel} aria-label="Hide live filter controls"><X size={15} /></button>
+              </div>
+            </div>
+          </section>
+        )}
         <div className={`sd-terminal-output ${showTimestamps ? '' : 'no-timestamps'}`} ref={outputRef} onScroll={(event) => {
           const target = event.currentTarget;
           setAutoScroll(target.scrollHeight - target.scrollTop - target.clientHeight < 32);
-        }} aria-live={isPaused ? 'off' : 'polite'} aria-label="Timestamped serial output">
+        }} role="log" aria-live={isPaused ? 'off' : 'polite'} aria-relevant="additions text" aria-label={showTimestamps ? 'Timestamped serial output' : 'Serial output'}>
           {!visibleLines.length && <div className="sd-terminal-empty"><TerminalSquare size={23} /><strong>Display cleared</strong><span>New incoming bytes will appear here. The active log is still recording.</span></div>}
           {visibleLines.length > 0 && !filteredLines.length && <div className="sd-terminal-empty"><Search size={23} /><strong>No matching output</strong><span>Try a different filter or clear the search.</span></div>}
-          {filteredLines.map((line) => <div className={`sd-terminal-line ${line.kind ?? 'data'}`} key={line.id}>{showTimestamps && <time>{line.timestamp}</time>}<code>{line.text}</code></div>)}
+          {filteredLines.map((line) => <div className={`sd-terminal-line ${line.kind ?? 'data'} ${filterIsActive ? 'is-filtered' : ''}`} key={line.id}>{showTimestamps && <time>{line.timestamp}</time>}<code><HighlightedOutput text={line.text} pattern={highlightPattern} /></code></div>)}
           {isPaused && <div className="sd-paused-note"><CirclePause size={15} /> Display paused. {waitingLines} {waitingLines === 1 ? 'new line is' : 'new lines are'} waiting.</div>}
         </div>
         <form className="sd-send-form" onSubmit={send}>

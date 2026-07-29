@@ -20,6 +20,7 @@ import {
   disconnectNativeSerialSession,
   chooseNativeLogDirectory,
   isTauriRuntime,
+  listActiveNativeSerialSessions,
   listNativeSerialPorts,
   sendNativeSerialText,
   startNativeSerialSession,
@@ -147,11 +148,76 @@ function App() {
   ));
 
   useEffect(() => {
-    void loadPreferences().then((saved) => {
+    let cancelled = false;
+    void (async () => {
+      // Start native discovery immediately so surviving readers return to
+      // bounded replay mode while preferences load in parallel.
+      const recovery = nativeRuntime
+        ? listActiveNativeSerialSessions()
+            .then((sessions) => ({ sessions }))
+            .catch(() => ({ sessions: null }))
+        : Promise.resolve({ sessions: [] });
+      const saved = await loadPreferences();
+      if (cancelled) return;
       setPreferences(saved);
       setTheme(saved.appearance.theme);
-    });
-  }, []);
+      if (!nativeRuntime) return;
+
+      const { sessions: activeSessions } = await recovery;
+      if (cancelled) return;
+      if (!activeSessions) {
+        publishNotification({
+          kind: 'error',
+          title: 'Terminal recovery failed',
+          detail: 'Active desktop sessions could not be restored. Existing raw captures remain available.',
+        });
+        return;
+      }
+      if (activeSessions.length) {
+        setLiveSessions((current) => {
+          const next = { ...current };
+          for (const session of activeSessions) {
+            // Hydration and a user-created connection can finish in either
+            // order. Never duplicate the same native handle or port.
+            const alreadyRepresented = next[session.id]
+              || Object.values(next).some((candidate) => (
+                candidate.native && candidate.nativeSessionOpen && candidate.port === session.port
+              ));
+            if (alreadyRepresented) continue;
+            next[session.id] = {
+              id: session.id,
+              uiKey: `recovered-${session.id}`,
+              port: session.port,
+              baudRate: session.baudRate,
+              sessionName: session.sessionName,
+              manualPort: false,
+              settings: session.settings,
+              native: true,
+              nativeSessionOpen: true,
+              logPath: session.logPath,
+              lineEnding: saved.serial.lineEnding,
+              displayEncoding: saved.serial.displayEncoding,
+              showTimestamps: saved.serial.showTimestamps,
+              reconnectWhenDeviceReturns: saved.serial.reconnectWhenDeviceReturns,
+              connectionState: 'connected',
+            };
+          }
+          return next;
+        });
+        setSelectedSessionId((current) => current ?? activeSessions[0].id);
+        setWelcomeVisible(false);
+        setPage('sessions');
+        publishNotification({
+          kind: 'connection',
+          title: activeSessions.length === 1 ? 'Active terminal restored' : 'Active terminals restored',
+          detail: `${activeSessions.length} terminal${activeSessions.length === 1 ? '' : 's'} reattached. The raw capture contains any output missed during reload.`,
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [publishNotification]);
 
   const saveAppPreferences = async (next: BaudTidePreferences) => {
     const saved = await savePreferences(next);

@@ -9,8 +9,8 @@ BaudTide is a Linux-first Tauri desktop serial monitor. The React interface is b
 | Area | Current behavior |
 | --- | --- |
 | Port discovery and connection | Lists ports from the native backend, supports a manual path, validates the connection form, and prevents opening an already-active port. |
-| Live monitoring | Supports multiple independent native sessions, represented as terminal tabs. Each session has its own reader, output state, send control, pause/display tools, and reconnect/disconnect controls. |
-| Capture and saved logs | Writes raw received bytes independently of display pause. Saved captures can be browsed, previewed, content-searched within the documented bounds, copied, and exported with the native file chooser. |
+| Live monitoring | Supports multiple independent native sessions, represented as terminal tabs. Each session has its own reader, output state, send control, pause/display tools, high-signal output filters, and reconnect/disconnect controls. Native tabs are restored after a frontend reload without reopening their ports; the raw capture remains authoritative for any pre-recovery display gap. |
+| Capture and saved logs | Writes raw received bytes independently of display pause. Saved captures can be browsed, previewed, content-searched within the documented bounds, copied, exported with the native file chooser, and safely deleted after capture stops. Deletion immediately returns the file's bytes to the shared capture quota. |
 | Preferences | Persists baud defaults, line endings, display encoding, timestamps, reconnect preference, theme, and a log directory through the desktop backend. |
 | Serial framing | The connection form configures data bits, parity, stop bits, and software or hardware flow control; reconnects preserve those settings. |
 | Saved-log search | Quick search is bounded for responsiveness; users can explicitly select a complete-capture scan when they need exhaustive results. |
@@ -25,7 +25,7 @@ BaudTide is a Linux-first Tauri desktop serial monitor. The React interface is b
 
 ## Remaining engineering work
 
-1. Add integration coverage with pseudo-terminals or hardware for opening, reader failure, unplug/reconnect, writes, capture integrity, and frontend event timing. Current Rust tests focus on deterministic state and search helpers.
+1. Add integration coverage with pseudo-terminals or hardware for opening, reader failure, unplug/reconnect, writes, capture integrity, frontend reload recovery, and event timing. Current Rust tests focus on deterministic state and search helpers.
 2. Consider indexed/cancellable full-text search if very large capture libraries make complete-capture scans too slow.
 3. If tiled simultaneous terminal viewing or multi-workspace organization becomes a product requirement, design and implement it explicitly rather than implying it through navigation labels.
 

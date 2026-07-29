@@ -31,6 +31,7 @@ export type StartedSerialSession = {
   sessionName: string;
   logPath: string;
   state: 'connected';
+  settings: SerialConnectionSettings;
 };
 
 /**
@@ -142,6 +143,11 @@ export async function startNativeSerialSession(request: StartNativeSerialSession
   return invoke<StartedSerialSession>('start_serial_session', { request });
 }
 
+export async function listActiveNativeSerialSessions() {
+  ensureNativeRuntime();
+  return invoke<StartedSerialSession[]>('list_active_sessions');
+}
+
 export async function takePendingNativeSerialData(sessionId: string) {
   ensureNativeRuntime();
   return invoke<PendingSerialData>('take_pending_serial_data', { sessionId });
@@ -195,6 +201,11 @@ export async function cancelNativeSavedLogSearch(searchId: string) {
 export async function readNativeSavedLog(path: string) {
   ensureNativeRuntime();
   return invoke<SavedLogContent>('read_saved_log', { path });
+}
+
+export async function deleteNativeSavedLog(path: string) {
+  ensureNativeRuntime();
+  return invoke<void>('delete_saved_log', { path });
 }
 
 export async function saveNativeSavedLog(sourcePath: string) {
