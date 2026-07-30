@@ -53,6 +53,7 @@ export function PortDiscoveryDashboard({ nativeEnabled, onScan, onConnect, onReq
   const inFlightRef = useRef<Promise<void> | null>(null);
   const requestIdRef = useRef(0);
   const hasSuccessfulScanRef = useRef(false);
+  const scanFailedRef = useRef(false);
 
   useEffect(() => {
     nativeEnabledRef.current = nativeEnabled;
@@ -62,13 +63,26 @@ export function PortDiscoveryDashboard({ nativeEnabled, onScan, onConnect, onReq
   const scan = useCallback(async (source: 'auto' | 'manual' | 'initial' = 'manual') => {
     if (!mountedRef.current || !nativeEnabledRef.current) return;
     if (inFlightRef.current) {
-      if (source === 'manual') setLiveStatus('A port scan is already in progress.');
-      return inFlightRef.current;
+      if (source !== 'manual') return inFlightRef.current;
+      setRefreshing(true);
+      setLiveStatus('A port scan is already in progress.');
+      try {
+        await inFlightRef.current;
+      } finally {
+        if (mountedRef.current) {
+          setRefreshing(false);
+          if (!scanFailedRef.current) {
+            const detected = portsRef.current.length;
+            setLiveStatus(`${detected} serial port${detected === 1 ? '' : 's'} detected.`);
+          }
+        }
+      }
+      return;
     }
 
     const requestId = ++requestIdRef.current;
     if (source === 'manual') setRefreshing(true);
-    if (source !== 'initial') setLiveStatus(source === 'auto' ? 'Checking connected serial devices…' : 'Scanning connected serial devices…');
+    if (source === 'manual') setLiveStatus('Scanning connected serial devices…');
 
     const request = (async () => {
       try {
@@ -76,17 +90,23 @@ export function PortDiscoveryDashboard({ nativeEnabled, onScan, onConnect, onReq
         if (!mountedRef.current || !nativeEnabledRef.current || requestId !== requestIdRef.current) return;
 
         const announcement = hasSuccessfulScanRef.current ? changeAnnouncement(portsRef.current, found) : '';
+        const recovered = scanFailedRef.current;
         portsRef.current = found;
         hasSuccessfulScanRef.current = true;
+        scanFailedRef.current = false;
         setPorts(found);
         setError('');
         if (announcement) setLiveStatus(announcement);
         else if (source === 'manual') setLiveStatus(`${found.length} serial port${found.length === 1 ? '' : 's'} detected.`);
+        else if (recovered) setLiveStatus(`Port scanning recovered. ${found.length} serial port${found.length === 1 ? '' : 's'} detected.`);
       } catch (reason) {
         if (!mountedRef.current || !nativeEnabledRef.current || requestId !== requestIdRef.current) return;
         const message = reason instanceof Error ? reason.message : 'Could not scan serial ports.';
+        scanFailedRef.current = true;
         setError(message);
-        setLiveStatus('Port scan failed. The last successful device list is still shown.');
+        setLiveStatus(hasSuccessfulScanRef.current
+          ? 'Port scan failed. The last successful device list is still shown.'
+          : 'Port scan failed. No successful device list is available yet.');
       } finally {
         if (mountedRef.current && requestId === requestIdRef.current) {
           setLoading(false);

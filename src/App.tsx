@@ -560,17 +560,26 @@ type SessionsView = 'tabs' | 'tiled';
 function SessionsWorkspace({ sessions, selectedSessionId, onSelect, onRequestConnection, onDisconnect, onReconnect, onClose, onConnectionStateChange, onNativeSessionEnded, onNativeStorageLimit, onNativeSessionStartupFailure, onMonitorRef }: SessionsWorkspaceProps) {
   const activeCount = sessions.filter((session) => session.native && session.connectionState === 'connected').length;
   const [view, setView] = useState<SessionsView>('tabs');
+  const workspaceRef = useRef<HTMLElement>(null);
+  const newTerminalButtonRef = useRef<HTMLButtonElement>(null);
   // Tiled mode keeps every monitor mounted; its desktop grid scrolls once the workspace is full.
   const showViewControl = sessions.length > 1;
   const activeView: SessionsView = showViewControl ? view : 'tabs';
-  return <section className="sd-sessions-workspace" aria-label="Live terminal workspace">
-    <header className="sd-sessions-workspace-header"><div><p>LIVE TERMINAL WORKSPACE</p><h1>Live terminal</h1><span>{activeView === 'tiled' ? 'Compare active serial monitors side by side.' : 'Run independent serial monitors in separate terminal tabs.'}</span></div><div className="sd-sessions-workspace-actions">{showViewControl && <div className="sd-session-view-switch" role="group" aria-label="Terminal layout"><button type="button" className={view === 'tabs' ? 'is-selected' : ''} aria-pressed={view === 'tabs'} onClick={() => setView('tabs')}>Tabs</button><button type="button" className={view === 'tiled' ? 'is-selected' : ''} aria-pressed={view === 'tiled'} onClick={() => setView('tiled')}>Tiled</button></div>}<span className="sd-session-count"><i className={activeCount ? 'is-active' : ''} /> {activeCount} active</span><button className="sd-primary-button" type="button" onClick={onRequestConnection}><Radio size={16} /> New terminal</button></div></header>
+  const closeFromTab = async (sessionId: string) => {
+    await onClose(sessionId);
+    window.requestAnimationFrame(() => {
+      const selectedTab = workspaceRef.current?.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"], .sd-session-tab > button[aria-pressed="true"]');
+      (selectedTab ?? newTerminalButtonRef.current)?.focus();
+    });
+  };
+  return <section ref={workspaceRef} className="sd-sessions-workspace" aria-label="Live terminal workspace">
+    <header className="sd-sessions-workspace-header"><div><p>LIVE TERMINAL WORKSPACE</p><h1>Live terminal</h1><span>{activeView === 'tiled' ? 'Compare active serial monitors side by side.' : 'Run independent serial monitors in separate terminal tabs.'}</span></div><div className="sd-sessions-workspace-actions">{showViewControl && <div className="sd-session-view-switch" role="group" aria-label="Terminal layout"><button type="button" className={view === 'tabs' ? 'is-selected' : ''} aria-pressed={view === 'tabs'} onClick={() => setView('tabs')}>Tabs</button><button type="button" className={view === 'tiled' ? 'is-selected' : ''} aria-pressed={view === 'tiled'} onClick={() => setView('tiled')}>Tiled</button></div>}<span className="sd-session-count"><i className={activeCount ? 'is-active' : ''} /> {activeCount} active</span><button ref={newTerminalButtonRef} className="sd-primary-button" type="button" onClick={onRequestConnection}><Radio size={16} /> New terminal</button></div></header>
     {!sessions.length && <article className="sd-sessions-empty-panel"><div className="sd-sessions-empty-icon"><TerminalSquare size={21} /></div><div><h2>No terminal tabs are open.</h2><p>Use <strong>New terminal</strong> to add a live serial monitor to this workspace.</p></div></article>}
     {sessions.length > 0 && <>
       <div className="sd-session-tabs" role={activeView === 'tabs' ? 'tablist' : 'list'} aria-label={activeView === 'tabs' ? 'Open serial terminals' : 'Open serial terminals; select one for terminal actions'}>
         {sessions.map((session, index) => <div className={`sd-session-tab ${session.id === selectedSessionId ? 'is-selected' : ''}`} role={activeView === 'tiled' ? 'listitem' : undefined} key={session.id}>
           <button role={activeView === 'tabs' ? 'tab' : undefined} type="button" tabIndex={activeView === 'tabs' ? (session.id === selectedSessionId ? 0 : -1) : undefined} aria-selected={activeView === 'tabs' ? session.id === selectedSessionId : undefined} aria-pressed={activeView === 'tiled' ? session.id === selectedSessionId : undefined} aria-controls={activeView === 'tabs' ? `monitor-${session.uiKey}` : undefined} id={activeView === 'tabs' ? `tab-${session.uiKey}` : undefined} onClick={() => onSelect(session.id)} onKeyDown={(event) => { if (activeView !== 'tabs' || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? sessions.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + sessions.length) % sessions.length; const next = sessions[nextIndex]; onSelect(next.id); requestAnimationFrame(() => document.getElementById(`tab-${next.uiKey}`)?.focus()); }}><i className={session.connectionState} /><span><strong>{session.sessionName}</strong><small>{session.port} · {session.connectionState}</small></span></button>
-          <button className="sd-session-tab-close" type="button" onClick={() => void onClose(session.id)} aria-label={`Close ${session.sessionName}`} title="Close terminal"><X size={14} /></button>
+          <button className="sd-session-tab-close" type="button" onClick={() => void closeFromTab(session.id)} aria-label={`Close ${session.sessionName}`} title="Close terminal"><X size={14} /></button>
         </div>)}
       </div>
       <div className={`sd-session-monitors ${activeView === 'tiled' ? 'is-tiled' : ''}`} aria-label={activeView === 'tiled' ? 'Tiled serial terminals' : undefined}>

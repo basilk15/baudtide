@@ -23,6 +23,12 @@ type DisplayChange = {
 type OutputFilterPreset = 'all' | 'errors' | 'wifi' | 'custom';
 type SendMode = 'text' | 'hex';
 type CommandHistory = Record<SendMode, string[]>;
+type PersistedComposerState = {
+  version: 1;
+  sendMode: SendMode;
+  lineEnding: LineEnding;
+  commandHistory: CommandHistory;
+};
 
 // The terminal keeps at most 500 rendered rows. Bound an unfinished logical
 // line as well: serial devices are free to send a continuous stream without a
@@ -34,6 +40,8 @@ const MAX_QUEUED_DISPLAY_CHANGES = 2_048;
 const MAX_PENDING_SERIAL_EVENTS = 256;
 const MAX_COMMAND_HISTORY = 50;
 const MAX_SERIAL_WRITE_BYTES = 64 * 1024;
+const MAX_PERSISTED_HISTORY_CHARACTERS_PER_MODE = 32 * 1024;
+const COMPOSER_STORAGE_PREFIX = 'baudtide.serial-composer.';
 const ERROR_FILTER_SOURCE = String.raw`(?<![\p{L}\p{N}_])(?:error|err|fail(?:ed|ure)?|panic|fatal|exception|abort(?:ed)?)(?![\p{L}\p{N}_])`;
 const WIFI_FILTER_SOURCE = String.raw`(?<![\p{L}\p{N}_])(?:wi-?fi|wlan|ssid|bssid|rssi|ip address|disconnect(?:ed|ion)?|reconnect(?:ed|ing)?)(?![\p{L}\p{N}_])`;
 const ERROR_LINE_PATTERN = new RegExp(ERROR_FILTER_SOURCE, 'iu');
@@ -46,6 +54,64 @@ function literalPattern(text: string, global = false) {
 
 function lineEndingLabel(value: LineEnding) {
   return { lf: 'LF (\\n)', crlf: 'CRLF (\\r\\n)', cr: 'CR (\\r)', none: 'None' }[value];
+}
+
+function isLineEnding(value: unknown): value is LineEnding {
+  return value === 'lf' || value === 'crlf' || value === 'cr' || value === 'none';
+}
+
+function boundedPersistedHistory(value: unknown, remainingCharacters: { value: number }) {
+  if (!Array.isArray(value)) return [];
+  const retained: string[] = [];
+  for (let index = value.length - 1; index >= 0 && retained.length < MAX_COMMAND_HISTORY; index -= 1) {
+    const entry = value[index];
+    if (typeof entry !== 'string' || entry.length > remainingCharacters.value) continue;
+    retained.unshift(entry);
+    remainingCharacters.value -= entry.length;
+  }
+  return retained;
+}
+
+function loadComposerState(sessionId: string | undefined, fallbackLineEnding: LineEnding): PersistedComposerState {
+  const fallback: PersistedComposerState = {
+    version: 1,
+    sendMode: 'text',
+    lineEnding: fallbackLineEnding,
+    commandHistory: { text: [], hex: [] },
+  };
+  if (!sessionId || typeof window === 'undefined') return fallback;
+  try {
+    const stored = window.sessionStorage.getItem(`${COMPOSER_STORAGE_PREFIX}${sessionId}`);
+    if (!stored) return fallback;
+    const parsed = JSON.parse(stored) as Partial<PersistedComposerState>;
+    if (parsed.version !== 1) return fallback;
+    return {
+      version: 1,
+      sendMode: parsed.sendMode === 'hex' ? 'hex' : 'text',
+      lineEnding: isLineEnding(parsed.lineEnding) ? parsed.lineEnding : fallbackLineEnding,
+      commandHistory: {
+        text: boundedPersistedHistory(parsed.commandHistory?.text, { value: MAX_PERSISTED_HISTORY_CHARACTERS_PER_MODE }),
+        hex: boundedPersistedHistory(parsed.commandHistory?.hex, { value: MAX_PERSISTED_HISTORY_CHARACTERS_PER_MODE }),
+      },
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function persistComposerState(sessionId: string | undefined, state: PersistedComposerState) {
+  if (!sessionId || typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(`${COMPOSER_STORAGE_PREFIX}${sessionId}`, JSON.stringify({
+      ...state,
+      commandHistory: {
+        text: boundedPersistedHistory(state.commandHistory.text, { value: MAX_PERSISTED_HISTORY_CHARACTERS_PER_MODE }),
+        hex: boundedPersistedHistory(state.commandHistory.hex, { value: MAX_PERSISTED_HISTORY_CHARACTERS_PER_MODE }),
+      },
+    }));
+  } catch {
+    // Sending must remain available when storage is disabled or full.
+  }
 }
 
 function parseHexBytes(input: string): { bytes: number[] } | { error: string } {
@@ -199,6 +265,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   sessionId,
   nativeSession = false,
 }: LiveMonitorProps, ref) {
+  const [initialComposerState] = useState(() => loadComposerState(sessionId, lineEnding));
   const [connectionState, setConnectionState] = useState<MonitorConnectionState>(nativeSession ? initialConnectionState : 'disconnected');
   const [lines, setLines] = useState<MonitorLine[]>(() => (initialLines ?? []).slice(-500));
   const [isPaused, setPaused] = useState(false);
@@ -206,11 +273,12 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   const [waitingLines, setWaitingLines] = useState(0);
   const [autoScroll, setAutoScroll] = useState(true);
   const [outgoing, setOutgoing] = useState('');
-  const [sendMode, setSendMode] = useState<SendMode>('text');
+  const [sendMode, setSendMode] = useState<SendMode>(initialComposerState.sendMode);
   // The session setting is the starting point; this selector is deliberately
   // local so changing it while working does not rewrite the app-wide default.
-  const [sendLineEnding, setSendLineEnding] = useState<LineEnding>(() => lineEnding);
-  const [commandHistory, setCommandHistory] = useState<CommandHistory>({ text: [], hex: [] });
+  const [sendLineEnding, setSendLineEnding] = useState<LineEnding>(initialComposerState.lineEnding);
+  const [commandHistory, setCommandHistory] = useState<CommandHistory>(initialComposerState.commandHistory);
+  const [composerSessionId, setComposerSessionId] = useState(sessionId);
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [isSending, setSending] = useState(false);
@@ -247,23 +315,33 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   const displayOverloadReportedRef = useRef(false);
   const historyDraftRef = useRef('');
   const modeDraftsRef = useRef<Record<SendMode, string>>({ text: '', hex: '' });
-  const historySessionIdRef = useRef(sessionId);
 
   // A mounted monitor normally keeps the same id across reconnects. If React
-  // ever reuses it for another session, neither commands nor the local ending
-  // choice may leak across that boundary.
+  // ever reuses it for another session, restore only that session's bounded
+  // composer state instead of leaking commands across the boundary.
   useEffect(() => {
-    if (historySessionIdRef.current === sessionId) return;
-    historySessionIdRef.current = sessionId;
+    if (composerSessionId === sessionId) return;
+    const restored = loadComposerState(sessionId, lineEnding);
     setOutgoing('');
-    setSendMode('text');
-    setSendLineEnding(lineEnding);
-    setCommandHistory({ text: [], hex: [] });
+    setSendMode(restored.sendMode);
+    setSendLineEnding(restored.lineEnding);
+    setCommandHistory(restored.commandHistory);
     setHistoryIndex(null);
     historyDraftRef.current = '';
     modeDraftsRef.current = { text: '', hex: '' };
     setSendError(null);
-  }, [lineEnding, sessionId]);
+    setComposerSessionId(sessionId);
+  }, [composerSessionId, lineEnding, sessionId]);
+
+  useEffect(() => {
+    if (composerSessionId !== sessionId) return;
+    persistComposerState(sessionId, {
+      version: 1,
+      sendMode,
+      lineEnding: sendLineEnding,
+      commandHistory,
+    });
+  }, [commandHistory, composerSessionId, sendLineEnding, sendMode, sessionId]);
 
   useEffect(() => {
     onConnectionStateChangeRef.current = onConnectionStateChange;
@@ -935,10 +1013,10 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
               placeholder={connectionState === 'connected'
                 ? sendMode === 'hex' ? '48 65 6C 6C 6F or 0x48, 0x65…' : 'Type a command…'
                 : 'Reconnect to send a command'}
-              disabled={connectionState !== 'connected'}
+              disabled={connectionState !== 'connected' || isSending}
             />
-            <label className="sd-send-mode" htmlFor={sendModeId}><span>Mode</span><select id={sendModeId} value={sendMode} onChange={(event) => changeSendMode(event.target.value as SendMode)} aria-describedby={sendHintId} disabled={connectionState !== 'connected'}><option value="text">Text</option><option value="hex">Hex</option></select></label>
-            {sendMode === 'text' && <label className="sd-send-ending" htmlFor={sendEndingId}><span>Ending</span><select id={sendEndingId} value={sendLineEnding} onChange={(event) => setSendLineEnding(event.target.value as LineEnding)} aria-describedby={sendHintId} disabled={connectionState !== 'connected'}>{(['lf', 'crlf', 'cr', 'none'] as LineEnding[]).map((ending) => <option key={ending} value={ending}>{lineEndingLabel(ending)}</option>)}</select></label>}
+            <label className="sd-send-mode" htmlFor={sendModeId}><span>Mode</span><select id={sendModeId} value={sendMode} onChange={(event) => changeSendMode(event.target.value as SendMode)} aria-describedby={sendHintId} disabled={connectionState !== 'connected' || isSending}><option value="text">Text</option><option value="hex">Hex</option></select></label>
+            {sendMode === 'text' && <label className="sd-send-ending" htmlFor={sendEndingId}><span>Ending</span><select id={sendEndingId} value={sendLineEnding} onChange={(event) => setSendLineEnding(event.target.value as LineEnding)} aria-describedby={sendHintId} disabled={connectionState !== 'connected' || isSending}>{(['lf', 'crlf', 'cr', 'none'] as LineEnding[]).map((ending) => <option key={ending} value={ending}>{lineEndingLabel(ending)}</option>)}</select></label>}
             <button className="sd-primary-button" type="submit" disabled={!outgoing.trim() || isSending || connectionState !== 'connected'}>{isSending ? <LoaderCircle className="sd-spin" size={16} /> : <Send size={16} />} Send</button>
           </div>
           {sendError && <span className="sd-send-error" id={sendErrorId} role="alert">{sendError}</span>}

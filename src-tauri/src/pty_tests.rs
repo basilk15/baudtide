@@ -8,10 +8,13 @@ use std::{
     fs::File,
     io::{self, Read, Write},
     os::fd::{AsRawFd, FromRawFd},
+    sync::{atomic::AtomicBool, Mutex},
     time::{Duration, Instant},
 };
 
 use serialport::{DataBits, FlowControl, Parity, SerialPort, StopBits};
+
+use super::{write_serial_bytes, SERIAL_WRITE_BYTE_LIMIT};
 
 struct PtyPair {
     master: File,
@@ -74,6 +77,51 @@ fn open_serial(pty: &PtyPair, timeout: Duration) -> Box<dyn SerialPort> {
         .expect("serialport should open and configure a PTY")
 }
 
+fn read_exact_with_deadline(file: &mut File, buffer: &mut [u8], timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    let mut offset = 0;
+    while offset < buffer.len() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "timed out after {timeout:?} with {offset}/{} bytes",
+            buffer.len()
+        );
+        let timeout_ms = remaining
+            .as_millis()
+            .clamp(1, i32::MAX as u128)
+            .try_into()
+            .unwrap();
+        let mut poll_fd = libc::pollfd {
+            fd: file.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
+        assert!(
+            ready > 0,
+            "PTY read did not become ready within {timeout:?}: {}",
+            if ready < 0 {
+                io::Error::last_os_error().to_string()
+            } else {
+                "deadline expired".into()
+            }
+        );
+        assert_ne!(
+            poll_fd.revents & (libc::POLLIN | libc::POLLERR | libc::POLLHUP),
+            0,
+            "PTY returned unexpected poll events: {}",
+            poll_fd.revents
+        );
+        match file.read(&mut buffer[offset..]) {
+            Ok(0) => panic!("PTY reached EOF with {offset}/{} bytes", buffer.len()),
+            Ok(count) => offset += count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => panic!("could not read PTY master: {error}"),
+        }
+    }
+}
+
 #[test]
 fn pty_open_applies_requested_serial_configuration() {
     let pty = PtyPair::new();
@@ -102,8 +150,35 @@ fn pty_serial_port_preserves_binary_bytes_in_both_directions() {
     port.write_all(&host_to_device).unwrap();
     port.flush().unwrap();
     let mut received_by_device = [0_u8; 5];
-    pty.master.read_exact(&mut received_by_device).unwrap();
+    read_exact_with_deadline(
+        &mut pty.master,
+        &mut received_by_device,
+        Duration::from_secs(1),
+    );
     assert_eq!(received_by_device, host_to_device);
+}
+
+#[test]
+fn baudtide_writer_preserves_exact_bytes_and_enforces_limit() {
+    let mut pty = PtyPair::new();
+    let writer = Mutex::new(Some(open_serial(&pty, Duration::from_millis(150))));
+    let stopped = AtomicBool::new(false);
+    let payload = [0x00, 0xff, 0x80, b'\r', b'\n', 0x7f];
+
+    assert_eq!(
+        write_serial_bytes(&writer, &stopped, &pty.slave_path, &payload).unwrap(),
+        payload.len()
+    );
+    let mut received = [0_u8; 6];
+    read_exact_with_deadline(&mut pty.master, &mut received, Duration::from_secs(1));
+    assert_eq!(received, payload);
+
+    let oversized = vec![0_u8; SERIAL_WRITE_BYTE_LIMIT + 1];
+    let error = write_serial_bytes(&writer, &stopped, &pty.slave_path, &oversized).unwrap_err();
+    assert_eq!(
+        error,
+        format!("Serial writes are limited to {SERIAL_WRITE_BYTE_LIMIT} bytes.")
+    );
 }
 
 #[test]
