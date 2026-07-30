@@ -17,3 +17,7 @@ serialport = "4"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2.7.1"
 uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# Already locked transitively by serialport; used only to create test PTYs.
+libc = "0.2.186"

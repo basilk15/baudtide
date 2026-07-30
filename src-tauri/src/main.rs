@@ -1983,6 +1983,9 @@ fn remove_failed_session(
     true
 }
 
+#[cfg(all(test, target_os = "linux"))]
+mod pty_tests;
+
 #[cfg(test)]
 mod tests {
     use super::{

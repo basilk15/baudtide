@@ -163,6 +163,12 @@ export async function sendNativeSerialText(sessionId: string, text: string) {
   return invoke<number>('send_serial_text', { sessionId, text });
 }
 
+/** Send an exact byte payload without text encoding or a line ending. */
+export async function sendNativeSerialBytes(sessionId: string, bytes: number[]) {
+  ensureNativeRuntime();
+  return invoke<number>('send_serial_bytes', { sessionId, bytes });
+}
+
 export async function disconnectNativeSerialSession(sessionId: string) {
   ensureNativeRuntime();
   return invoke<StartedSerialSession>('disconnect_serial_session', { sessionId });

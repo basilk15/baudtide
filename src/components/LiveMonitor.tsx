@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useId, useImperativeHandle, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { forwardRef, useEffect, useId, useImperativeHandle, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { AlertTriangle, Check, ChevronsDown, CirclePause, CirclePlay, Eraser, LoaderCircle, PlugZap, RotateCw, Search, Send, TerminalSquare, WifiOff, X } from 'lucide-react';
 import { listenForSerialData, listenForSerialStatus, takePendingNativeSerialData, type SerialDataEvent } from '../lib/serial';
 import { lineEndingText, type DisplayEncoding, type LineEnding } from '../lib/preferences';
@@ -21,6 +21,8 @@ type DisplayChange = {
 };
 
 type OutputFilterPreset = 'all' | 'errors' | 'wifi' | 'custom';
+type SendMode = 'text' | 'hex';
+type CommandHistory = Record<SendMode, string[]>;
 
 // The terminal keeps at most 500 rendered rows. Bound an unfinished logical
 // line as well: serial devices are free to send a continuous stream without a
@@ -30,6 +32,8 @@ const CONTINUATION_PREFIX = '↪ ';
 const CONTINUATION_SUFFIX = ' ↪ continued';
 const MAX_QUEUED_DISPLAY_CHANGES = 2_048;
 const MAX_PENDING_SERIAL_EVENTS = 256;
+const MAX_COMMAND_HISTORY = 50;
+const MAX_SERIAL_WRITE_BYTES = 64 * 1024;
 const ERROR_FILTER_SOURCE = String.raw`(?<![\p{L}\p{N}_])(?:error|err|fail(?:ed|ure)?|panic|fatal|exception|abort(?:ed)?)(?![\p{L}\p{N}_])`;
 const WIFI_FILTER_SOURCE = String.raw`(?<![\p{L}\p{N}_])(?:wi-?fi|wlan|ssid|bssid|rssi|ip address|disconnect(?:ed|ion)?|reconnect(?:ed|ing)?)(?![\p{L}\p{N}_])`;
 const ERROR_LINE_PATTERN = new RegExp(ERROR_FILTER_SOURCE, 'iu');
@@ -38,6 +42,33 @@ const WIFI_LINE_PATTERN = new RegExp(WIFI_FILTER_SOURCE, 'iu');
 function literalPattern(text: string, global = false) {
   const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(escaped, global ? 'giu' : 'iu');
+}
+
+function lineEndingLabel(value: LineEnding) {
+  return { lf: 'LF (\\n)', crlf: 'CRLF (\\r\\n)', cr: 'CR (\\r)', none: 'None' }[value];
+}
+
+function parseHexBytes(input: string): { bytes: number[] } | { error: string } {
+  const trimmed = input.trim();
+  if (!trimmed) return { error: 'Enter at least one byte, for example 48 65 6C 6C 6F.' };
+  // Commas and whitespace may be freely combined around one separator, but a
+  // comma can never stand in for a byte.
+  const normalizedSeparators = trimmed.replace(/\s*,\s*/g, ',');
+  if (normalizedSeparators.startsWith(',') || normalizedSeparators.endsWith(',') || normalizedSeparators.includes(',,')) {
+    return { error: 'Use one comma or whitespace separator between each byte.' };
+  }
+  const tokens = trimmed.split(/[\s,]+/);
+  if (tokens.length > MAX_SERIAL_WRITE_BYTES) {
+    return { error: `Hex sends are limited to ${MAX_SERIAL_WRITE_BYTES.toLocaleString()} bytes.` };
+  }
+  const bytes: number[] = [];
+  for (const token of tokens) {
+    if (!/^(?:0x)?[\da-f]{2}$/i.test(token)) {
+      return { error: `“${token}” is not a byte. Use two hex digits such as 7E or 0x7E.` };
+    }
+    bytes.push(Number.parseInt(token.replace(/^0x/i, ''), 16));
+  }
+  return { bytes };
 }
 
 function outputMatchPattern(preset: OutputFilterPreset, customFilter: string) {
@@ -98,6 +129,7 @@ export type LiveMonitorProps = {
   initialLines?: MonitorLine[];
   initialConnectionState?: MonitorConnectionState;
   onSend?: (text: string) => void | Promise<void>;
+  onSendBytes?: (bytes: number[]) => void | Promise<void>;
   onReconnect?: () => void | Promise<void>;
   onDisconnect?: () => void | Promise<void>;
   onClear?: () => void;
@@ -155,6 +187,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   initialLines,
   initialConnectionState = 'connected',
   onSend,
+  onSendBytes,
   onReconnect,
   onDisconnect,
   onClear,
@@ -173,6 +206,13 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   const [waitingLines, setWaitingLines] = useState(0);
   const [autoScroll, setAutoScroll] = useState(true);
   const [outgoing, setOutgoing] = useState('');
+  const [sendMode, setSendMode] = useState<SendMode>('text');
+  // The session setting is the starting point; this selector is deliberately
+  // local so changing it while working does not rewrite the app-wide default.
+  const [sendLineEnding, setSendLineEnding] = useState<LineEnding>(() => lineEnding);
+  const [commandHistory, setCommandHistory] = useState<CommandHistory>({ text: [], hex: [] });
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
   const [isSending, setSending] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
@@ -183,6 +223,11 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   const filterPanelId = useId();
   const filterInputId = useId();
   const filterStatusId = useId();
+  const sendInputId = useId();
+  const sendModeId = useId();
+  const sendEndingId = useId();
+  const sendHintId = useId();
+  const sendErrorId = useId();
   const outputRef = useRef<HTMLDivElement>(null);
   const filterButtonRef = useRef<HTMLButtonElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
@@ -200,6 +245,25 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   const onNativeSessionStartupFailureRef = useRef(onNativeSessionStartupFailure);
   const utf8DecoderRef = useRef<TextDecoder | null>(null);
   const displayOverloadReportedRef = useRef(false);
+  const historyDraftRef = useRef('');
+  const modeDraftsRef = useRef<Record<SendMode, string>>({ text: '', hex: '' });
+  const historySessionIdRef = useRef(sessionId);
+
+  // A mounted monitor normally keeps the same id across reconnects. If React
+  // ever reuses it for another session, neither commands nor the local ending
+  // choice may leak across that boundary.
+  useEffect(() => {
+    if (historySessionIdRef.current === sessionId) return;
+    historySessionIdRef.current = sessionId;
+    setOutgoing('');
+    setSendMode('text');
+    setSendLineEnding(lineEnding);
+    setCommandHistory({ text: [], hex: [] });
+    setHistoryIndex(null);
+    historyDraftRef.current = '';
+    modeDraftsRef.current = { text: '', hex: '' };
+    setSendError(null);
+  }, [lineEnding, sessionId]);
 
   useEffect(() => {
     onConnectionStateChangeRef.current = onConnectionStateChange;
@@ -568,18 +632,88 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
 
   const send = async (event: FormEvent) => {
     event.preventDefault();
-    const text = outgoing;
-    if (!text.trim() || isSending || connectionState !== 'connected') return;
+    const payload = outgoing;
+    if (!payload.trim() || isSending || connectionState !== 'connected') return;
+    const hexPayload = sendMode === 'hex' ? parseHexBytes(payload) : null;
+    if (hexPayload && 'error' in hexPayload) {
+      setSendError(hexPayload.error);
+      return;
+    }
+    const hexBytes = hexPayload && 'bytes' in hexPayload ? hexPayload.bytes : [];
+    setSendError(null);
     setSending(true);
     try {
-      await onSend?.(`${text}${lineEndingText(lineEnding)}`);
-      appendDisplayLine({ id: `sent-${Date.now()}`, timestamp: currentTimestamp(), text: `> ${text}`, kind: 'system' });
+      if (sendMode === 'hex') {
+        await onSendBytes?.(hexBytes);
+      } else {
+        await onSend?.(`${payload}${lineEndingText(sendLineEnding)}`);
+      }
+      const sentPreview = sendMode === 'hex'
+        ? hexBytes.map((byte) => byte.toString(16).padStart(2, '0').toUpperCase()).join(' ')
+        : payload;
+      appendDisplayLine({ id: `sent-${Date.now()}`, timestamp: currentTimestamp(), text: `> ${sendMode === 'hex' ? '[hex] ' : ''}${sentPreview}`, kind: 'system' });
+      setCommandHistory((history) => {
+        const currentHistory = history[sendMode];
+        if (currentHistory[currentHistory.length - 1] === payload) return history;
+        return { ...history, [sendMode]: [...currentHistory, payload].slice(-MAX_COMMAND_HISTORY) };
+      });
       setOutgoing('');
+      setHistoryIndex(null);
+      historyDraftRef.current = '';
+      modeDraftsRef.current[sendMode] = '';
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Could not send serial text.';
+      const message = error instanceof Error ? error.message : `Could not send serial ${sendMode === 'hex' ? 'bytes' : 'text'}.`;
       appendDisplayLine({ id: `send-error-${Date.now()}`, timestamp: currentTimestamp(), text: message, kind: 'error' });
     } finally {
       setSending(false);
+    }
+  };
+
+  const changeOutgoing = (value: string) => {
+    setOutgoing(value);
+    if (historyIndex !== null) setHistoryIndex(null);
+    historyDraftRef.current = value;
+    modeDraftsRef.current[sendMode] = value;
+    if (sendError) setSendError(null);
+  };
+
+  const changeSendMode = (mode: SendMode) => {
+    if (mode === sendMode) return;
+    modeDraftsRef.current[sendMode] = outgoing;
+    setSendMode(mode);
+    setOutgoing(modeDraftsRef.current[mode]);
+    setHistoryIndex(null);
+    historyDraftRef.current = modeDraftsRef.current[mode];
+    setSendError(null);
+  };
+
+  const browseCommandHistory = (event: KeyboardEvent<HTMLInputElement>) => {
+    const modeHistory = commandHistory[sendMode];
+    if (event.nativeEvent.isComposing || event.altKey || event.ctrlKey || event.metaKey || !modeHistory.length) return;
+    const input = event.currentTarget;
+    const caretIsCollapsed = input.selectionStart === input.selectionEnd;
+    const canMoveBack = caretIsCollapsed && input.selectionStart === 0;
+    const canMoveForward = caretIsCollapsed && input.selectionStart === outgoing.length;
+
+    if (event.key === 'ArrowUp' && canMoveBack) {
+      event.preventDefault();
+      if (historyIndex === null) historyDraftRef.current = outgoing;
+      const nextIndex = historyIndex === null ? modeHistory.length - 1 : Math.max(0, historyIndex - 1);
+      setHistoryIndex(nextIndex);
+      setOutgoing(modeHistory[nextIndex]);
+      return;
+    }
+
+    if (event.key === 'ArrowDown' && historyIndex !== null && canMoveForward) {
+      event.preventDefault();
+      const nextIndex = historyIndex + 1;
+      if (nextIndex >= modeHistory.length) {
+        setHistoryIndex(null);
+        setOutgoing(historyDraftRef.current);
+      } else {
+        setHistoryIndex(nextIndex);
+        setOutgoing(modeHistory[nextIndex]);
+      }
     }
   };
 
@@ -789,9 +923,32 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
           {isPaused && <div className="sd-paused-note"><CirclePause size={15} /> Display paused. {waitingLines} {waitingLines === 1 ? 'new line is' : 'new lines are'} waiting.</div>}
         </div>
         <form className="sd-send-form" onSubmit={send}>
-          <label htmlFor="sd-send-text">Send text</label>
-          <div><input id="sd-send-text" value={outgoing} onChange={(event) => setOutgoing(event.target.value)} placeholder={connectionState === 'connected' ? 'Type a command…' : 'Reconnect to send a command'} disabled={connectionState !== 'connected'} /><button className="sd-primary-button" type="submit" disabled={!outgoing.trim() || isSending || connectionState !== 'connected'}>{isSending ? <LoaderCircle className="sd-spin" size={16} /> : <Send size={16} />} Send</button></div>
-          <span>{nativeSession ? `Send appends ${lineEnding === 'none' ? 'no line ending' : lineEnding.toUpperCase()} · raw capture stays active while display is paused` : 'Enter sends · Browser preview only'}</span>
+          <label htmlFor={sendInputId}>Send {sendMode === 'hex' ? 'hex bytes' : 'text'}</label>
+          <div className="sd-send-row">
+            <input
+              id={sendInputId}
+              value={outgoing}
+              onChange={(event) => changeOutgoing(event.target.value)}
+              onKeyDown={browseCommandHistory}
+              aria-describedby={sendError ? `${sendHintId} ${sendErrorId}` : sendHintId}
+              aria-invalid={sendError ? true : undefined}
+              placeholder={connectionState === 'connected'
+                ? sendMode === 'hex' ? '48 65 6C 6C 6F or 0x48, 0x65…' : 'Type a command…'
+                : 'Reconnect to send a command'}
+              disabled={connectionState !== 'connected'}
+            />
+            <label className="sd-send-mode" htmlFor={sendModeId}><span>Mode</span><select id={sendModeId} value={sendMode} onChange={(event) => changeSendMode(event.target.value as SendMode)} aria-describedby={sendHintId} disabled={connectionState !== 'connected'}><option value="text">Text</option><option value="hex">Hex</option></select></label>
+            {sendMode === 'text' && <label className="sd-send-ending" htmlFor={sendEndingId}><span>Ending</span><select id={sendEndingId} value={sendLineEnding} onChange={(event) => setSendLineEnding(event.target.value as LineEnding)} aria-describedby={sendHintId} disabled={connectionState !== 'connected'}>{(['lf', 'crlf', 'cr', 'none'] as LineEnding[]).map((ending) => <option key={ending} value={ending}>{lineEndingLabel(ending)}</option>)}</select></label>}
+            <button className="sd-primary-button" type="submit" disabled={!outgoing.trim() || isSending || connectionState !== 'connected'}>{isSending ? <LoaderCircle className="sd-spin" size={16} /> : <Send size={16} />} Send</button>
+          </div>
+          {sendError && <span className="sd-send-error" id={sendErrorId} role="alert">{sendError}</span>}
+          <span id={sendHintId}>{nativeSession
+            ? sendMode === 'hex'
+              ? `Hex sends exact bytes with no text encoding or line ending · two-digit bytes separated by spaces or commas · ↑/↓ recalls up to ${MAX_COMMAND_HISTORY} hex sends`
+              : `This session sends ${lineEndingLabel(sendLineEnding)} · ↑/↓ recalls up to ${MAX_COMMAND_HISTORY} text commands · raw capture stays active while display is paused`
+            : sendMode === 'hex'
+              ? 'Browser preview only · hex payloads are not transmitted · use two-digit bytes separated by spaces or commas'
+              : `Browser preview only · ${lineEndingLabel(sendLineEnding)} selected for desktop sends · ↑/↓ recalls text commands`}</span>
         </form>
       </article>
 
