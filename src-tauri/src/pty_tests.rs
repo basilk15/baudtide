@@ -361,6 +361,119 @@ fn pty_capture_loop_persists_raw_bytes_and_replays_startup_events_in_order() {
 }
 
 #[test]
+fn pty_capture_handoff_stays_ordered_across_a_frontend_reload() {
+    let mut pty = PtyPair::new();
+    let reader = open_serial(&pty, Duration::from_millis(50));
+    let mut capture = capture_file("reload-handoff");
+    let info = capture_info(&capture.path);
+    let log_path = capture.path.clone();
+    let log_file = capture.file.take().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let quota = Arc::new(Mutex::new(CaptureQuota {
+        used_bytes: 0,
+        limit_bytes: 4_096,
+    }));
+    let delivery = Arc::new(Mutex::new(SerialEventDelivery::Buffering {
+        events: Vec::new(),
+        buffered_bytes: 0,
+        dropped_event_count: 0,
+        next_sequence: 1,
+    }));
+    let received_bytes = Arc::new(AtomicUsize::new(0));
+    let (live_tx, live_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+
+    let reader_stop = Arc::clone(&stop);
+    let reader_quota = Arc::clone(&quota);
+    let reader_delivery = Arc::clone(&delivery);
+    let reader_received_bytes = Arc::clone(&received_bytes);
+    let reader_info = info.clone();
+    let reader_thread = thread::spawn(move || {
+        let terminal_status = run_serial_capture_loop(
+            reader,
+            log_file,
+            &reader_info,
+            reader_stop.as_ref(),
+            &reader_quota,
+            |event| {
+                reader_received_bytes.fetch_add(event.bytes.len(), Ordering::Release);
+                if let Some(live_event) = buffer_serial_event(&reader_delivery, event) {
+                    live_tx.send(live_event).unwrap();
+                }
+            },
+        );
+        finished_tx.send(terminal_status).unwrap();
+    });
+
+    let startup = b"startup\n";
+    pty.master.write_all(startup).unwrap();
+    wait_until(Duration::from_secs(1), || {
+        received_bytes.load(Ordering::Acquire) == startup.len()
+    });
+
+    // Starting the frontend atomically turns the first buffered PTY chunk
+    // into the replay snapshot before later chunks can be sent live.
+    let initial_replay = activate_serial_event_delivery(&mut delivery.lock().unwrap());
+    assert_eq!(initial_replay.events.len(), 1);
+    assert_eq!(initial_replay.events[0].sequence, 1);
+    assert_eq!(initial_replay.events[0].bytes, startup);
+    assert_eq!(initial_replay.next_sequence, 2);
+
+    let live = b"live\n";
+    pty.master.write_all(live).unwrap();
+    wait_until(Duration::from_secs(1), || {
+        received_bytes.load(Ordering::Acquire) == startup.len() + live.len()
+    });
+    let live_event = live_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(live_event.sequence, 2);
+    assert_eq!(live_event.bytes, live);
+
+    // `list_active_sessions` performs this state transition after a WebView
+    // reload. Reproduce it at the helper seam so bytes arriving in the reload
+    // gap are buffered and replayed rather than emitted to the old listener.
+    {
+        let mut current_delivery = delivery.lock().unwrap();
+        let next_sequence = match &*current_delivery {
+            SerialEventDelivery::Live { next_sequence } => *next_sequence,
+            SerialEventDelivery::Buffering { .. } => panic!("delivery should be live"),
+        };
+        *current_delivery = SerialEventDelivery::Buffering {
+            events: Vec::new(),
+            buffered_bytes: 0,
+            dropped_event_count: 0,
+            next_sequence,
+        };
+    }
+
+    let reload_gap = b"reload\n";
+    pty.master.write_all(reload_gap).unwrap();
+    wait_until(Duration::from_secs(1), || {
+        received_bytes.load(Ordering::Acquire) == startup.len() + live.len() + reload_gap.len()
+    });
+    assert!(matches!(live_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+
+    let reload_replay = activate_serial_event_delivery(&mut delivery.lock().unwrap());
+    assert_eq!(reload_replay.events.len(), 1);
+    assert_eq!(reload_replay.events[0].sequence, 3);
+    assert_eq!(reload_replay.events[0].bytes, reload_gap);
+    assert_eq!(reload_replay.next_sequence, 4);
+
+    stop.store(true, Ordering::Release);
+    assert_eq!(
+        finished_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        None
+    );
+    reader_thread.join().unwrap();
+
+    let expected_capture = [startup.as_slice(), live.as_slice(), reload_gap.as_slice()].concat();
+    assert_eq!(std::fs::read(&log_path).unwrap(), expected_capture);
+    assert_eq!(
+        quota.lock().unwrap().used_bytes,
+        expected_capture.len() as u64
+    );
+}
+
+#[test]
 fn pty_capture_loop_finalizes_then_reports_a_terminal_hangup() {
     let pty = PtyPair::new();
     let reader = open_serial(&pty, Duration::from_millis(50));
