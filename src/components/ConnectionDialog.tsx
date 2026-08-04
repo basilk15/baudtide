@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent 
 import { AlertCircle, CheckCircle2, LoaderCircle, Radio, RefreshCw, ShieldAlert, Usb, X } from 'lucide-react';
 import { ThemedSelect } from './ThemedSelect';
 import { defaultSerialConnectionSettings, type SerialConnectionSettings } from '../lib/serial';
+import { loadRecentConnections, saveRecentConnection, type RecentConnection } from '../lib/recentConnections';
 import './connection-dialog.css';
 
 export type SerialPortOption = {
@@ -76,6 +77,7 @@ export function ConnectionDialog({
   const [customBaud, setCustomBaud] = useState(!baudRates.includes(initialBaudRate));
   const [settings, setSettings] = useState<SerialConnectionSettings>(defaultSerialConnectionSettings);
   const [sessionName, setSessionName] = useState(initialSessionName || nameForPort(initialPort ?? initialPorts[0]?.path ?? '', initialPorts));
+  const [recentConnections, setRecentConnections] = useState<RecentConnection[]>([]);
   const [errors, setErrors] = useState<{ port?: string; baudRate?: string; sessionName?: string }>({});
   const [isSubmitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
@@ -90,6 +92,7 @@ export function ConnectionDialog({
     setCustomBaud(!baudRates.includes(initialBaudRate));
     setSettings(defaultSerialConnectionSettings);
     setSessionName(initialSessionName || nameForPort(initialPort ?? initialPorts[0]?.path ?? '', initialPorts));
+    setRecentConnections(loadRecentConnections());
     setErrors({});
     setSubmitError('');
     setSubmitting(false);
@@ -157,6 +160,17 @@ export function ConnectionDialog({
     if (!sessionName.trim()) setSessionName(nameForPort(nextPort, ports));
   };
 
+  const applyRecentConnection = (recent: RecentConnection) => {
+    setPort(recent.port);
+    setManualPort(!ports.some((item) => item.path === recent.port));
+    setBaudRate(String(recent.baudRate));
+    setCustomBaud(!baudRates.includes(recent.baudRate));
+    setSettings(recent.settings);
+    setSessionName(recent.sessionName);
+    setErrors({});
+    setSubmitError('');
+  };
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (isSubmitting) return;
@@ -172,7 +186,10 @@ export function ConnectionDialog({
     setSubmitting(true);
     setSubmitError('');
     try {
-      await onStartMonitoring({ port: port.trim(), baudRate: numericBaud, sessionName: sessionName.trim(), manualPort, settings });
+      const request = { port: port.trim(), baudRate: numericBaud, sessionName: sessionName.trim(), manualPort, settings };
+      await onStartMonitoring(request);
+      saveRecentConnection(request);
+      setRecentConnections(loadRecentConnections());
     } catch (error) {
       setSubmitError(errorMessage(error));
       setSubmitting(false);
@@ -207,6 +224,14 @@ export function ConnectionDialog({
         <p id={descriptionId} className="sd-dialog-subtitle">{nativeEnabled ? 'Choose a port and name the session. BaudTide will open it and start a raw local log immediately.' : 'Choose a port, name the session, and start monitoring. This browser preview does not open devices.'}</p>
 
         <form onSubmit={submit} noValidate>
+          {recentConnections.length > 0 && <section className="sd-recent-connections" aria-label="Recent connection settings">
+            <div><strong>Recent settings</strong><span>Reuse a successful device setup.</span></div>
+            <div className="sd-recent-connection-list">
+              {recentConnections.map((recent) => <button key={`${recent.sessionName}-${recent.port}-${recent.baudRate}-${recent.settings.dataBits}-${recent.settings.parity}-${recent.settings.stopBits}-${recent.settings.flowControl}`} type="button" onClick={() => applyRecentConnection(recent)} title={`Use ${recent.sessionName} settings`}>
+                <strong>{recent.sessionName}</strong><span>{recent.port} · {recent.baudRate.toLocaleString()} baud · {recent.settings.dataBits}{recent.settings.parity === 'none' ? 'N' : recent.settings.parity === 'odd' ? 'O' : 'E'}{recent.settings.stopBits === 'one' ? '1' : '2'}</span>
+              </button>)}
+            </div>
+          </section>}
           <div className="sd-dialog-scan-row">
             <span>Available ports</span>
             <button className="sd-link-button" type="button" onClick={scanPorts} disabled={scanState === 'loading'}>

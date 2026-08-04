@@ -24,6 +24,11 @@ use uuid::Uuid;
 
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
 const READ_BUFFER_SIZE: usize = 4096;
+/// Flushing hands bytes to the operating system, but does not make them
+/// crash-durable. Bound the amount of an active raw capture that can remain
+/// only in filesystem caches while avoiding an expensive sync for every UART
+/// read chunk.
+const CAPTURE_DURABILITY_SYNC_INTERVAL: Duration = Duration::from_secs(1);
 /// Startup data is normally drained as soon as the React monitor subscribes.
 /// This cap prevents a disconnected/failed WebView from retaining an
 /// unbounded device stream; raw logging continues even if it is reached.
@@ -1793,6 +1798,7 @@ fn read_serial_loop(
     let mut buffer = [0_u8; READ_BUFFER_SIZE];
     let mut terminal_status: Option<(&'static str, String)> = None;
     let mut next_sequence = 1_u64;
+    let mut last_durable_sync = Instant::now();
 
     while !stop.load(Ordering::Acquire) {
         match reader.read(&mut buffer) {
@@ -1812,10 +1818,34 @@ fn read_serial_loop(
                             break;
                         }
                         match log.write_all(&bytes[..allowed]).and_then(|()| log.flush()) {
-                            Ok(()) => {
+                            Ok(())
+                                if !capture_durability_sync_is_due(last_durable_sync.elapsed()) =>
+                            {
                                 quota.used_bytes = quota.used_bytes.saturating_add(allowed as u64);
                                 allowed
                             }
+                            Ok(()) => match log.get_ref().sync_data() {
+                                Ok(()) => {
+                                    last_durable_sync = Instant::now();
+                                    quota.used_bytes =
+                                        quota.used_bytes.saturating_add(allowed as u64);
+                                    allowed
+                                }
+                                Err(error) => {
+                                    // A failed sync can still have committed some or all
+                                    // bytes. Reserve the full admission before stopping
+                                    // so another session cannot exceed the shared limit.
+                                    quota.used_bytes =
+                                        quota.used_bytes.saturating_add(allowed as u64);
+                                    if !stop.load(Ordering::Acquire) {
+                                        terminal_status = Some((
+                                            "error",
+                                            format!("Could not durably sync the raw log: {error}"),
+                                        ));
+                                    }
+                                    break;
+                                }
+                            },
                             Err(error) => {
                                 // A failed flush can still have committed some or all
                                 // bytes. Account for the whole admission so another
@@ -1908,6 +1938,10 @@ fn read_serial_loop(
     }
 }
 
+fn capture_durability_sync_is_due(elapsed_since_last_sync: Duration) -> bool {
+    elapsed_since_last_sync >= CAPTURE_DURABILITY_SYNC_INTERVAL
+}
+
 fn deliver_serial_data(
     app: &AppHandle,
     event_delivery: &Arc<Mutex<SerialEventDelivery>>,
@@ -1989,8 +2023,8 @@ mod pty_tests;
 #[cfg(test)]
 mod tests {
     use super::{
-        activate_serial_event_delivery, remove_session_by_identity, SerialDataEvent,
-        SerialEventDelivery,
+        activate_serial_event_delivery, capture_durability_sync_is_due, remove_session_by_identity,
+        SerialDataEvent, SerialEventDelivery,
     };
     use super::{
         begin_saved_log_search, data_bits, disconnect_status_message, ensure_search_not_cancelled,
@@ -1998,8 +2032,8 @@ mod tests {
         normalize_application_settings, release_capture_quota, search_raw_log,
         validate_preference_log_directory, websocket_accept_key, ApplicationSettings, CaptureQuota,
         FlowControlSetting, LogIndexRecord, ParitySetting, SerialState, StartSessionRequest,
-        StopBitsSetting, GIBIBYTE, SEARCH_CANCELLED_MESSAGE, SEARCH_PER_LOG_BYTE_LIMIT,
-        SEARCH_READ_BUFFER_SIZE,
+        StopBitsSetting, CAPTURE_DURABILITY_SYNC_INTERVAL, GIBIBYTE, SEARCH_CANCELLED_MESSAGE,
+        SEARCH_PER_LOG_BYTE_LIMIT, SEARCH_READ_BUFFER_SIZE,
     };
     use std::{
         collections::HashMap,
@@ -2009,6 +2043,7 @@ mod tests {
             atomic::{AtomicBool, Ordering},
             Arc,
         },
+        time::Duration,
     };
     use uuid::Uuid;
 
@@ -2016,6 +2051,19 @@ mod tests {
     struct TestSession {
         id: String,
         port: String,
+    }
+
+    #[test]
+    fn active_capture_sync_cadence_is_bounded_to_the_configured_interval() {
+        assert!(!capture_durability_sync_is_due(
+            CAPTURE_DURABILITY_SYNC_INTERVAL.saturating_sub(Duration::from_millis(1))
+        ));
+        assert!(capture_durability_sync_is_due(
+            CAPTURE_DURABILITY_SYNC_INTERVAL
+        ));
+        assert!(capture_durability_sync_is_due(
+            CAPTURE_DURABILITY_SYNC_INTERVAL.saturating_add(Duration::from_secs(1))
+        ));
     }
 
     #[test]
