@@ -417,10 +417,10 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
     </section>
 
     {activeSearchResponse && <p className="sd-saved-logs-search-note">{activeSearchResponse.fullSearch
-      ? `Complete-capture search scanned ${formatBytes(activeSearchResponse.scannedBytes)} across ${activeSearchResponse.scannedLogCount} logs. Large libraries can take longer.`
+      ? <>Complete-capture search scanned ${formatBytes(activeSearchResponse.scannedBytes)} across ${activeSearchResponse.scannedLogCount} logs. {activeSearchResponse.indexedLogCount ? `Used the local text index for ${activeSearchResponse.indexedLogCount} ${activeSearchResponse.indexedLogCount === 1 ? 'log' : 'logs'}. ` : ''}{activeSearchResponse.indexRebuiltLogCount ? `Built or refreshed ${activeSearchResponse.indexRebuiltLogCount} ${activeSearchResponse.indexRebuiltLogCount === 1 ? 'index' : 'indexes'}. ` : ''}{activeSearchResponse.indexFallbackLogCount ? `Fell back to raw scanning for ${activeSearchResponse.indexFallbackLogCount} ${activeSearchResponse.indexFallbackLogCount === 1 ? 'log' : 'logs'}. ` : ''}{activeSearchResponse.indexUpdateLimited ? 'Some very large captures will remain on the cancellable raw-scan path until a later search.' : ''}</>
       : `Quick search streams up to ${formatBytes(activeSearchResponse.perLogByteLimit ?? 0)} per log and ${formatBytes(activeSearchResponse.totalByteLimit ?? 0)} total. Turn on “Search complete captures” for an exact full-library scan.`} {activeSearchResponse.truncated ? 'Some log bytes were not scanned within the quick-search limit.' : ''}{activeSearchResponse.resultLimitReached ? ` The first ${activeSearchResponse.resultLimit} matching logs are shown.` : ''}</p>}
 
-    {isLoading || (isSearching && !activeSearchResponse) ? <div className="sd-saved-logs-loading"><LoaderCircle className="sd-spin" size={21} /> {isLoading ? 'Loading local captures…' : 'Searching local captures…'}</div>
+    {isLoading || (isSearching && !activeSearchResponse) ? <div className="sd-saved-logs-loading"><LoaderCircle className="sd-spin" size={21} /> {isLoading ? 'Loading local captures…' : fullSearch ? 'Searching and refreshing the local text index…' : 'Searching local captures…'}</div>
       : organizedLogs.length ? <div className="sd-saved-log-list" role="list">
         {organizedLogs.map((log) => {
           const searchResult = searchResultsByPath.get(log.path);

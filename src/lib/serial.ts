@@ -116,6 +116,11 @@ export type SavedLogSearchResponse = {
   perLogByteLimit: number | null;
   totalByteLimit: number | null;
   resultLimit: number;
+  /** Complete-capture search statistics for the persistent local text index. */
+  indexedLogCount: number;
+  indexRebuiltLogCount: number;
+  indexFallbackLogCount: number;
+  indexUpdateLimited: boolean;
 };
 
 export function isTauriRuntime() {

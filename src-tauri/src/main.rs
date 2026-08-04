@@ -2,8 +2,9 @@
 #![allow(clippy::items_after_test_module)]
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{hash_map::DefaultHasher, BTreeMap, HashMap, HashSet},
     fs::{create_dir_all, read_dir, File, OpenOptions},
+    hash::{Hash, Hasher},
     io::{self, BufReader, BufWriter, Read, Write},
     net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket},
     path::{Path, PathBuf},
@@ -44,6 +45,13 @@ const SEARCH_RESULT_LIMIT: usize = 100;
 const SEARCH_SNIPPET_LIMIT: usize = 3;
 const SEARCH_QUERY_BYTE_LIMIT: usize = 256;
 const SEARCH_READ_BUFFER_SIZE: usize = 16 * 1024;
+/// Complete-capture search maintains a separate, normalized text cache. Keep
+/// each refresh bounded: an unusually large capture still has an exact raw
+/// fallback, but cannot turn one UI request into an unbounded cache write.
+const SEARCH_INDEX_PER_LOG_BYTE_LIMIT: u64 = 32 * 1024 * 1024;
+const SEARCH_INDEX_TOTAL_BYTE_LIMIT: u64 = 128 * 1024 * 1024;
+const SEARCH_INDEX_MAGIC: &[u8] = b"BTSEARCH1";
+const SEARCH_INDEX_SCHEMA_VERSION: u8 = 1;
 const SEARCH_ID_BYTE_LIMIT: usize = 128;
 const SEARCH_CANCELLED_MESSAGE: &str = "Saved-log search was cancelled.";
 const SERIAL_WRITE_BYTE_LIMIT: usize = 64 * 1024;
@@ -57,6 +65,7 @@ const MOBILE_SHARE_HEARTBEAT: Duration = Duration::from_secs(20);
 
 type CommandResult<T> = Result<T, String>;
 type SerialWriter = Arc<Mutex<Option<Box<dyn SerialPort>>>>;
+type SavedLogContentSearch = (u32, Vec<SavedLogSearchMatch>, u64, bool);
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -368,6 +377,29 @@ struct SavedLogSearchResponse {
     per_log_byte_limit: Option<u64>,
     total_byte_limit: Option<u64>,
     result_limit: usize,
+    indexed_log_count: usize,
+    index_rebuilt_log_count: usize,
+    index_fallback_log_count: usize,
+    index_update_limited: bool,
+}
+
+/// Header for a normalized text cache. The raw capture remains authoritative:
+/// this header is only valid while its source fingerprint still matches.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedLogTextIndexHeader {
+    schema_version: u8,
+    log_path: String,
+    source_size: u64,
+    modified_seconds: u64,
+    modified_nanos: u32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SavedLogFingerprint {
+    size: u64,
+    modified_seconds: u64,
+    modified_nanos: u32,
 }
 
 #[derive(Default, Deserialize)]
@@ -656,6 +688,10 @@ async fn search_saved_logs(
             per_log_byte_limit: (!full_search).then_some(SEARCH_PER_LOG_BYTE_LIMIT),
             total_byte_limit: (!full_search).then_some(SEARCH_TOTAL_BYTE_LIMIT),
             result_limit: SEARCH_RESULT_LIMIT,
+            indexed_log_count: 0,
+            index_rebuilt_log_count: 0,
+            index_fallback_log_count: 0,
+            index_update_limited: false,
         });
     }
     if query.len() > SEARCH_QUERY_BYTE_LIMIT {
@@ -700,6 +736,11 @@ fn run_saved_log_search(
     let mut truncated = false;
     let mut result_limit_reached = false;
     let mut results = Vec::new();
+    let mut indexed_log_count = 0;
+    let mut index_rebuilt_log_count = 0;
+    let mut index_fallback_log_count = 0;
+    let mut index_update_budget = SEARCH_INDEX_TOTAL_BYTE_LIMIT;
+    let mut index_update_limited = false;
 
     for log in collect_saved_logs(app, sessions)? {
         ensure_search_not_cancelled(cancellation)?;
@@ -717,9 +758,69 @@ fn run_saved_log_search(
                     truncated = true;
                 }
                 (0, Vec::new(), 0, log.size_bytes > 0)
+            } else if full_search && log.state != "capturing" {
+                match search_fresh_log_text_index(
+                    app,
+                    Path::new(&log.path),
+                    &query_bytes,
+                    cancellation,
+                ) {
+                    Ok(Some(search)) => {
+                        indexed_log_count += 1;
+                        scanned_log_count += 1;
+                        scanned_bytes = scanned_bytes.saturating_add(search.2);
+                        search
+                    }
+                    Ok(None) => {
+                        index_fallback_log_count += 1;
+                        let search = search_raw_log(
+                            Path::new(&log.path),
+                            &query_bytes,
+                            scan_limit,
+                            cancellation,
+                        )?;
+                        scanned_log_count += 1;
+                        scanned_bytes = scanned_bytes.saturating_add(search.2);
+                        let index_limit = index_update_budget.min(SEARCH_INDEX_PER_LOG_BYTE_LIMIT);
+                        if index_limit < log.size_bytes {
+                            index_update_limited = true;
+                        } else {
+                            match rebuild_log_text_index(
+                                app,
+                                Path::new(&log.path),
+                                index_limit,
+                                cancellation,
+                            ) {
+                                Ok(true) => {
+                                    index_rebuilt_log_count += 1;
+                                    index_update_budget =
+                                        index_update_budget.saturating_sub(log.size_bytes);
+                                }
+                                Ok(false) => {}
+                                Err(error) if error == SEARCH_CANCELLED_MESSAGE => {
+                                    return Err(error)
+                                }
+                                // Index files are derived data. Disk damage or a concurrent
+                                // cache cleanup must not hide a successful raw fallback.
+                                Err(_) => {}
+                            }
+                        }
+                        search
+                    }
+                    Err(error) if is_missing_search_path_error(&error) => continue,
+                    Err(error) => return Err(error),
+                }
             } else {
-                let search =
-                    search_raw_log(Path::new(&log.path), &query_bytes, scan_limit, cancellation)?;
+                let search = match search_raw_log(
+                    Path::new(&log.path),
+                    &query_bytes,
+                    scan_limit,
+                    cancellation,
+                ) {
+                    Ok(search) => search,
+                    Err(error) if is_missing_search_path_error(&error) => continue,
+                    Err(error) => return Err(error),
+                };
                 scanned_log_count += 1;
                 scanned_bytes = scanned_bytes.saturating_add(search.2);
                 if !full_search {
@@ -730,7 +831,9 @@ fn run_saved_log_search(
                 }
                 search
             };
-        if metadata_match || content_match_count > 0 {
+        // A deletion can race an index lookup or raw scan. Do the final
+        // authority check against the raw path before returning a match.
+        if (metadata_match || content_match_count > 0) && Path::new(&log.path).is_file() {
             if results.len() == SEARCH_RESULT_LIMIT {
                 // Keep scanning after the result list fills so an explicitly
                 // requested full scan still examines every capture. The UI
@@ -757,6 +860,10 @@ fn run_saved_log_search(
         per_log_byte_limit: (!full_search).then_some(SEARCH_PER_LOG_BYTE_LIMIT),
         total_byte_limit: (!full_search).then_some(SEARCH_TOTAL_BYTE_LIMIT),
         result_limit: SEARCH_RESULT_LIMIT,
+        indexed_log_count,
+        index_rebuilt_log_count,
+        index_fallback_log_count,
+        index_update_limited,
     })
 }
 
@@ -842,6 +949,9 @@ fn delete_saved_log(
     // The raw capture is the source of truth. A stale sidecar is harmless and
     // must not make the UI report that deletion failed after the file is gone.
     if let Err(error) = remove_log_index_records_for_path(&app, &key) {
+        eprintln!("{error}");
+    }
+    if let Err(error) = remove_log_text_indexes_for_path(&app, &key) {
         eprintln!("{error}");
     }
     Ok(())
@@ -2065,7 +2175,9 @@ mod tests {
     use super::{
         begin_saved_log_search, data_bits, disconnect_status_message, ensure_search_not_cancelled,
         generated_log_path, index_records_by_path, mark_log_closing,
-        normalize_application_settings, release_capture_quota, search_raw_log,
+        normalize_application_settings, rebuild_log_text_index_in_directory, release_capture_quota,
+        remove_log_text_indexes_for_path_in_directory, saved_log_text_index_path,
+        search_fresh_log_text_index_in_directory, search_raw_log,
         validate_preference_log_directory, websocket_accept_key, ApplicationSettings, CaptureQuota,
         FlowControlSetting, LogIndexRecord, ParitySetting, SerialState, StartSessionRequest,
         StopBitsSetting, CAPTURE_DURABILITY_SYNC_INTERVAL, GIBIBYTE, SEARCH_CANCELLED_MESSAGE,
@@ -2528,6 +2640,91 @@ mod tests {
     }
 
     #[test]
+    fn text_index_rebuild_is_fresh_then_falls_back_when_source_changes() {
+        let root = std::env::temp_dir().join(format!("baudtide-text-index-{}", Uuid::new_v4()));
+        let index_directory = root.join("index");
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join("capture.log");
+        std::fs::write(&log, b"Boot: NEEDLE\n").unwrap();
+
+        assert!(
+            rebuild_log_text_index_in_directory(&index_directory, &log, u64::MAX, None).unwrap()
+        );
+        let fresh =
+            search_fresh_log_text_index_in_directory(&index_directory, &log, b"needle", None)
+                .unwrap()
+                .expect("a newly built index should be usable");
+        assert_eq!(fresh.0, 1);
+        assert!(!fresh.3);
+
+        std::fs::write(&log, b"changed capture").unwrap();
+        assert!(
+            search_fresh_log_text_index_in_directory(&index_directory, &log, b"needle", None)
+                .unwrap()
+                .is_none()
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn corrupt_or_missing_text_index_safely_falls_back_and_cleanup_removes_matching_cache() {
+        let root =
+            std::env::temp_dir().join(format!("baudtide-text-index-cleanup-{}", Uuid::new_v4()));
+        let index_directory = root.join("index");
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join("capture.log");
+        std::fs::write(&log, b"indexed text").unwrap();
+        let key = super::path_key(&log);
+        let index = saved_log_text_index_path(&index_directory, &key);
+
+        assert!(
+            search_fresh_log_text_index_in_directory(&index_directory, &log, b"indexed", None)
+                .unwrap()
+                .is_none()
+        );
+        std::fs::create_dir_all(&index_directory).unwrap();
+        std::fs::write(&index, b"damaged cache").unwrap();
+        assert!(
+            search_fresh_log_text_index_in_directory(&index_directory, &log, b"indexed", None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            rebuild_log_text_index_in_directory(&index_directory, &log, u64::MAX, None).unwrap()
+        );
+        remove_log_text_indexes_for_path_in_directory(&index_directory, &key).unwrap();
+        assert!(!index.exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn cancelling_text_index_rebuild_leaves_the_raw_capture_untouched() {
+        let root =
+            std::env::temp_dir().join(format!("baudtide-text-index-cancel-{}", Uuid::new_v4()));
+        let index_directory = root.join("index");
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join("capture.log");
+        let original = vec![b'x'; SEARCH_READ_BUFFER_SIZE * 2];
+        std::fs::write(&log, &original).unwrap();
+        let cancelled = AtomicBool::new(true);
+
+        assert_eq!(
+            rebuild_log_text_index_in_directory(&index_directory, &log, u64::MAX, Some(&cancelled))
+                .unwrap_err(),
+            SEARCH_CANCELLED_MESSAGE,
+        );
+        assert_eq!(std::fs::read(&log).unwrap(), original);
+        assert!(
+            !index_directory.exists()
+                || std::fs::read_dir(&index_directory)
+                    .unwrap()
+                    .next()
+                    .is_none()
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn websocket_handshake_accept_key_matches_rfc_6455() {
         assert_eq!(
             websocket_accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
@@ -2915,6 +3112,288 @@ fn remove_log_index_records_for_path(app: &AppHandle, log_key: &str) -> CommandR
     Ok(())
 }
 
+/// Text indexes live under BaudTide's app data, never in a user-selected
+/// capture folder. They are disposable derived data, unlike the metadata
+/// sidecars which describe a session lifecycle.
+fn saved_log_text_index_directory(app: &AppHandle) -> CommandResult<PathBuf> {
+    log_directory(app).map(|directory| directory.join("search-index"))
+}
+
+fn saved_log_text_index_path(directory: &Path, log_key: &str) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    log_key.hash(&mut hasher);
+    directory.join(format!("{:016x}.idx", hasher.finish()))
+}
+
+fn saved_log_fingerprint(path: &Path) -> io::Result<SavedLogFingerprint> {
+    let metadata = path.metadata()?;
+    let modified = metadata
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    Ok(SavedLogFingerprint {
+        size: metadata.len(),
+        modified_seconds: modified.as_secs(),
+        modified_nanos: modified.subsec_nanos(),
+    })
+}
+
+fn text_index_header_matches(
+    header: &SavedLogTextIndexHeader,
+    path: &Path,
+    fingerprint: SavedLogFingerprint,
+) -> bool {
+    header.schema_version == SEARCH_INDEX_SCHEMA_VERSION
+        && path_key(Path::new(&header.log_path)) == path_key(path)
+        && header.source_size == fingerprint.size
+        && header.modified_seconds == fingerprint.modified_seconds
+        && header.modified_nanos == fingerprint.modified_nanos
+}
+
+fn read_saved_log_text_index_header(file: &mut File) -> io::Result<SavedLogTextIndexHeader> {
+    let mut magic = vec![0_u8; SEARCH_INDEX_MAGIC.len()];
+    file.read_exact(&mut magic)?;
+    if magic != SEARCH_INDEX_MAGIC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unknown search-index format",
+        ));
+    }
+    let mut length = [0_u8; 8];
+    file.read_exact(&mut length)?;
+    let length = u64::from_le_bytes(length);
+    if length > 64 * 1024 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "search-index header is too large",
+        ));
+    }
+    let mut header = vec![0_u8; length as usize];
+    file.read_exact(&mut header)?;
+    serde_json::from_slice(&header)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+fn search_fresh_log_text_index(
+    app: &AppHandle,
+    path: &Path,
+    needle: &[u8],
+    cancellation: Option<&AtomicBool>,
+) -> CommandResult<Option<SavedLogContentSearch>> {
+    search_fresh_log_text_index_in_directory(
+        &saved_log_text_index_directory(app)?,
+        path,
+        needle,
+        cancellation,
+    )
+}
+
+fn search_fresh_log_text_index_in_directory(
+    directory: &Path,
+    path: &Path,
+    needle: &[u8],
+    cancellation: Option<&AtomicBool>,
+) -> CommandResult<Option<SavedLogContentSearch>> {
+    let fingerprint = match saved_log_fingerprint(path) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "Could not inspect {} for search: {error}",
+                path.display()
+            ))
+        }
+    };
+    let index_path = saved_log_text_index_path(directory, &path_key(path));
+    let mut file = match File::open(index_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        // A damaged cache is disposable. Fall back to the raw capture.
+        Err(_) => return Ok(None),
+    };
+    let header = match read_saved_log_text_index_header(&mut file) {
+        Ok(header) => header,
+        Err(_) => return Ok(None),
+    };
+    if !text_index_header_matches(&header, path, fingerprint) {
+        return Ok(None);
+    }
+    let search = search_log_reader(
+        BufReader::with_capacity(SEARCH_READ_BUFFER_SIZE, file),
+        header.source_size,
+        needle,
+        header.source_size,
+        true,
+        cancellation,
+    )?;
+    // Short/corrupt cache data is never authoritative, even if it happened to
+    // contain a match. Recheck the raw fingerprint so a concurrent change or
+    // deletion cannot return an obsolete path.
+    if search.3 || saved_log_fingerprint(path).ok() != Some(fingerprint) {
+        return Ok(None);
+    }
+    Ok(Some(search))
+}
+
+/// Rebuilds only derived data. A false result means the source moved, changed,
+/// or exceeded this request's update budget; the caller already searched the
+/// raw capture and can safely continue.
+fn rebuild_log_text_index(
+    app: &AppHandle,
+    path: &Path,
+    byte_limit: u64,
+    cancellation: Option<&AtomicBool>,
+) -> CommandResult<bool> {
+    rebuild_log_text_index_in_directory(
+        &saved_log_text_index_directory(app)?,
+        path,
+        byte_limit,
+        cancellation,
+    )
+}
+
+fn rebuild_log_text_index_in_directory(
+    directory: &Path,
+    path: &Path,
+    byte_limit: u64,
+    cancellation: Option<&AtomicBool>,
+) -> CommandResult<bool> {
+    let fingerprint = match saved_log_fingerprint(path) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "Could not inspect {} for indexing: {error}",
+                path.display()
+            ))
+        }
+    };
+    if fingerprint.size > byte_limit {
+        return Ok(false);
+    }
+    create_dir_all(directory)
+        .map_err(|error| format!("Could not create saved-log search index: {error}"))?;
+    let final_path = saved_log_text_index_path(directory, &path_key(path));
+    let temporary = directory.join(format!(".{}-{}.tmp", Uuid::new_v4(), "search"));
+    let result = (|| -> CommandResult<bool> {
+        let mut source = BufReader::with_capacity(
+            SEARCH_READ_BUFFER_SIZE,
+            File::open(path).map_err(|error| {
+                format!("Could not open {} for indexing: {error}", path.display())
+            })?,
+        );
+        let header = SavedLogTextIndexHeader {
+            schema_version: SEARCH_INDEX_SCHEMA_VERSION,
+            log_path: path.display().to_string(),
+            source_size: fingerprint.size,
+            modified_seconds: fingerprint.modified_seconds,
+            modified_nanos: fingerprint.modified_nanos,
+        };
+        let encoded_header = serde_json::to_vec(&header)
+            .map_err(|error| format!("Could not encode saved-log search index: {error}"))?;
+        let mut output = BufWriter::with_capacity(
+            SEARCH_READ_BUFFER_SIZE,
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+                .map_err(|error| format!("Could not write saved-log search index: {error}"))?,
+        );
+        output
+            .write_all(SEARCH_INDEX_MAGIC)
+            .and_then(|()| output.write_all(&(encoded_header.len() as u64).to_le_bytes()))
+            .and_then(|()| output.write_all(&encoded_header))
+            .map_err(|error| format!("Could not initialize saved-log search index: {error}"))?;
+        let mut remaining = fingerprint.size;
+        let mut buffer = vec![0_u8; SEARCH_READ_BUFFER_SIZE];
+        while remaining > 0 {
+            ensure_search_not_cancelled(cancellation)?;
+            let read_limit = remaining.min(buffer.len() as u64) as usize;
+            let count = source.read(&mut buffer[..read_limit]).map_err(|error| {
+                format!("Could not read {} for indexing: {error}", path.display())
+            })?;
+            if count == 0 {
+                return Ok(false);
+            }
+            for byte in &mut buffer[..count] {
+                *byte = byte.to_ascii_lowercase();
+            }
+            output
+                .write_all(&buffer[..count])
+                .map_err(|error| format!("Could not write saved-log search index: {error}"))?;
+            remaining -= count as u64;
+        }
+        output
+            .flush()
+            .and_then(|()| output.get_ref().sync_all())
+            .map_err(|error| format!("Could not finish saved-log search index: {error}"))?;
+        if saved_log_fingerprint(path).ok() != Some(fingerprint) {
+            return Ok(false);
+        }
+        if let Err(first_error) = std::fs::rename(&temporary, &final_path) {
+            // Windows does not replace an existing file with rename. The
+            // existing target is disposable cache data and has already been
+            // proven stale or unreadable by the caller.
+            if !final_path.is_file() {
+                return Err(format!(
+                    "Could not publish saved-log search index: {first_error}"
+                ));
+            }
+            std::fs::remove_file(&final_path)
+                .and_then(|()| std::fs::rename(&temporary, &final_path))
+                .map_err(|error| format!("Could not publish saved-log search index: {error}"))?;
+        }
+        Ok(true)
+    })();
+    if result.is_err() || !result.as_ref().is_ok_and(|rebuilt| *rebuilt) {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+/// Best-effort cleanup for disposable caches. Corrupt cache files are left
+/// alone here; they are ignored and rebuilt on demand.
+fn remove_log_text_indexes_for_path(app: &AppHandle, log_key: &str) -> CommandResult<()> {
+    remove_log_text_indexes_for_path_in_directory(&saved_log_text_index_directory(app)?, log_key)
+}
+
+fn remove_log_text_indexes_for_path_in_directory(
+    directory: &Path,
+    log_key: &str,
+) -> CommandResult<()> {
+    if !directory.exists() {
+        return Ok(());
+    }
+    for entry in read_dir(directory)
+        .map_err(|error| format!("Could not read saved-log search index: {error}"))?
+    {
+        let entry = entry
+            .map_err(|error| format!("Could not read saved-log search index entry: {error}"))?;
+        let path = entry.path();
+        if !path.is_file()
+            || path.extension().and_then(|extension| extension.to_str()) != Some("idx")
+        {
+            continue;
+        }
+        let Ok(mut file) = File::open(&path) else {
+            continue;
+        };
+        let Ok(header) = read_saved_log_text_index_header(&mut file) else {
+            continue;
+        };
+        if header.schema_version == SEARCH_INDEX_SCHEMA_VERSION
+            && path_key(Path::new(&header.log_path)) == log_key
+        {
+            std::fs::remove_file(&path).map_err(|error| {
+                format!(
+                    "The capture was deleted, but its search index could not be removed: {error}"
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
 fn path_key(path: &Path) -> String {
     path.canonicalize()
         .unwrap_or_else(|_| path.to_path_buf())
@@ -3125,7 +3604,28 @@ fn search_raw_log(
         .metadata()
         .map_err(|error| format!("Could not inspect {} for search: {error}", path.display()))?
         .len();
-    let mut reader = BufReader::with_capacity(SEARCH_READ_BUFFER_SIZE, file);
+    search_log_reader(
+        BufReader::with_capacity(SEARCH_READ_BUFFER_SIZE, file),
+        file_size,
+        needle,
+        byte_limit,
+        false,
+        cancellation,
+    )
+}
+
+/// Searches either a raw stream (normalizing each chunk) or an already
+/// normalized derived stream. Keeping matching logic shared makes an index
+/// result exactly match the raw full-search behavior, including boundary
+/// matches and offsets.
+fn search_log_reader<R: Read>(
+    mut reader: R,
+    file_size: u64,
+    needle: &[u8],
+    byte_limit: u64,
+    normalized: bool,
+    cancellation: Option<&AtomicBool>,
+) -> CommandResult<(u32, Vec<SavedLogSearchMatch>, u64, bool)> {
     let mut buffer = vec![0_u8; SEARCH_READ_BUFFER_SIZE];
     let mut tail = Vec::new();
     let mut bytes_read = 0_u64;
@@ -3138,7 +3638,7 @@ fn search_raw_log(
         let allowed = (byte_limit - bytes_read).min(buffer.len() as u64) as usize;
         let count = reader
             .read(&mut buffer[..allowed])
-            .map_err(|error| format!("Could not read {} for search: {error}", path.display()))?;
+            .map_err(|error| format!("Could not read saved-log search data: {error}"))?;
         if count == 0 {
             break;
         }
@@ -3147,10 +3647,14 @@ fn search_raw_log(
         let mut window = Vec::with_capacity(tail.len() + count);
         window.extend_from_slice(&tail);
         window.extend_from_slice(&buffer[..count]);
-        let lowered = window
-            .iter()
-            .map(|byte| byte.to_ascii_lowercase())
-            .collect::<Vec<_>>();
+        let lowered = if normalized {
+            window.clone()
+        } else {
+            window
+                .iter()
+                .map(|byte| byte.to_ascii_lowercase())
+                .collect::<Vec<_>>()
+        };
         for offset in find_all_bytes(&lowered, needle) {
             let absolute_offset = window_start + offset as u64;
             if absolute_offset + needle.len() as u64 <= new_data_start {
@@ -3173,6 +3677,10 @@ fn search_raw_log(
         tail = window[window.len().saturating_sub(overlap)..].to_vec();
     }
     Ok((match_count, matches, bytes_read, bytes_read < file_size))
+}
+
+fn is_missing_search_path_error(error: &str) -> bool {
+    error.contains("No such file") || error.contains("not found")
 }
 
 fn find_all_bytes(haystack: &[u8], needle: &[u8]) -> Vec<usize> {
