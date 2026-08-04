@@ -7,12 +7,14 @@ import { NotificationsPanel } from './components/NotificationsPanel';
 import { useNotifications } from './components/notifications';
 import { PreferencesScreen } from './components/PreferencesScreen';
 import { SavedLogsScreen } from './components/SavedLogsScreen';
+import { SessionWorkspaceManager } from './components/SessionWorkspaceManager';
 import { PortDiscoveryDashboard } from './components/PortDiscoveryDashboard';
 import { SidebarNavigation } from './components/SidebarNavigation';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { WorkspaceProfileMenu } from './components/WorkspaceProfileMenu';
 import type { SignalDeckPage } from './components/phase3Types';
 import { defaultPreferences, loadPreferences, savePreferences, type BaudTidePreferences, type DisplayEncoding, type LineEnding } from './lib/preferences';
+import { stableTerminalSessionIdentity, type SavedSessionWorkspace, type TerminalLayout } from './lib/sessionWorkspaces';
 import { Moon, Radio, Sun, TerminalSquare, X } from 'lucide-react';
 import './light-theme.css';
 import './components/theme-toggle.css';
@@ -566,7 +568,7 @@ type SessionsWorkspaceProps = {
   onMonitorRef: (sessionId: string, monitor: LiveMonitorHandle | null) => void;
 };
 
-type SessionsView = 'tabs' | 'tiled';
+type SessionsView = TerminalLayout;
 
 function SessionsWorkspace({ sessions, selectedSessionId, onSelect, onRequestConnection, onDisconnect, onReconnect, onClose, onConnectionStateChange, onNativeSessionEnded, onNativeStorageLimit, onNativeSessionStartupFailure, onMonitorRef }: SessionsWorkspaceProps) {
   const activeCount = sessions.filter((session) => session.native && session.connectionState === 'connected').length;
@@ -576,6 +578,16 @@ function SessionsWorkspace({ sessions, selectedSessionId, onSelect, onRequestCon
   // Tiled mode keeps every monitor mounted; its desktop grid scrolls once the workspace is full.
   const showViewControl = sessions.length > 1;
   const activeView: SessionsView = showViewControl ? view : 'tabs';
+  const applySavedWorkspace = (workspace: SavedSessionWorkspace, matchingSessionIds: string[]) => {
+    // This is deliberately presentation-only. A saved workspace never opens,
+    // reconnects, disconnects, or otherwise changes a native serial reader.
+    setView(workspace.layout);
+    const selectedId = workspace.selectedSessionIdentity
+      ? sessions.find((session) => stableTerminalSessionIdentity(session) === workspace.selectedSessionIdentity)?.id
+      : undefined;
+    const nextSelectedId = selectedId ?? matchingSessionIds[0] ?? selectedSessionId ?? sessions[0]?.id;
+    if (nextSelectedId) onSelect(nextSelectedId);
+  };
   const closeFromTab = async (sessionId: string) => {
     await onClose(sessionId);
     window.requestAnimationFrame(() => {
@@ -584,7 +596,7 @@ function SessionsWorkspace({ sessions, selectedSessionId, onSelect, onRequestCon
     });
   };
   return <section ref={workspaceRef} className="sd-sessions-workspace" aria-label="Live terminal workspace">
-    <header className="sd-sessions-workspace-header"><div><p>LIVE TERMINAL WORKSPACE</p><h1>Live terminal</h1><span>{activeView === 'tiled' ? 'Compare active serial monitors side by side.' : 'Run independent serial monitors in separate terminal tabs.'}</span></div><div className="sd-sessions-workspace-actions">{showViewControl && <div className="sd-session-view-switch" role="group" aria-label="Terminal layout"><button type="button" className={view === 'tabs' ? 'is-selected' : ''} aria-pressed={view === 'tabs'} onClick={() => setView('tabs')}>Tabs</button><button type="button" className={view === 'tiled' ? 'is-selected' : ''} aria-pressed={view === 'tiled'} onClick={() => setView('tiled')}>Tiled</button></div>}<span className="sd-session-count"><i className={activeCount ? 'is-active' : ''} /> {activeCount} active</span><button ref={newTerminalButtonRef} className="sd-primary-button" type="button" onClick={onRequestConnection}><Radio size={16} /> New terminal</button></div></header>
+    <header className="sd-sessions-workspace-header"><div><p>LIVE TERMINAL WORKSPACE</p><h1>Live terminal</h1><span>{activeView === 'tiled' ? 'Compare active serial monitors side by side.' : 'Run independent serial monitors in separate terminal tabs.'}</span></div><div className="sd-sessions-workspace-actions">{showViewControl && <div className="sd-session-view-switch" role="group" aria-label="Terminal layout"><button type="button" className={view === 'tabs' ? 'is-selected' : ''} aria-pressed={view === 'tabs'} onClick={() => setView('tabs')}>Tabs</button><button type="button" className={view === 'tiled' ? 'is-selected' : ''} aria-pressed={view === 'tiled'} onClick={() => setView('tiled')}>Tiled</button></div>}<SessionWorkspaceManager layout={view} sessions={sessions.map((session) => ({ id: session.id, identity: stableTerminalSessionIdentity(session) }))} selectedSessionId={selectedSessionId} onApply={applySavedWorkspace} /><span className="sd-session-count"><i className={activeCount ? 'is-active' : ''} /> {activeCount} active</span><button ref={newTerminalButtonRef} className="sd-primary-button" type="button" onClick={onRequestConnection}><Radio size={16} /> New terminal</button></div></header>
     {!sessions.length && <article className="sd-sessions-empty-panel"><div className="sd-sessions-empty-icon"><TerminalSquare size={21} /></div><div><h2>No terminal tabs are open.</h2><p>Use <strong>New terminal</strong> to add a live serial monitor to this workspace.</p></div></article>}
     {sessions.length > 0 && <>
       <div className="sd-session-tabs" role={activeView === 'tabs' ? 'tablist' : 'list'} aria-label={activeView === 'tabs' ? 'Open serial terminals' : 'Open serial terminals; select one for terminal actions'}>
