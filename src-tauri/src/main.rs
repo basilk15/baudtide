@@ -45,13 +45,16 @@ const SEARCH_RESULT_LIMIT: usize = 100;
 const SEARCH_SNIPPET_LIMIT: usize = 3;
 const SEARCH_QUERY_BYTE_LIMIT: usize = 256;
 const SEARCH_READ_BUFFER_SIZE: usize = 16 * 1024;
-/// Complete-capture search maintains a separate, normalized text cache. Keep
+/// Complete-capture search maintains a separate text cache. Keep
 /// each refresh bounded: an unusually large capture still has an exact raw
 /// fallback, but cannot turn one UI request into an unbounded cache write.
 const SEARCH_INDEX_PER_LOG_BYTE_LIMIT: u64 = 32 * 1024 * 1024;
 const SEARCH_INDEX_TOTAL_BYTE_LIMIT: u64 = 128 * 1024 * 1024;
 const SEARCH_INDEX_MAGIC: &[u8] = b"BTSEARCH1";
-const SEARCH_INDEX_SCHEMA_VERSION: u8 = 1;
+// Version 2 stores the original capture bytes so indexed snippets retain the
+// exact casing users saw in the raw log. Version 1 normalized bytes are not
+// safe to reuse for display and are treated as stale.
+const SEARCH_INDEX_SCHEMA_VERSION: u8 = 2;
 const SEARCH_ID_BYTE_LIMIT: usize = 128;
 const SEARCH_CANCELLED_MESSAGE: &str = "Saved-log search was cancelled.";
 const SERIAL_WRITE_BYTE_LIMIT: usize = 64 * 1024;
@@ -383,7 +386,7 @@ struct SavedLogSearchResponse {
     index_update_limited: bool,
 }
 
-/// Header for a normalized text cache. The raw capture remains authoritative:
+/// Header for a text cache containing original capture bytes. The raw capture remains authoritative:
 /// this header is only valid while its source fingerprint still matches.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2656,6 +2659,7 @@ mod tests {
                 .expect("a newly built index should be usable");
         assert_eq!(fresh.0, 1);
         assert!(!fresh.3);
+        assert!(fresh.1[0].snippet.as_deref().unwrap().contains("NEEDLE"));
 
         std::fs::write(&log, b"changed capture").unwrap();
         assert!(
@@ -3223,7 +3227,6 @@ fn search_fresh_log_text_index_in_directory(
         header.source_size,
         needle,
         header.source_size,
-        true,
         cancellation,
     )?;
     // Short/corrupt cache data is never authoritative, even if it happened to
@@ -3314,9 +3317,6 @@ fn rebuild_log_text_index_in_directory(
             })?;
             if count == 0 {
                 return Ok(false);
-            }
-            for byte in &mut buffer[..count] {
-                *byte = byte.to_ascii_lowercase();
             }
             output
                 .write_all(&buffer[..count])
@@ -3609,21 +3609,18 @@ fn search_raw_log(
         file_size,
         needle,
         byte_limit,
-        false,
         cancellation,
     )
 }
 
-/// Searches either a raw stream (normalizing each chunk) or an already
-/// normalized derived stream. Keeping matching logic shared makes an index
-/// result exactly match the raw full-search behavior, including boundary
-/// matches and offsets.
+/// Searches raw capture bytes or an exact-byte text cache, normalizing each
+/// chunk for case-insensitive matching while retaining the original window for
+/// snippets. This keeps indexed results identical to raw full-search results.
 fn search_log_reader<R: Read>(
     mut reader: R,
     file_size: u64,
     needle: &[u8],
     byte_limit: u64,
-    normalized: bool,
     cancellation: Option<&AtomicBool>,
 ) -> CommandResult<(u32, Vec<SavedLogSearchMatch>, u64, bool)> {
     let mut buffer = vec![0_u8; SEARCH_READ_BUFFER_SIZE];
@@ -3647,14 +3644,10 @@ fn search_log_reader<R: Read>(
         let mut window = Vec::with_capacity(tail.len() + count);
         window.extend_from_slice(&tail);
         window.extend_from_slice(&buffer[..count]);
-        let lowered = if normalized {
-            window.clone()
-        } else {
-            window
-                .iter()
-                .map(|byte| byte.to_ascii_lowercase())
-                .collect::<Vec<_>>()
-        };
+        let lowered = window
+            .iter()
+            .map(|byte| byte.to_ascii_lowercase())
+            .collect::<Vec<_>>();
         for offset in find_all_bytes(&lowered, needle) {
             let absolute_offset = window_start + offset as u64;
             if absolute_offset + needle.len() as u64 <= new_data_start {
