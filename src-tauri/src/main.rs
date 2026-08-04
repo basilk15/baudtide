@@ -1788,12 +1788,52 @@ fn disconnect_status_message(finalization: CommandResult<()>) -> String {
 }
 
 fn read_serial_loop(
-    mut reader: Box<dyn SerialPort>,
+    reader: Box<dyn SerialPort>,
     log_file: File,
     info: SessionInfo,
     stop: Arc<AtomicBool>,
     context: ReaderContext,
 ) {
+    let terminal_status = run_serial_capture_loop(
+        reader,
+        log_file,
+        &info,
+        stop.as_ref(),
+        &context.quota,
+        |event| {
+            broadcast_mobile_serial_data(&context.mobile_shares, &event);
+            deliver_serial_data(&context.app, &context.event_delivery, event);
+        },
+    );
+    if let Some((status, message)) = terminal_status {
+        if remove_failed_session(&context.sessions, &info) {
+            stop_mobile_share_for_session(&context.mobile_shares, &info.id);
+            let index_state = if status == "storage-limit" {
+                "quota-reached"
+            } else {
+                "error"
+            };
+            let _ = finalize_log_index_state(&context.app, &info.id, index_state);
+            emit_status(&context.app, &info, status, &message);
+        }
+    }
+}
+
+/// Reads one physical serial capture until the port fails, storage is exhausted,
+/// or its owner requests shutdown. Keeping the kernel I/O, raw persistence, and
+/// event ordering here makes the lifecycle independently testable with a PTY;
+/// the caller owns UI delivery and terminal-session cleanup.
+fn run_serial_capture_loop<F>(
+    mut reader: Box<dyn SerialPort>,
+    log_file: File,
+    info: &SessionInfo,
+    stop: &AtomicBool,
+    quota: &Arc<Mutex<CaptureQuota>>,
+    mut on_event: F,
+) -> Option<(&'static str, String)>
+where
+    F: FnMut(SerialDataEvent),
+{
     let mut log = BufWriter::new(log_file);
     let mut buffer = [0_u8; READ_BUFFER_SIZE];
     let mut terminal_status: Option<(&'static str, String)> = None;
@@ -1805,7 +1845,7 @@ fn read_serial_loop(
             Ok(0) => continue,
             Ok(count) => {
                 let bytes = &buffer[..count];
-                let allowed = match context.quota.lock() {
+                let allowed = match quota.lock() {
                     Ok(mut quota) if quota.used_bytes < quota.limit_bytes => {
                         let allowed = bytes
                             .len()
@@ -1897,8 +1937,7 @@ fn read_serial_loop(
                     bytes: bytes.to_vec(),
                 };
                 next_sequence += 1;
-                broadcast_mobile_serial_data(&context.mobile_shares, &event);
-                deliver_serial_data(&context.app, &context.event_delivery, event);
+                on_event(event);
                 if terminal_status.is_some() {
                     break;
                 }
@@ -1924,18 +1963,7 @@ fn read_serial_loop(
     // below drops the writer held by the active session as well.
     drop(log);
     drop(reader);
-    if let Some((status, message)) = terminal_status {
-        if remove_failed_session(&context.sessions, &info) {
-            stop_mobile_share_for_session(&context.mobile_shares, &info.id);
-            let index_state = if status == "storage-limit" {
-                "quota-reached"
-            } else {
-                "error"
-            };
-            let _ = finalize_log_index_state(&context.app, &info.id, index_state);
-            emit_status(&context.app, &info, status, &message);
-        }
-    }
+    terminal_status
 }
 
 fn capture_durability_sync_is_due(elapsed_since_last_sync: Duration) -> bool {
@@ -1947,7 +1975,18 @@ fn deliver_serial_data(
     event_delivery: &Arc<Mutex<SerialEventDelivery>>,
     event: SerialDataEvent,
 ) {
-    let event_to_emit = match event_delivery.lock() {
+    if let Some(event) = buffer_serial_event(event_delivery, event) {
+        let _ = app.emit("serial-data", event);
+    }
+}
+
+/// Atomically either holds a serial event for the initial WebView handoff or
+/// returns it for immediate delivery to a live listener.
+fn buffer_serial_event(
+    event_delivery: &Arc<Mutex<SerialEventDelivery>>,
+    event: SerialDataEvent,
+) -> Option<SerialDataEvent> {
+    match event_delivery.lock() {
         Ok(mut delivery) => match &mut *delivery {
             SerialEventDelivery::Buffering {
                 events,
@@ -1974,9 +2013,6 @@ fn deliver_serial_data(
         // The reader must continue capturing even if an in-memory display
         // handoff lock is poisoned. The raw log remains the source of truth.
         Err(_) => None,
-    };
-    if let Some(event) = event_to_emit {
-        let _ = app.emit("serial-data", event);
     }
 }
 

@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useId, useImperativeHandle, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
-import { AlertTriangle, Check, ChevronsDown, CirclePause, CirclePlay, Eraser, LoaderCircle, PlugZap, RotateCw, Search, Send, TerminalSquare, WifiOff, X } from 'lucide-react';
+import { AlertTriangle, Check, ChevronsDown, CirclePause, CirclePlay, Copy, Eraser, LoaderCircle, PlugZap, RotateCw, Search, Send, TerminalSquare, WifiOff, X } from 'lucide-react';
 import { listenForSerialData, listenForSerialStatus, takePendingNativeSerialData, type SerialDataEvent } from '../lib/serial';
 import { lineEndingText, type DisplayEncoding, type LineEnding } from '../lib/preferences';
 import { MobileSharePanel } from './MobileSharePanel';
@@ -208,6 +208,8 @@ export type LiveMonitorProps = {
   onNativeSessionStartupFailure?: () => void | Promise<void>;
   sessionId?: string;
   nativeSession?: boolean;
+  /** Absolute local path returned for a desktop session's raw capture. */
+  capturePath?: string;
 };
 
 export type LiveMonitorHandle = {
@@ -264,6 +266,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   onNativeSessionStartupFailure,
   sessionId,
   nativeSession = false,
+  capturePath,
 }: LiveMonitorProps, ref) {
   const [initialComposerState] = useState(() => loadComposerState(sessionId, lineEnding));
   const [connectionState, setConnectionState] = useState<MonitorConnectionState>(nativeSession ? initialConnectionState : 'disconnected');
@@ -288,6 +291,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   const [isFindOpen, setFindOpen] = useState(false);
   const [filterPreset, setFilterPreset] = useState<OutputFilterPreset>('all');
   const [outputFilter, setOutputFilter] = useState('');
+  const [capturePathCopyStatus, setCapturePathCopyStatus] = useState<'idle' | 'copied' | 'error'>('idle');
   const filterPanelId = useId();
   const filterInputId = useId();
   const filterStatusId = useId();
@@ -315,6 +319,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   const displayOverloadReportedRef = useRef(false);
   const historyDraftRef = useRef('');
   const modeDraftsRef = useRef<Record<SendMode, string>>({ text: '', hex: '' });
+  const capturePathCopyResetRef = useRef<number | undefined>(undefined);
 
   // A mounted monitor normally keeps the same id across reconnects. If React
   // ever reuses it for another session, restore only that session's bounded
@@ -332,6 +337,14 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
     setSendError(null);
     setComposerSessionId(sessionId);
   }, [composerSessionId, lineEnding, sessionId]);
+
+  useEffect(() => {
+    setCapturePathCopyStatus('idle');
+  }, [capturePath]);
+
+  useEffect(() => () => {
+    if (capturePathCopyResetRef.current !== undefined) window.clearTimeout(capturePathCopyResetRef.current);
+  }, []);
 
   useEffect(() => {
     if (composerSessionId !== sessionId) return;
@@ -675,9 +688,13 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
     flushFinalPartialLine();
   }, []);
 
+  // App owns reconnection scheduling, including automatic retries after a
+  // device disappears. Keep this mounted monitor aligned with that external
+  // state so capture health does not remain stale until a new native ID exists.
   useEffect(() => {
-    if (nativeSession && sessionId) updateConnectionState('connected');
-  }, [nativeSession, sessionId]);
+    if (nativeSession) updateConnectionState(initialConnectionState);
+    else updateConnectionState('disconnected');
+  }, [initialConnectionState, nativeSession]);
 
   useEffect(() => {
     if (!isPaused && autoScroll && outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight;
@@ -883,6 +900,22 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
     setOutputFilter('');
   };
 
+  const copyCapturePath = async () => {
+    if (!capturePath) return;
+    if (capturePathCopyResetRef.current !== undefined) window.clearTimeout(capturePathCopyResetRef.current);
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard access is unavailable.');
+      await navigator.clipboard.writeText(capturePath);
+      setCapturePathCopyStatus('copied');
+    } catch {
+      setCapturePathCopyStatus('error');
+    }
+    capturePathCopyResetRef.current = window.setTimeout(() => {
+      setCapturePathCopyStatus('idle');
+      capturePathCopyResetRef.current = undefined;
+    }, 2_200);
+  };
+
   useImperativeHandle(ref, () => ({
     toggleDisplayPause,
     requestClear: () => setShowClearConfirm(true),
@@ -895,7 +928,14 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
     disconnected: { label: 'Disconnected', Icon: WifiOff, detail: 'Logging is stopped' },
     error: { label: 'Connection error', Icon: AlertTriangle, detail: 'The serial port could not be opened' },
   }[connectionState];
+  const captureCopy = {
+    connected: { label: 'Raw capture active', detail: 'Incoming bytes are being saved locally.', Icon: Check },
+    reconnecting: { label: 'Raw capture waiting', detail: 'Capture resumes when the port reconnects.', Icon: LoaderCircle },
+    disconnected: { label: 'Raw capture disconnected', detail: 'The captured file is retained locally.', Icon: WifiOff },
+    error: { label: 'Raw capture error', detail: 'No new bytes can be recorded until this session recovers.', Icon: AlertTriangle },
+  }[connectionState];
   const StatusIcon = connectionCopy.Icon;
+  const CaptureIcon = captureCopy.Icon;
 
   return (
     <section className="sd-monitor" aria-label={`${sessionName} live serial monitor`}>
@@ -915,6 +955,21 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
         <div className={`sd-monitor-status ${connectionState}`}><StatusIcon className={connectionState === 'reconnecting' ? 'sd-spin' : ''} size={14} /><strong>{connectionCopy.label}</strong><span>{connectionCopy.detail}</span></div>
         <div className="sd-monitor-chip"><span>{port}</span><i /> {baudRate.toLocaleString()} baud</div>
       </div>
+
+      {nativeSession && <section className={`sd-capture-health ${connectionState}`} aria-label="Raw capture status">
+        <div className="sd-capture-health-status">
+          <CaptureIcon className={connectionState === 'reconnecting' ? 'sd-spin' : ''} size={16} aria-hidden="true" />
+          <div><strong>{captureCopy.label}</strong><span>{captureCopy.detail}</span></div>
+        </div>
+        {capturePath && <div className="sd-capture-path">
+          <code title={capturePath}>{capturePath}</code>
+          <button className="sd-capture-copy" type="button" onClick={() => void copyCapturePath()} aria-label="Copy raw capture path" title="Copy raw capture path">
+            {capturePathCopyStatus === 'copied' ? <Check size={14} /> : <Copy size={14} />}
+            <span>{capturePathCopyStatus === 'copied' ? 'Copied' : capturePathCopyStatus === 'error' ? 'Copy failed' : 'Copy path'}</span>
+          </button>
+          <span className="sd-visually-hidden" role="status" aria-live="polite">{capturePathCopyStatus === 'copied' ? 'Raw capture path copied.' : capturePathCopyStatus === 'error' ? 'Could not copy the raw capture path.' : ''}</span>
+        </div>}
+      </section>}
 
       <MobileSharePanel sessionId={sessionId} nativeSession={nativeSession} sessionConnected={connectionState === 'connected'} />
 
@@ -944,7 +999,10 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
             <button className="sd-monitor-icon-button" type="button" onClick={() => setShowClearConfirm(true)} aria-label="Clear monitor display" title="Clear display"><Eraser size={16} /></button>
           </div>
         </div>
-        <div className="sd-terminal-logging"><Check size={13} /> Logging continues independently of this display{isPaused ? <strong> · display paused</strong> : ''}</div>
+        <div className={`sd-terminal-logging ${nativeSession ? connectionState : 'preview'}`}>
+          {nativeSession ? <CaptureIcon className={connectionState === 'reconnecting' ? 'sd-spin' : ''} size={13} /> : <Check size={13} />}
+          {nativeSession ? captureCopy.label : 'Browser preview — no local capture'}{isPaused ? <strong> · display paused</strong> : ''}
+        </div>
         {isFindOpen && (
           <section
             className="sd-terminal-find"

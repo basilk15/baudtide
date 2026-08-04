@@ -5,20 +5,44 @@
 
 use std::{
     ffi::CStr,
-    fs::File,
+    fs::{File, OpenOptions},
     io::{self, Read, Write},
     os::fd::{AsRawFd, FromRawFd},
-    sync::{atomic::AtomicBool, Mutex},
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc, Arc, Mutex,
+    },
+    thread,
     time::{Duration, Instant},
 };
 
 use serialport::{DataBits, FlowControl, Parity, SerialPort, StopBits};
+use uuid::Uuid;
 
-use super::{write_serial_bytes, SERIAL_WRITE_BYTE_LIMIT};
+use super::{
+    activate_serial_event_delivery, buffer_serial_event, run_serial_capture_loop,
+    write_serial_bytes, CaptureQuota, SerialEventDelivery, SerialSettings, SessionInfo,
+    SERIAL_WRITE_BYTE_LIMIT,
+};
 
 struct PtyPair {
     master: File,
     slave_path: String,
+}
+
+/// Owns a unique temporary raw-capture file for one test. The file handle may
+/// be moved to a reader thread while this guard remains responsible for
+/// removing only that known test artifact.
+struct TemporaryCapture {
+    path: PathBuf,
+    file: Option<File>,
+}
+
+impl Drop for TemporaryCapture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 impl PtyPair {
@@ -122,6 +146,42 @@ fn read_exact_with_deadline(file: &mut File, buffer: &mut [u8], timeout: Duratio
     }
 }
 
+fn capture_file(name: &str) -> TemporaryCapture {
+    let path = std::env::temp_dir().join(format!("baudtide-pty-{name}-{}.log", Uuid::new_v4()));
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .expect("could not create temporary capture file");
+    TemporaryCapture {
+        path,
+        file: Some(file),
+    }
+}
+
+fn capture_info(log_path: &Path) -> SessionInfo {
+    SessionInfo {
+        id: "pty-session".into(),
+        port: "/dev/pts/test".into(),
+        baud_rate: 57_600,
+        session_name: "PTY lifecycle".into(),
+        log_path: log_path.display().to_string(),
+        state: "connected",
+        settings: SerialSettings::default(),
+    }
+}
+
+fn wait_until(timeout: Duration, predicate: impl Fn() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while !predicate() {
+        assert!(
+            Instant::now() < deadline,
+            "condition did not become true within {timeout:?}"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
 #[test]
 fn pty_open_applies_requested_serial_configuration() {
     let pty = PtyPair::new();
@@ -221,4 +281,126 @@ fn pty_master_close_surfaces_as_a_serial_hangup() {
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
         Err(error) => panic!("expected PTY hangup after master close, got {error}"),
     }
+}
+
+#[test]
+fn pty_capture_loop_persists_raw_bytes_and_replays_startup_events_in_order() {
+    let mut pty = PtyPair::new();
+    let reader = open_serial(&pty, Duration::from_millis(50));
+    let mut capture = capture_file("startup-replay");
+    let info = capture_info(&capture.path);
+    let log_path = capture.path.clone();
+    let log_file = capture.file.take().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let quota = Arc::new(Mutex::new(CaptureQuota {
+        used_bytes: 0,
+        limit_bytes: 4_096,
+    }));
+    let delivery = Arc::new(Mutex::new(SerialEventDelivery::Buffering {
+        events: Vec::new(),
+        buffered_bytes: 0,
+        dropped_event_count: 0,
+        next_sequence: 1,
+    }));
+    let received_bytes = Arc::new(AtomicUsize::new(0));
+    let (finished_tx, finished_rx) = mpsc::channel();
+
+    let reader_stop = Arc::clone(&stop);
+    let reader_quota = Arc::clone(&quota);
+    let reader_delivery = Arc::clone(&delivery);
+    let reader_received_bytes = Arc::clone(&received_bytes);
+    let reader_info = info.clone();
+    let reader_thread = thread::spawn(move || {
+        let terminal_status = run_serial_capture_loop(
+            reader,
+            log_file,
+            &reader_info,
+            reader_stop.as_ref(),
+            &reader_quota,
+            |event| {
+                reader_received_bytes.fetch_add(event.bytes.len(), Ordering::Release);
+                assert!(buffer_serial_event(&reader_delivery, event).is_none());
+            },
+        );
+        finished_tx.send(terminal_status).unwrap();
+    });
+
+    let payload = [0x00, 0xff, b'A', b'\r', b'\n', 0x80];
+    pty.master.write_all(&payload).unwrap();
+    wait_until(Duration::from_secs(1), || {
+        received_bytes.load(Ordering::Acquire) == payload.len()
+    });
+
+    // The serial reader uses a finite read timeout, so shutdown cannot hang on
+    // an idle PTY. A normal stop must preserve the capture without an error.
+    stop.store(true, Ordering::Release);
+    assert_eq!(
+        finished_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        None
+    );
+    reader_thread.join().unwrap();
+
+    let pending = activate_serial_event_delivery(&mut delivery.lock().unwrap());
+    let replayed_bytes = pending
+        .events
+        .iter()
+        .flat_map(|event| event.bytes.iter().copied())
+        .collect::<Vec<_>>();
+    assert_eq!(replayed_bytes, payload);
+    assert_eq!(
+        pending
+            .events
+            .iter()
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>(),
+        (1..=pending.events.len() as u64).collect::<Vec<_>>()
+    );
+    assert_eq!(pending.next_sequence, pending.events.len() as u64 + 1);
+    assert_eq!(std::fs::read(&log_path).unwrap(), payload);
+    assert_eq!(quota.lock().unwrap().used_bytes, payload.len() as u64);
+}
+
+#[test]
+fn pty_capture_loop_finalizes_then_reports_a_terminal_hangup() {
+    let pty = PtyPair::new();
+    let reader = open_serial(&pty, Duration::from_millis(50));
+    let mut capture = capture_file("hangup");
+    let info = capture_info(&capture.path);
+    let log_path = capture.path.clone();
+    let log_file = capture.file.take().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let quota = Arc::new(Mutex::new(CaptureQuota {
+        used_bytes: 0,
+        limit_bytes: 4_096,
+    }));
+    let (finished_tx, finished_rx) = mpsc::channel();
+
+    // Closing the PTY master is the kernel-backed equivalent of losing the
+    // device endpoint. Keep the test deadline-bounded in case platform error
+    // delivery changes.
+    drop(pty.master);
+    let reader_stop = Arc::clone(&stop);
+    let reader_quota = Arc::clone(&quota);
+    let reader_thread = thread::spawn(move || {
+        let terminal_status = run_serial_capture_loop(
+            reader,
+            log_file,
+            &info,
+            reader_stop.as_ref(),
+            &reader_quota,
+            |_| {},
+        );
+        finished_tx.send(terminal_status).unwrap();
+    });
+
+    let (status, message) = finished_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("hangup did not end the capture loop before its deadline")
+        .expect("hangup should produce a terminal reader failure");
+    reader_thread.join().unwrap();
+
+    assert_eq!(status, "error");
+    assert!(message.starts_with("Serial read failed:"), "{message}");
+    assert_eq!(std::fs::read(&log_path).unwrap(), Vec::<u8>::new());
+    assert_eq!(quota.lock().unwrap().used_bytes, 0);
 }

@@ -291,7 +291,18 @@ function App() {
   const markNativeStorageLimit = (sessionId: string) => {
     const session = liveSessions[sessionId];
     setLiveSessions((current) => current[sessionId]
-      ? { ...current, [sessionId]: { ...current[sessionId], nativeSessionOpen: false, connectionState: 'disconnected' } }
+      ? {
+          ...current,
+          [sessionId]: {
+            ...current[sessionId],
+            nativeSessionOpen: false,
+            connectionState: 'error',
+            // A full capture library cannot be repaired by a device returning;
+            // avoid futile background retries while preserving manual retry
+            // after the user frees space or raises the storage limit.
+            reconnectWhenDeviceReturns: false,
+          },
+        }
       : current);
     if (session) publishNotification({ kind: 'error', title: 'Storage limit reached', detail: `${session.sessionName} stopped logging before the capture library exceeded its limit.` });
   };
@@ -584,7 +595,7 @@ function SessionsWorkspace({ sessions, selectedSessionId, onSelect, onRequestCon
       </div>
       <div className={`sd-session-monitors ${activeView === 'tiled' ? 'is-tiled' : ''}`} aria-label={activeView === 'tiled' ? 'Tiled serial terminals' : undefined}>
         {sessions.map((session) => <div className="sd-session-panel" id={`monitor-${session.uiKey}`} role={activeView === 'tabs' ? 'tabpanel' : 'region'} aria-labelledby={activeView === 'tabs' ? `tab-${session.uiKey}` : undefined} aria-label={activeView === 'tiled' ? `${session.sessionName} on ${session.port} terminal` : undefined} hidden={activeView === 'tabs' && session.id !== selectedSessionId} key={session.uiKey}>
-          <LiveMonitor ref={(monitor) => onMonitorRef(session.id, monitor)} sessionName={session.sessionName} port={session.port} baudRate={session.baudRate} lineEnding={session.lineEnding} displayEncoding={session.displayEncoding} showTimestamps={session.showTimestamps} sessionId={session.id} nativeSession={session.native} initialConnectionState={session.connectionState} onConnectionStateChange={(state) => onConnectionStateChange(session.id, state)} onNativeSessionEnded={session.native ? () => onNativeSessionEnded(session.id) : undefined} onNativeStorageLimit={session.native ? () => onNativeStorageLimit(session.id) : undefined} onNativeSessionStartupFailure={session.native ? async () => { await onNativeSessionStartupFailure(session.id); } : undefined} onSend={session.native ? async (text) => { await sendNativeSerialText(session.id, text); } : undefined} onSendBytes={session.native ? async (bytes) => { await sendNativeSerialBytes(session.id, bytes); } : undefined} onDisconnect={session.native ? async () => { await onDisconnect(session.id); } : undefined} onReconnect={session.native ? async () => { await onReconnect(session.id); } : undefined} onClose={async () => { await onClose(session.id); }} />
+          <LiveMonitor ref={(monitor) => onMonitorRef(session.id, monitor)} sessionName={session.sessionName} port={session.port} baudRate={session.baudRate} lineEnding={session.lineEnding} displayEncoding={session.displayEncoding} showTimestamps={session.showTimestamps} sessionId={session.id} nativeSession={session.native} capturePath={session.logPath} initialConnectionState={session.connectionState} onConnectionStateChange={(state) => onConnectionStateChange(session.id, state)} onNativeSessionEnded={session.native ? () => onNativeSessionEnded(session.id) : undefined} onNativeStorageLimit={session.native ? () => onNativeStorageLimit(session.id) : undefined} onNativeSessionStartupFailure={session.native ? async () => { await onNativeSessionStartupFailure(session.id); } : undefined} onSend={session.native ? async (text) => { await sendNativeSerialText(session.id, text); } : undefined} onSendBytes={session.native ? async (bytes) => { await sendNativeSerialBytes(session.id, bytes); } : undefined} onDisconnect={session.native ? async () => { await onDisconnect(session.id); } : undefined} onReconnect={session.native ? async () => { await onReconnect(session.id); } : undefined} onClose={async () => { await onClose(session.id); }} />
         </div>)}
       </div>
     </>}

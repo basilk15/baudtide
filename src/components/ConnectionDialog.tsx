@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent 
 import { AlertCircle, CheckCircle2, LoaderCircle, Radio, RefreshCw, ShieldAlert, Usb, X } from 'lucide-react';
 import { ThemedSelect } from './ThemedSelect';
 import { defaultSerialConnectionSettings, type SerialConnectionSettings } from '../lib/serial';
-import { loadRecentConnections, saveRecentConnection, type RecentConnection } from '../lib/recentConnections';
+import { clearRecentConnections, loadRecentConnections, removeRecentConnection, saveRecentConnection, type RecentConnection } from '../lib/recentConnections';
 import './connection-dialog.css';
 
 export type SerialPortOption = {
@@ -78,6 +78,7 @@ export function ConnectionDialog({
   const [settings, setSettings] = useState<SerialConnectionSettings>(defaultSerialConnectionSettings);
   const [sessionName, setSessionName] = useState(initialSessionName || nameForPort(initialPort ?? initialPorts[0]?.path ?? '', initialPorts));
   const [recentConnections, setRecentConnections] = useState<RecentConnection[]>([]);
+  const [recentStatus, setRecentStatus] = useState('');
   const [errors, setErrors] = useState<{ port?: string; baudRate?: string; sessionName?: string }>({});
   const [isSubmitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
@@ -93,6 +94,7 @@ export function ConnectionDialog({
     setSettings(defaultSerialConnectionSettings);
     setSessionName(initialSessionName || nameForPort(initialPort ?? initialPorts[0]?.path ?? '', initialPorts));
     setRecentConnections(loadRecentConnections());
+    setRecentStatus('');
     setErrors({});
     setSubmitError('');
     setSubmitting(false);
@@ -171,6 +173,34 @@ export function ConnectionDialog({
     setSubmitError('');
   };
 
+  const focusRecentControl = () => {
+    window.requestAnimationFrame(() => {
+      const nextControl = dialogRef.current?.querySelector<HTMLElement>('[data-recent-preset], [data-scan-again]');
+      nextControl?.focus();
+    });
+  };
+
+  const removeRecentPreset = (recent: RecentConnection) => {
+    const updated = removeRecentConnection(recent);
+    if (!updated) {
+      setRecentStatus(`Could not remove ${recent.sessionName}. Your saved settings are unavailable right now.`);
+      return;
+    }
+    setRecentConnections(updated);
+    setRecentStatus(`Removed ${recent.sessionName} from recent settings.`);
+    focusRecentControl();
+  };
+
+  const clearRecentPresets = () => {
+    if (!clearRecentConnections()) {
+      setRecentStatus('Could not clear recent settings. Your saved settings are unavailable right now.');
+      return;
+    }
+    setRecentConnections([]);
+    setRecentStatus('Cleared all recent connection settings.');
+    focusRecentControl();
+  };
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (isSubmitting) return;
@@ -224,17 +254,28 @@ export function ConnectionDialog({
         <p id={descriptionId} className="sd-dialog-subtitle">{nativeEnabled ? 'Choose a port and name the session. BaudTide will open it and start a raw local log immediately.' : 'Choose a port, name the session, and start monitoring. This browser preview does not open devices.'}</p>
 
         <form onSubmit={submit} noValidate>
-          {recentConnections.length > 0 && <section className="sd-recent-connections" aria-label="Recent connection settings">
-            <div><strong>Recent settings</strong><span>Reuse a successful device setup.</span></div>
-            <div className="sd-recent-connection-list">
-              {recentConnections.map((recent) => <button key={`${recent.sessionName}-${recent.port}-${recent.baudRate}-${recent.settings.dataBits}-${recent.settings.parity}-${recent.settings.stopBits}-${recent.settings.flowControl}`} type="button" onClick={() => applyRecentConnection(recent)} title={`Use ${recent.sessionName} settings`}>
-                <strong>{recent.sessionName}</strong><span>{recent.port} · {recent.baudRate.toLocaleString()} baud · {recent.settings.dataBits}{recent.settings.parity === 'none' ? 'N' : recent.settings.parity === 'odd' ? 'O' : 'E'}{recent.settings.stopBits === 'one' ? '1' : '2'}</span>
-              </button>)}
+          <p className="sd-recent-status" role="status" aria-live="polite" aria-atomic="true">{recentStatus}</p>
+          {recentConnections.length > 0 && <section className="sd-recent-connections" aria-labelledby="recent-connections-heading">
+            <div className="sd-recent-connections-heading">
+              <div><strong id="recent-connections-heading">Recent settings</strong><span>Reuse a successful device setup.</span></div>
+              <button className="sd-clear-recent-button" type="button" onClick={clearRecentPresets} aria-label="Clear all recent connection settings">Clear all</button>
             </div>
+            <ul className="sd-recent-connection-list">
+              {recentConnections.map((recent) => {
+                const key = `${recent.sessionName}-${recent.port}-${recent.baudRate}-${recent.settings.dataBits}-${recent.settings.parity}-${recent.settings.stopBits}-${recent.settings.flowControl}`;
+                const details = `${recent.port} · ${recent.baudRate.toLocaleString()} baud · ${recent.settings.dataBits}${recent.settings.parity === 'none' ? 'N' : recent.settings.parity === 'odd' ? 'O' : 'E'}${recent.settings.stopBits === 'one' ? '1' : '2'}`;
+                return <li key={key} className="sd-recent-connection-item">
+                  <button data-recent-preset type="button" onClick={() => applyRecentConnection(recent)} aria-label={`Use ${recent.sessionName} settings: ${details}`}>
+                    <strong>{recent.sessionName}</strong><span>{details}</span>
+                  </button>
+                  <button className="sd-remove-recent-button" type="button" onClick={() => removeRecentPreset(recent)} aria-label={`Remove ${recent.sessionName} from recent settings`}>Remove</button>
+                </li>;
+              })}
+            </ul>
           </section>}
           <div className="sd-dialog-scan-row">
             <span>Available ports</span>
-            <button className="sd-link-button" type="button" onClick={scanPorts} disabled={scanState === 'loading'}>
+            <button data-scan-again className="sd-link-button" type="button" onClick={scanPorts} disabled={scanState === 'loading'}>
               {scanState === 'loading' ? <LoaderCircle className="sd-spin" size={14} /> : <RefreshCw size={14} />} Scan again
             </button>
           </div>

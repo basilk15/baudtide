@@ -59,27 +59,82 @@ function sameConnection(first: RecentConnection, second: RecentConnection) {
     && first.settings.flowControl === second.settings.flowControl;
 }
 
-/** Read local-only, validated connection presets without ever blocking the dialog. */
-export function loadRecentConnections(): RecentConnection[] {
-  if (typeof window === 'undefined') return [];
+function samePreset(first: RecentConnection, second: RecentConnection) {
+  return first.sessionName === second.sessionName && sameConnection(first, second);
+}
+
+function getStorage(): Storage | null {
+  if (typeof window === 'undefined') return null;
   try {
-    const parsed: unknown = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? '[]');
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** Returns null only when storage cannot be read; malformed values are treated as empty. */
+function readRecentConnections(storage: Storage): RecentConnection[] | null {
+  let raw: string | null;
+  try {
+    raw = storage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(raw ?? '[]');
     if (!Array.isArray(parsed)) return [];
-    return parsed.map(parseRecentConnection).filter((entry): entry is RecentConnection => entry !== null).slice(0, MAX_RECENT_CONNECTIONS);
+    return parsed
+      .map(parseRecentConnection)
+      .filter((entry): entry is RecentConnection => entry !== null)
+      .slice(0, MAX_RECENT_CONNECTIONS);
   } catch {
     return [];
   }
 }
 
+function writeRecentConnections(storage: Storage, connections: RecentConnection[]) {
+  try {
+    if (connections.length) {
+      storage.setItem(STORAGE_KEY, JSON.stringify(connections.slice(0, MAX_RECENT_CONNECTIONS)));
+    } else {
+      storage.removeItem(STORAGE_KEY);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Read local-only, validated connection presets without ever blocking the dialog. */
+export function loadRecentConnections(): RecentConnection[] {
+  const storage = getStorage();
+  return storage ? readRecentConnections(storage) ?? [] : [];
+}
+
 /** Store only successful settings. Storage errors (including private mode) are non-fatal. */
 export function saveRecentConnection(connection: RecentConnection) {
-  if (typeof window === 'undefined') return;
   const normalized = parseRecentConnection(connection);
-  if (!normalized) return;
-  try {
-    const recent = loadRecentConnections().filter((entry) => !sameConnection(entry, normalized));
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify([normalized, ...recent].slice(0, MAX_RECENT_CONNECTIONS)));
-  } catch {
-    // Keep connection setup usable if localStorage is unavailable.
-  }
+  const storage = getStorage();
+  if (!normalized || !storage) return false;
+  const recent = readRecentConnections(storage);
+  if (!recent) return false;
+  return writeRecentConnections(storage, [normalized, ...recent.filter((entry) => !sameConnection(entry, normalized))]);
+}
+
+/** Remove one preset. Null means storage was unavailable, so UI state should remain unchanged. */
+export function removeRecentConnection(connection: RecentConnection): RecentConnection[] | null {
+  const normalized = parseRecentConnection(connection);
+  const storage = getStorage();
+  if (!normalized || !storage) return null;
+  const recent = readRecentConnections(storage);
+  if (!recent) return null;
+  const updated = recent.filter((entry) => !samePreset(entry, normalized));
+  return writeRecentConnections(storage, updated) ? updated : null;
+}
+
+/** Clear all saved presets. Returns false if storage cannot be changed. */
+export function clearRecentConnections() {
+  const storage = getStorage();
+  return storage ? writeRecentConnections(storage, []) : false;
 }

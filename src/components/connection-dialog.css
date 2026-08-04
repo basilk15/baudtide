@@ -78,17 +78,19 @@
   border-radius: 9px;
   background: #142925;
 }
-.sd-recent-connections > div:first-child {
+.sd-recent-connections-heading {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
   margin-bottom: 9px;
 }
-.sd-recent-connections > div:first-child strong { color: #b4ebdb; font-size: 11px; }
-.sd-recent-connections > div:first-child span { color: #88a99f; font-size: 10px; }
-.sd-recent-connection-list { display: grid; gap: 6px; }
-.sd-recent-connection-list button {
+.sd-recent-connections-heading > div { display: grid; gap: 2px; }
+.sd-recent-connections-heading strong { color: #b4ebdb; font-size: 11px; }
+.sd-recent-connections-heading span { color: #88a99f; font-size: 10px; }
+.sd-recent-connection-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.sd-recent-connection-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.sd-recent-connection-item > button:first-child {
   width: 100%;
   display: grid;
   gap: 2px;
@@ -99,17 +101,39 @@
   color: #dcece8;
   text-align: left;
 }
-.sd-recent-connection-list button:hover,
-.sd-recent-connection-list button:focus-visible { border-color: #72cdb6; background: #183531; outline: 0; }
-.sd-recent-connection-list button strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.sd-recent-connection-list button span { overflow: hidden; color: #8fadA6; font: 10px 'DM Mono', monospace; text-overflow: ellipsis; white-space: nowrap; }
+.sd-recent-connection-item > button:first-child:hover,
+.sd-recent-connection-item > button:first-child:focus-visible { border-color: #72cdb6; background: #183531; outline: 0; }
+.sd-recent-connection-item > button:first-child strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.sd-recent-connection-item > button:first-child span { overflow: hidden; color: #8fadA6; font: 10px 'DM Mono', monospace; text-overflow: ellipsis; white-space: nowrap; }
+.sd-clear-recent-button,
+.sd-remove-recent-button {
+  border: 1px solid #496d66;
+  border-radius: 6px;
+  background: transparent;
+  color: #a9dacf;
+  font-size: 10px;
+  font-weight: 700;
+}
+.sd-clear-recent-button { padding: 4px 6px; }
+.sd-remove-recent-button { padding: 0 8px; }
+.sd-clear-recent-button:hover,
+.sd-clear-recent-button:focus-visible,
+.sd-remove-recent-button:hover,
+.sd-remove-recent-button:focus-visible { border-color: #85d9c3; color: #e0f7f0; background: #1d423a; outline: 0; }
+.sd-recent-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .theme-light .sd-recent-connections { border-color: #b6dbd1; background: #edf8f4; }
-.theme-light .sd-recent-connections > div:first-child strong { color: #267764; }
-.theme-light .sd-recent-connections > div:first-child span { color: #62877d; }
-.theme-light .sd-recent-connection-list button { border-color: #c9e1da; background: #fff; color: #28463f; }
-.theme-light .sd-recent-connection-list button:hover,
-.theme-light .sd-recent-connection-list button:focus-visible { border-color: #58aa95; background: #f1faf7; }
-.theme-light .sd-recent-connection-list button span { color: #638078; }
+.theme-light .sd-recent-connections-heading strong { color: #267764; }
+.theme-light .sd-recent-connections-heading span { color: #62877d; }
+.theme-light .sd-recent-connection-item > button:first-child { border-color: #c9e1da; background: #fff; color: #28463f; }
+.theme-light .sd-recent-connection-item > button:first-child:hover,
+.theme-light .sd-recent-connection-item > button:first-child:focus-visible { border-color: #58aa95; background: #f1faf7; }
+.theme-light .sd-recent-connection-item > button:first-child span { color: #638078; }
+.theme-light .sd-clear-recent-button,
+.theme-light .sd-remove-recent-button { border-color: #9cc8bc; color: #357866; }
+.theme-light .sd-clear-recent-button:hover,
+.theme-light .sd-clear-recent-button:focus-visible,
+.theme-light .sd-remove-recent-button:hover,
+.theme-light .sd-remove-recent-button:focus-visible { border-color: #4b9d88; color: #1b624f; background: #dff2eb; }
 .sd-dialog-scan-row {
   display: flex;
   align-items: center;
