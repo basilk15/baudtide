@@ -71,6 +71,8 @@
   font-size: 12px;
   line-height: 1.55;
 }
+
+.sd-dialog-setup-notice{margin:12px 0 0;padding:9px 10px;border:1px solid #397f70;border-radius:8px;background:#173b35;color:#c3f0e1;font-size:11px;line-height:1.45}
 .sd-recent-connections {
   margin: 0 0 17px;
   padding: 11px;

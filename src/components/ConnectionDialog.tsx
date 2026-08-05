@@ -21,6 +21,12 @@ export type ConnectionRequest = {
   settings: SerialConnectionSettings;
 };
 
+/** Complete, reviewable serial settings that can prefill connection setup. */
+export type ConnectionDialogDefaults = Pick<ConnectionRequest, 'port' | 'baudRate' | 'sessionName' | 'settings'> & {
+  /** Shown only when a deliberate setup handoff needs extra safety context. */
+  setupNotice?: string;
+};
+
 export type ConnectionDialogProps = {
   isOpen: boolean;
   onClose: () => void;
@@ -31,6 +37,9 @@ export type ConnectionDialogProps = {
   initialPort?: string;
   initialBaudRate?: number;
   initialSessionName?: string;
+  initialSettings?: SerialConnectionSettings;
+  /** Explains why setup is prefilled without implying a port was opened. */
+  initialSetupNotice?: string;
   /** Makes every UI scan state easy to exercise without a backend. */
   initialScanState?: PortScanState;
   nativeEnabled?: boolean;
@@ -61,6 +70,8 @@ export function ConnectionDialog({
   initialPort,
   initialBaudRate = 115200,
   initialSessionName = '',
+  initialSettings = defaultSerialConnectionSettings,
+  initialSetupNotice,
   initialScanState = 'ready',
   nativeEnabled = false,
   activePorts = noActivePorts,
@@ -75,7 +86,7 @@ export function ConnectionDialog({
   const [manualPort, setManualPort] = useState(false);
   const [baudRate, setBaudRate] = useState(String(initialBaudRate));
   const [customBaud, setCustomBaud] = useState(!baudRates.includes(initialBaudRate));
-  const [settings, setSettings] = useState<SerialConnectionSettings>(defaultSerialConnectionSettings);
+  const [settings, setSettings] = useState<SerialConnectionSettings>(initialSettings);
   const [sessionName, setSessionName] = useState(initialSessionName || nameForPort(initialPort ?? initialPorts[0]?.path ?? '', initialPorts));
   const [recentConnections, setRecentConnections] = useState<RecentConnection[]>([]);
   const [recentStatus, setRecentStatus] = useState('');
@@ -91,7 +102,7 @@ export function ConnectionDialog({
     setManualPort(false);
     setBaudRate(String(initialBaudRate));
     setCustomBaud(!baudRates.includes(initialBaudRate));
-    setSettings(defaultSerialConnectionSettings);
+    setSettings(initialSettings);
     setSessionName(initialSessionName || nameForPort(initialPort ?? initialPorts[0]?.path ?? '', initialPorts));
     setRecentConnections(loadRecentConnections());
     setRecentStatus('');
@@ -99,7 +110,7 @@ export function ConnectionDialog({
     setSubmitError('');
     setSubmitting(false);
     window.setTimeout(() => sessionNameRef.current?.focus(), 0);
-  }, [isOpen, initialPorts, initialPort, initialBaudRate, initialSessionName, initialScanState]);
+  }, [isOpen, initialPorts, initialPort, initialBaudRate, initialSessionName, initialSettings, initialScanState]);
 
   useEffect(() => {
     if (isOpen && onScan) void scanPorts();
@@ -252,6 +263,7 @@ export function ConnectionDialog({
         <p className="sd-dialog-eyebrow">NEW LIVE TERMINAL</p>
         <h2 id={titleId}>Connect a device</h2>
         <p id={descriptionId} className="sd-dialog-subtitle">{nativeEnabled ? 'Choose a port and name the session. BaudTide will open it and start a raw local log immediately.' : 'Choose a port, name the session, and start monitoring. This browser preview does not open devices.'}</p>
+        {initialSetupNotice && <p className="sd-dialog-setup-notice" role="status">{initialSetupNotice}</p>}
 
         <form onSubmit={submit} noValidate>
           <p className="sd-recent-status" role="status" aria-live="polite" aria-atomic="true">{recentStatus}</p>

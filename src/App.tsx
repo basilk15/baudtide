@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { CommandPalette, type CommandPaletteAction } from './components/CommandPalette';
-import { ConnectionDialog, type ConnectionRequest } from './components/ConnectionDialog';
+import { ConnectionDialog, type ConnectionDialogDefaults, type ConnectionRequest } from './components/ConnectionDialog';
 import { HelpFeedbackPanel } from './components/HelpFeedbackPanel';
 import { LiveMonitor, type LiveMonitorHandle, type MonitorConnectionState } from './components/LiveMonitor';
 import { NotificationsPanel } from './components/NotificationsPanel';
@@ -19,6 +19,7 @@ import { Moon, Radio, Sun, TerminalSquare, X } from 'lucide-react';
 import './light-theme.css';
 import './components/theme-toggle.css';
 import {
+  defaultSerialConnectionSettings,
   disconnectNativeSerialSession,
   chooseNativeLogDirectory,
   isTauriRuntime,
@@ -47,12 +48,17 @@ type LiveSession = ConnectionRequest & {
   displayEncoding: DisplayEncoding;
   showTimestamps: boolean;
   reconnectWhenDeviceReturns: boolean;
+  /** Per-terminal retry details shown while a device is unavailable. */
+  autoReconnectStatus?: AutoReconnectStatus;
+  /** A capture-library limit needs user action, not another port retry. */
+  autoReconnectBlockedReason?: 'storage-limit';
   connectionState: MonitorConnectionState;
 };
 
 type LiveSessions = Record<string, LiveSession>;
 type AppTheme = 'dark' | 'light';
-type AutoReconnectTimer = { timer: number; attempts: number };
+type AutoReconnectStatus = { attempt: number; nextRetryAt: number };
+type AutoReconnectTimer = { timer: number; attempts: number; nextRetryAt: number };
 const AUTO_RECONNECT_INITIAL_DELAY_MS = 2_000;
 const AUTO_RECONNECT_MAX_DELAY_MS = 60_000;
 
@@ -100,7 +106,7 @@ function App() {
   const [page, setPage] = useState<SignalDeckPage>('dashboard');
   const [isWelcomeVisible, setWelcomeVisible] = useState(true);
   const [isConnectionDialogOpen, setConnectionDialogOpen] = useState(false);
-  const [connectionDefaults, setConnectionDefaults] = useState<Pick<ConnectionRequest, 'port' | 'sessionName'> | null>(null);
+  const [connectionDefaults, setConnectionDefaults] = useState<ConnectionDialogDefaults | null>(null);
   const [liveSessions, setLiveSessions] = useState<LiveSessions>({});
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [theme, setTheme] = useState<AppTheme>('dark');
@@ -117,7 +123,16 @@ function App() {
   const selectedSession = selectedSessionId ? liveSessions[selectedSessionId] : undefined;
 
   const openConnectionDialog = (port?: NativeSerialPort) => {
-    setConnectionDefaults(port ? { port: port.path, sessionName: port.label } : null);
+    setConnectionDefaults(port ? {
+      port: port.path,
+      baudRate: preferences.serial.baudRate,
+      sessionName: port.label,
+      settings: defaultSerialConnectionSettings,
+    } : null);
+    setConnectionDialogOpen(true);
+  };
+  const openReconnectSetup = (defaults: ConnectionDialogDefaults) => {
+    setConnectionDefaults(defaults);
     setConnectionDialogOpen(true);
   };
   const navigate = (nextPage: SignalDeckPage) => {
@@ -280,6 +295,36 @@ function App() {
       : current);
   };
 
+  const clearAutoReconnect = (sessionId: string, clearAttempts = true) => {
+    const pending = autoReconnectTimers.current[sessionId];
+    if (pending) {
+      window.clearTimeout(pending.timer);
+      delete autoReconnectTimers.current[sessionId];
+    }
+    if (clearAttempts) delete autoReconnectAttempts.current[sessionId];
+    setLiveSessions((current) => current[sessionId]?.autoReconnectStatus
+      ? { ...current, [sessionId]: { ...current[sessionId], autoReconnectStatus: undefined } }
+      : current);
+  };
+
+  const setSessionAutoReconnect = (sessionId: string, enabled: boolean) => {
+    const session = liveSessions[sessionId];
+    // Storage exhaustion is deliberately non-retryable: a returning device
+    // cannot make room for the capture that was safely stopped.
+    if (!session || (enabled && session.autoReconnectBlockedReason)) return;
+    if (!enabled) clearAutoReconnect(sessionId);
+    setLiveSessions((current) => current[sessionId]
+      ? {
+          ...current,
+          [sessionId]: {
+            ...current[sessionId],
+            reconnectWhenDeviceReturns: enabled,
+            autoReconnectStatus: enabled ? undefined : current[sessionId].autoReconnectStatus,
+          },
+        }
+      : current);
+  };
+
   // A native `error` status is terminal: the backend has already released this
   // session's port and log capture, so the tab must not keep reserving the port.
   const markNativeSessionEnded = (sessionId: string) => {
@@ -292,6 +337,7 @@ function App() {
 
   const markNativeStorageLimit = (sessionId: string) => {
     const session = liveSessions[sessionId];
+    clearAutoReconnect(sessionId);
     setLiveSessions((current) => current[sessionId]
       ? {
           ...current,
@@ -303,6 +349,8 @@ function App() {
             // avoid futile background retries while preserving manual retry
             // after the user frees space or raises the storage limit.
             reconnectWhenDeviceReturns: false,
+            autoReconnectStatus: undefined,
+            autoReconnectBlockedReason: 'storage-limit',
           },
         }
       : current);
@@ -331,6 +379,9 @@ function App() {
   const disconnectSession = async (sessionId: string) => {
     const session = liveSessions[sessionId];
     if (!session) return;
+    // Disconnect is intentional, so cancel a pending automatic retry before
+    // releasing the backend handle. The session remains manually reconnectable.
+    clearAutoReconnect(sessionId);
     if (session.native && session.nativeSessionOpen) {
       try {
         await disconnectNativeSerialSession(session.id);
@@ -348,6 +399,7 @@ function App() {
   const closeSession = async (sessionId: string) => {
     const session = liveSessions[sessionId];
     if (!session) return;
+    clearAutoReconnect(sessionId);
     if (session.native && session.nativeSessionOpen) {
       try {
         await disconnectNativeSerialSession(session.id);
@@ -370,6 +422,9 @@ function App() {
   const reconnectSession = async (sessionId: string, automatic = false) => {
     const session = liveSessions[sessionId];
     if (!session || !session.native) return;
+    // A manual retry replaces a scheduled one and begins a fresh backoff if it
+    // fails. The timer callback has already removed its own entry.
+    if (!automatic) clearAutoReconnect(sessionId);
     if (portIsInUse(session.port, sessionId)) throw new Error(`${session.port} is already open in another BaudTide terminal.`);
     updateSessionState(sessionId, 'reconnecting');
     let releasedNativeHandle = false;
@@ -386,7 +441,18 @@ function App() {
         sessionName: session.sessionName,
         settings: session.settings,
       });
-      const next: LiveSession = { ...session, id: restarted.id, logPath: restarted.logPath, nativeSessionOpen: true, connectionState: 'connected' };
+      const next: LiveSession = {
+        ...session,
+        id: restarted.id,
+        logPath: restarted.logPath,
+        nativeSessionOpen: true,
+        connectionState: 'connected',
+        // A successful manual restart proves the storage condition was dealt
+        // with (or a larger limit was selected), so restore the per-session
+        // control without silently re-enabling retries.
+        autoReconnectStatus: undefined,
+        autoReconnectBlockedReason: undefined,
+      };
       setLiveSessions((current) => {
         if (!current[sessionId]) return current;
         const { [sessionId]: _previous, ...remaining } = current;
@@ -425,12 +491,19 @@ function App() {
       if (autoReconnectTimers.current[sessionId]) continue;
       const attempts = autoReconnectAttempts.current[sessionId] ?? 0;
       const delay = Math.min(AUTO_RECONNECT_INITIAL_DELAY_MS * (2 ** attempts), AUTO_RECONNECT_MAX_DELAY_MS);
+      const nextRetryAt = Date.now() + delay;
+      setLiveSessions((current) => current[sessionId]
+        ? { ...current, [sessionId]: { ...current[sessionId], autoReconnectStatus: { attempt: attempts + 1, nextRetryAt } } }
+        : current);
       const timer = window.setTimeout(() => {
         delete autoReconnectTimers.current[sessionId];
         autoReconnectAttempts.current[sessionId] = attempts + 1;
+        setLiveSessions((current) => current[sessionId]?.autoReconnectStatus
+          ? { ...current, [sessionId]: { ...current[sessionId], autoReconnectStatus: undefined } }
+          : current);
         void reconnectSession(sessionId, true).catch(() => undefined);
       }, delay);
-      autoReconnectTimers.current[sessionId] = { timer, attempts };
+      autoReconnectTimers.current[sessionId] = { timer, attempts, nextRetryAt };
     }
   }, [liveSessions]);
 
@@ -541,15 +614,15 @@ function App() {
         <div className="signaldeck-topbar-actions"><CommandPalette actions={commandActions} onAction={runCommand} /><TopThemeToggle theme={theme} onThemeChange={(nextTheme) => { setTheme(nextTheme); void saveAppPreferences({ ...preferences, appearance: { theme: nextTheme } }); }} /><NotificationsPanel notifications={notifications} onMarkRead={markRead} onMarkAllRead={markAllRead} /><WorkspaceProfileMenu onPreferences={() => navigate('preferences')} /></div>
       </header>
       <div className="signaldeck-content">
-        <div hidden={page !== 'sessions'}><SessionsWorkspace sessions={sessions} selectedSessionId={selectedSessionId} onSelect={setSelectedSessionId} onRequestConnection={openConnectionDialog} onDisconnect={disconnectSession} onReconnect={reconnectSession} onClose={closeSession} onConnectionStateChange={updateSessionState} onNativeSessionEnded={markNativeSessionEnded} onNativeStorageLimit={markNativeStorageLimit} onNativeSessionStartupFailure={releaseNativeSessionAfterStartupFailure} onMonitorRef={(sessionId, monitor) => { monitorRefs.current[sessionId] = monitor; }} /></div>
+        <div hidden={page !== 'sessions'}><SessionsWorkspace sessions={sessions} selectedSessionId={selectedSessionId} onSelect={setSelectedSessionId} onRequestConnection={openConnectionDialog} onDisconnect={disconnectSession} onReconnect={reconnectSession} onAutoReconnectChange={setSessionAutoReconnect} onClose={closeSession} onConnectionStateChange={updateSessionState} onNativeSessionEnded={markNativeSessionEnded} onNativeStorageLimit={markNativeStorageLimit} onNativeSessionStartupFailure={releaseNativeSessionAfterStartupFailure} onMonitorRef={(sessionId, monitor) => { monitorRefs.current[sessionId] = monitor; }} /></div>
         {page !== 'sessions' && (page === 'preferences' ? <PreferencesScreen preferences={preferences} nativeEnabled={nativeRuntime} onSave={saveAppPreferences} onThemePreview={setTheme} onChooseLogDirectory={chooseLogDirectory} />
           : page === 'help' ? <HelpFeedbackPanel nativeEnabled={nativeRuntime} openSessionCount={sessions.length} activeSessionCount={sessions.filter((session) => session.native && session.connectionState === 'connected').length} />
-            : page === 'logs' ? <SavedLogsScreen nativeEnabled={nativeRuntime} activeLogPath={activeLogPath} onRequestConnection={openConnectionDialog} />
+            : page === 'logs' ? <SavedLogsScreen nativeEnabled={nativeRuntime} activeLogPath={activeLogPath} onRequestConnection={openConnectionDialog} onReconnectWithSettings={openReconnectSetup} />
               : isWelcomeVisible ? <WelcomeScreen nativeEnabled={nativeRuntime} onConnect={openConnectionDialog} onExplore={() => setWelcomeVisible(false)} />
                 : <PortDiscoveryDashboard nativeEnabled={nativeRuntime} onScan={listNativeSerialPorts} onConnect={openConnectionDialog} onRequestConnection={openConnectionDialog} />)}
       </div>
     </section>
-    <ConnectionDialog isOpen={isConnectionDialogOpen} onClose={() => { setConnectionDialogOpen(false); setConnectionDefaults(null); }} onStartMonitoring={startMonitoring} onScan={nativeRuntime ? listNativeSerialPorts : undefined} initialPort={connectionDefaults?.port} initialBaudRate={preferences.serial.baudRate} initialSessionName={connectionDefaults?.sessionName} nativeEnabled={nativeRuntime} activePorts={sessions.filter((session) => session.native ? session.nativeSessionOpen : true).map((session) => session.port)} />
+    <ConnectionDialog isOpen={isConnectionDialogOpen} onClose={() => { setConnectionDialogOpen(false); setConnectionDefaults(null); }} onStartMonitoring={startMonitoring} onScan={nativeRuntime ? listNativeSerialPorts : undefined} initialPort={connectionDefaults?.port} initialBaudRate={connectionDefaults?.baudRate ?? preferences.serial.baudRate} initialSessionName={connectionDefaults?.sessionName} initialSettings={connectionDefaults?.settings} initialSetupNotice={connectionDefaults?.setupNotice} nativeEnabled={nativeRuntime} activePorts={sessions.filter((session) => session.native ? session.nativeSessionOpen : true).map((session) => session.port)} />
   </div>;
 }
 
@@ -560,6 +633,7 @@ type SessionsWorkspaceProps = {
   onRequestConnection: () => void;
   onDisconnect: (sessionId: string) => Promise<void>;
   onReconnect: (sessionId: string) => Promise<void>;
+  onAutoReconnectChange: (sessionId: string, enabled: boolean) => void;
   onClose: (sessionId: string) => Promise<void>;
   onConnectionStateChange: (sessionId: string, state: MonitorConnectionState) => void;
   onNativeSessionEnded: (sessionId: string) => void;
@@ -570,7 +644,7 @@ type SessionsWorkspaceProps = {
 
 type SessionsView = TerminalLayout;
 
-function SessionsWorkspace({ sessions, selectedSessionId, onSelect, onRequestConnection, onDisconnect, onReconnect, onClose, onConnectionStateChange, onNativeSessionEnded, onNativeStorageLimit, onNativeSessionStartupFailure, onMonitorRef }: SessionsWorkspaceProps) {
+function SessionsWorkspace({ sessions, selectedSessionId, onSelect, onRequestConnection, onDisconnect, onReconnect, onAutoReconnectChange, onClose, onConnectionStateChange, onNativeSessionEnded, onNativeStorageLimit, onNativeSessionStartupFailure, onMonitorRef }: SessionsWorkspaceProps) {
   const activeCount = sessions.filter((session) => session.native && session.connectionState === 'connected').length;
   const [view, setView] = useState<SessionsView>('tabs');
   const workspaceRef = useRef<HTMLElement>(null);
@@ -607,7 +681,7 @@ function SessionsWorkspace({ sessions, selectedSessionId, onSelect, onRequestCon
       </div>
       <div className={`sd-session-monitors ${activeView === 'tiled' ? 'is-tiled' : ''}`} aria-label={activeView === 'tiled' ? 'Tiled serial terminals' : undefined}>
         {sessions.map((session) => <div className="sd-session-panel" id={`monitor-${session.uiKey}`} role={activeView === 'tabs' ? 'tabpanel' : 'region'} aria-labelledby={activeView === 'tabs' ? `tab-${session.uiKey}` : undefined} aria-label={activeView === 'tiled' ? `${session.sessionName} on ${session.port} terminal` : undefined} hidden={activeView === 'tabs' && session.id !== selectedSessionId} key={session.uiKey}>
-          <LiveMonitor ref={(monitor) => onMonitorRef(session.id, monitor)} sessionName={session.sessionName} port={session.port} baudRate={session.baudRate} lineEnding={session.lineEnding} displayEncoding={session.displayEncoding} showTimestamps={session.showTimestamps} sessionId={session.id} nativeSession={session.native} capturePath={session.logPath} initialConnectionState={session.connectionState} onConnectionStateChange={(state) => onConnectionStateChange(session.id, state)} onNativeSessionEnded={session.native ? () => onNativeSessionEnded(session.id) : undefined} onNativeStorageLimit={session.native ? () => onNativeStorageLimit(session.id) : undefined} onNativeSessionStartupFailure={session.native ? async () => { await onNativeSessionStartupFailure(session.id); } : undefined} onSend={session.native ? async (text) => { await sendNativeSerialText(session.id, text); } : undefined} onSendBytes={session.native ? async (bytes) => { await sendNativeSerialBytes(session.id, bytes); } : undefined} onDisconnect={session.native ? async () => { await onDisconnect(session.id); } : undefined} onReconnect={session.native ? async () => { await onReconnect(session.id); } : undefined} onClose={async () => { await onClose(session.id); }} />
+          <LiveMonitor ref={(monitor) => onMonitorRef(session.id, monitor)} sessionName={session.sessionName} port={session.port} baudRate={session.baudRate} lineEnding={session.lineEnding} displayEncoding={session.displayEncoding} showTimestamps={session.showTimestamps} sessionId={session.id} nativeSession={session.native} capturePath={session.logPath} initialConnectionState={session.connectionState} autoReconnectEnabled={session.reconnectWhenDeviceReturns} autoReconnectStatus={session.autoReconnectStatus} autoReconnectBlockedReason={session.autoReconnectBlockedReason} onAutoReconnectChange={session.native ? (enabled) => onAutoReconnectChange(session.id, enabled) : undefined} onConnectionStateChange={(state) => onConnectionStateChange(session.id, state)} onNativeSessionEnded={session.native ? () => onNativeSessionEnded(session.id) : undefined} onNativeStorageLimit={session.native ? () => onNativeStorageLimit(session.id) : undefined} onNativeSessionStartupFailure={session.native ? async () => { await onNativeSessionStartupFailure(session.id); } : undefined} onSend={session.native ? async (text) => { await sendNativeSerialText(session.id, text); } : undefined} onSendBytes={session.native ? async (bytes) => { await sendNativeSerialBytes(session.id, bytes); } : undefined} onDisconnect={session.native ? async () => { await onDisconnect(session.id); } : undefined} onReconnect={session.native ? async () => { await onReconnect(session.id); } : undefined} onClose={async () => { await onClose(session.id); }} />
         </div>)}
       </div>
     </>}

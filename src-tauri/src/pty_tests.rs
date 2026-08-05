@@ -361,6 +361,75 @@ fn pty_capture_loop_persists_raw_bytes_and_replays_startup_events_in_order() {
 }
 
 #[test]
+fn pty_capture_loop_truncates_a_quota_crossing_chunk_then_finalizes() {
+    let mut pty = PtyPair::new();
+    let reader = open_serial(&pty, Duration::from_millis(50));
+    let mut capture = capture_file("quota-boundary");
+    let info = capture_info(&capture.path);
+    let log_path = capture.path.clone();
+    let log_file = capture.file.take().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    // Start with 11 bytes already reserved by another capture. The single PTY
+    // write below therefore crosses the five bytes still available.
+    let quota = Arc::new(Mutex::new(CaptureQuota {
+        used_bytes: 11,
+        limit_bytes: 16,
+    }));
+    let (event_tx, event_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+
+    let reader_stop = Arc::clone(&stop);
+    let reader_quota = Arc::clone(&quota);
+    let reader_info = info.clone();
+    let reader_thread = thread::spawn(move || {
+        let terminal_status = run_serial_capture_loop(
+            reader,
+            log_file,
+            &reader_info,
+            reader_stop.as_ref(),
+            &reader_quota,
+            |event| event_tx.send(event).unwrap(),
+        );
+        finished_tx.send(terminal_status).unwrap();
+    });
+
+    let chunk = b"crosses-quota";
+    let expected_prefix = &chunk[..5];
+    let started = Instant::now();
+    pty.master.write_all(chunk).unwrap();
+
+    // The reader has a finite timeout, but quota exhaustion must not wait for
+    // another read: the terminal status arrives from the same admitted chunk.
+    let (status, message) = finished_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("quota boundary did not stop the capture loop before its deadline")
+        .expect("a quota boundary should report a terminal status");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "storage-limit reporting exceeded the test deadline"
+    );
+    reader_thread.join().unwrap();
+
+    let events = event_rx.try_iter().collect::<Vec<_>>();
+    assert_eq!(
+        events.len(),
+        1,
+        "crossing chunk should emit only its prefix"
+    );
+    assert_eq!(events[0].sequence, 1);
+    assert_eq!(events[0].bytes, expected_prefix);
+    assert_eq!(std::fs::read(&log_path).unwrap(), expected_prefix);
+    assert_eq!(status, "storage-limit");
+    assert_eq!(
+        message,
+        "Storage limit reached; logging stopped before exceeding the configured capture-library limit."
+    );
+    let quota = quota.lock().unwrap();
+    assert_eq!(quota.used_bytes, quota.limit_bytes);
+    assert!(quota.used_bytes <= quota.limit_bytes);
+}
+
+#[test]
 fn pty_capture_handoff_stays_ordered_across_a_frontend_reload() {
     let mut pty = PtyPair::new();
     let reader = open_serial(&pty, Duration::from_millis(50));

@@ -77,6 +77,8 @@ export type SavedLog = {
   sessionName: string;
   port?: string;
   baudRate?: number;
+  /** Present only when the capture sidecar retained complete serial framing. */
+  settings?: SerialConnectionSettings;
   sizeBytes: number;
   modifiedAt: string;
   sessionId?: string;

@@ -315,6 +315,7 @@ struct SavedLog {
     session_name: String,
     port: Option<String>,
     baud_rate: Option<u32>,
+    settings: Option<SerialSettings>,
     size_bytes: u64,
     modified_at: String,
     session_id: Option<String>,
@@ -343,6 +344,8 @@ struct LogIndexRecord {
     session_name: String,
     port: String,
     baud_rate: u32,
+    #[serde(default)]
+    settings: Option<SerialSettings>,
     started_at: String,
     updated_at: String,
     ended_at: Option<String>,
@@ -2182,9 +2185,9 @@ mod tests {
         remove_log_text_indexes_for_path_in_directory, saved_log_text_index_path,
         search_fresh_log_text_index_in_directory, search_raw_log,
         validate_preference_log_directory, websocket_accept_key, ApplicationSettings, CaptureQuota,
-        FlowControlSetting, LogIndexRecord, ParitySetting, SavedLogTextIndexHeader, SerialState,
-        StartSessionRequest, StopBitsSetting, CAPTURE_DURABILITY_SYNC_INTERVAL, GIBIBYTE,
-        SEARCH_CANCELLED_MESSAGE, SEARCH_INDEX_MAGIC, SEARCH_INDEX_SCHEMA_VERSION,
+        FlowControlSetting, LogIndexRecord, ParitySetting, SavedLogTextIndexHeader, SerialSettings,
+        SerialState, StartSessionRequest, StopBitsSetting, CAPTURE_DURABILITY_SYNC_INTERVAL,
+        GIBIBYTE, SEARCH_CANCELLED_MESSAGE, SEARCH_INDEX_MAGIC, SEARCH_INDEX_SCHEMA_VERSION,
         SEARCH_PER_LOG_BYTE_LIMIT, SEARCH_READ_BUFFER_SIZE,
     };
     use std::{
@@ -2413,6 +2416,7 @@ mod tests {
             session_name: "Motor bench".into(),
             port: "/dev/ttyUSB0".into(),
             baud_rate: 115_200,
+            settings: Some(SerialSettings::default()),
             started_at: "2026-07-20T10:00:00.000Z".into(),
             updated_at: "2026-07-20T10:01:00.000Z".into(),
             ended_at: Some("2026-07-20T10:01:00.000Z".into()),
@@ -2425,8 +2429,27 @@ mod tests {
         assert_eq!(restored.session_name, "Motor bench");
         assert_eq!(restored.port, "/dev/ttyUSB0");
         assert_eq!(restored.baud_rate, 115_200);
+        assert_eq!(
+            restored
+                .settings
+                .as_ref()
+                .map(|settings| settings.data_bits),
+            Some(8)
+        );
+        assert!(matches!(
+            restored.settings.as_ref().map(|settings| &settings.parity),
+            Some(ParitySetting::None)
+        ));
         assert_eq!(restored.ended_at, record.ended_at);
         assert_eq!(restored.state, "disconnected");
+
+        let mut legacy_json = serde_json::to_value(&record).unwrap();
+        legacy_json
+            .as_object_mut()
+            .expect("metadata serializes to an object")
+            .remove("settings");
+        let legacy: LogIndexRecord = serde_json::from_value(legacy_json).unwrap();
+        assert!(legacy.settings.is_none());
     }
 
     #[test]
@@ -2446,6 +2469,7 @@ mod tests {
                 session_name: "Motor bench".into(),
                 port: "/dev/ttyUSB0".into(),
                 baud_rate: 115_200,
+                settings: None,
                 started_at: "2026-07-20T10:00:00.000Z".into(),
                 updated_at: "2026-07-20T10:01:00.000Z".into(),
                 ended_at: Some("2026-07-20T10:01:00.000Z".into()),
@@ -2458,6 +2482,7 @@ mod tests {
                 session_name: "Motor bench".into(),
                 port: "/dev/ttyUSB0".into(),
                 baud_rate: 115_200,
+                settings: None,
                 started_at: "2026-07-20T10:02:00.000Z".into(),
                 updated_at: "2026-07-20T10:02:00.000Z".into(),
                 ended_at: None,
@@ -2533,6 +2558,7 @@ mod tests {
             session_name: "Motor bench".into(),
             port: "/dev/ttyUSB0".into(),
             baud_rate: 115_200,
+            settings: None,
             started_at: "2026-07-20T10:00:00.000Z".into(),
             updated_at: "2026-07-20T10:00:00.000Z".into(),
             ended_at: None,
@@ -3000,11 +3026,14 @@ impl LogIndexRecord {
     fn new(info: &SessionInfo) -> Self {
         let now = now_timestamp();
         Self {
+            // The added framing field is optional, so this remains compatible
+            // with existing version-1 sidecars and their index readers.
             schema_version: 1,
             session_id: info.id.clone(),
             session_name: info.session_name.clone(),
             port: info.port.clone(),
             baud_rate: info.baud_rate,
+            settings: Some(info.settings.clone()),
             started_at: now.clone(),
             updated_at: now,
             ended_at: None,
@@ -3572,6 +3601,9 @@ fn saved_log_from_path(
         baud_rate: record
             .map(|value| value.baud_rate)
             .or_else(|| active.map(|value| value.baud_rate)),
+        settings: record
+            .and_then(|value| value.settings.clone())
+            .or_else(|| active.map(|value| value.settings.clone())),
         size_bytes: metadata.len(),
         modified_at: modified_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         session_id: record

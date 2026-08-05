@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Check, Clock3, Copy, FileText, FolderOpen, HardDrive, LoaderCircle, Radio, RefreshCw, Save, Search, Trash2, X } from 'lucide-react';
 import { cancelNativeSavedLogSearch, deleteNativeSavedLog, listNativeSavedLogs, readNativeSavedLog, saveNativeSavedLog, searchNativeSavedLogs, type SavedLog, type SavedLogContent, type SavedLogSearchResponse } from '../lib/serial';
+import type { ConnectionDialogDefaults } from './ConnectionDialog';
 import './saved-logs.css';
 
 type SavedLogsScreenProps = {
   nativeEnabled: boolean;
   activeLogPath?: string;
   onRequestConnection: () => void;
+  /** Opens setup only; a serial session starts only after dialog confirmation. */
+  onReconnectWithSettings: (defaults: ConnectionDialogDefaults) => void;
 };
 
 type LogStateFilter = 'all' | 'active' | 'completed' | 'attention';
@@ -52,12 +55,29 @@ function formatCapturedAt(value: string) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
 
+function reconnectDefaultsForLog(log: SavedLog): ConnectionDialogDefaults | null {
+  const { port, baudRate, sessionName, settings } = log;
+  if (!log.metadataAvailable || !port?.trim() || !sessionName.trim()) return null;
+  if (typeof baudRate !== 'number' || !Number.isInteger(baudRate) || baudRate < 300 || baudRate > 4_000_000) return null;
+  if (!settings || ![5, 6, 7, 8].includes(settings.dataBits)) return null;
+  if (!['none', 'odd', 'even'].includes(settings.parity)) return null;
+  if (!['one', 'two'].includes(settings.stopBits)) return null;
+  if (!['none', 'software', 'hardware'].includes(settings.flowControl)) return null;
+  return {
+    port: port.trim(),
+    baudRate,
+    sessionName: sessionName.trim(),
+    settings,
+    setupNotice: 'Saved capture settings are prefilled. Review them, then select Start monitoring to open a device.',
+  };
+}
+
 async function copyText(value: string) {
   if (!navigator.clipboard) throw new Error('Clipboard access is unavailable.');
   await navigator.clipboard.writeText(value);
 }
 
-export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnection }: SavedLogsScreenProps) {
+export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnection, onReconnectWithSettings }: SavedLogsScreenProps) {
   const [logs, setLogs] = useState<SavedLog[]>([]);
   const [query, setQuery] = useState('');
   const [fullSearch, setFullSearch] = useState(false);
@@ -429,11 +449,12 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
           const isSaving = savingPaths.has(log.path);
           const isActive = isActiveCapture(log);
           const isBusy = isOpening || isSaving || isDeleting === log.path;
+          const reconnectDefaults = reconnectDefaultsForLog(log);
           return <article className="sd-saved-log-row" role="listitem" key={log.path}>
           <div className={`sd-saved-log-icon ${log.state}`}><FileText size={20} /></div>
            <div className="sd-saved-log-primary"><div className="sd-saved-log-name"><strong>{log.sessionName}</strong>{log.state === 'capturing' && <span><i /> Capturing now</span>}{log.state === 'error' && <span className="is-error">Ended with error</span>}{log.state === 'quota-reached' && <span className="is-error">Stopped at storage limit</span>}{log.state === 'interrupted' && <span className="is-muted">Capture interrupted</span>}</div><p>{log.port ? `${log.port} · ${log.baudRate?.toLocaleString()} baud` : log.metadataAvailable ? 'Connection metadata unavailable' : 'Legacy capture · metadata unavailable'}</p><small>{log.fileName}</small>{firstContentMatch?.snippet && <mark className="sd-saved-log-match">{firstContentMatch.snippet}</mark>}{searchResult && searchResult.contentMatchCount > 1 && <small className="sd-saved-log-match-count">{searchResult.contentMatchCount} content matches in searched bytes</small>}</div>
           <div className="sd-saved-log-meta"><span><Clock3 size={14} /> {formatCapturedAt(log.startedAt ?? log.modifiedAt)}</span><span><HardDrive size={14} /> {formatBytes(log.sizeBytes)}</span>{log.endedAt && <span>Ended {formatCapturedAt(log.endedAt)}</span>}</div>
-          <div className="sd-saved-log-actions"><button className="sd-secondary-button" type="button" onClick={() => void openLog(log)} disabled={isOpening || isDeleting === log.path}>{isOpening ? <LoaderCircle className="sd-spin" size={15} /> : <FileText size={15} />} Preview</button><button className="sd-secondary-button" type="button" onClick={() => void saveCopy(log)} disabled={isSaving || isDeleting === log.path}>{isSaving ? <LoaderCircle className="sd-spin" size={15} /> : <Save size={15} />} Save copy</button><button className="sd-saved-log-delete" type="button" onClick={(event) => requestDeletion(log, event.currentTarget)} disabled={isActive || isBusy} title={isActive ? 'Disconnect this active session before deleting its capture' : isBusy ? 'Wait for the current log operation to finish' : 'Delete saved log'} aria-label={`Delete ${log.fileName}`}><Trash2 size={15} /> Delete</button><button className="sd-saved-log-copy" type="button" onClick={() => void copy(log.path, 'Log file path copied.')} disabled={isDeleting === log.path} title="Copy log file path" aria-label={`Copy path for ${log.fileName}`}><Copy size={16} /></button></div>
+          <div className="sd-saved-log-actions">{reconnectDefaults && <button className="sd-secondary-button sd-saved-log-reconnect" type="button" onClick={() => onReconnectWithSettings(reconnectDefaults)} title="Open reconnect setup with this capture's saved settings; no device is opened yet." aria-label={`Reconnect ${log.sessionName} with saved settings. Opens setup and does not open a device yet.`}><Radio size={15} /> Reconnect setup</button>}<button className="sd-secondary-button" type="button" onClick={() => void openLog(log)} disabled={isOpening || isDeleting === log.path}>{isOpening ? <LoaderCircle className="sd-spin" size={15} /> : <FileText size={15} />} Preview</button><button className="sd-secondary-button" type="button" onClick={() => void saveCopy(log)} disabled={isSaving || isDeleting === log.path}>{isSaving ? <LoaderCircle className="sd-spin" size={15} /> : <Save size={15} />} Save copy</button><button className="sd-saved-log-delete" type="button" onClick={(event) => requestDeletion(log, event.currentTarget)} disabled={isActive || isBusy} title={isActive ? 'Disconnect this active session before deleting its capture' : isBusy ? 'Wait for the current log operation to finish' : 'Delete saved log'} aria-label={`Delete ${log.fileName}`}><Trash2 size={15} /> Delete</button><button className="sd-saved-log-copy" type="button" onClick={() => void copy(log.path, 'Log file path copied.')} disabled={isDeleting === log.path} title="Copy log file path" aria-label={`Copy path for ${log.fileName}`}><Copy size={16} /></button></div>
         </article>;
         })}
       </div> : <section className="sd-saved-logs-empty"><div><FolderOpen size={26} /></div><h2>{logs.length ? searchedLogs.length ? 'No logs match that organization.' : 'No logs match that search.' : 'No saved captures yet.'}</h2><p>{logs.length ? searchedLogs.length ? 'Change the state filter or sort, or reset organization, to see these matching captures.' : 'Clear or adjust the search to see your local capture library.' : 'Start a serial session and its raw log will appear here immediately—even while it is still recording.'}</p>{logs.length ? searchedLogs.length ? <button className="sd-secondary-button" type="button" onClick={resetOrganization}>Reset organization</button> : <button className="sd-secondary-button" type="button" onClick={() => setQuery('')}>Clear search</button> : <button className="sd-primary-button" type="button" onClick={onRequestConnection}><Radio size={16} /> Start monitoring</button>}</section>}

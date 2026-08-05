@@ -7,6 +7,7 @@ import './live-monitor.css';
 import './live-monitor-preferences.css';
 
 export type MonitorConnectionState = 'connected' | 'reconnecting' | 'disconnected' | 'error';
+export type AutoReconnectStatus = { attempt: number; nextRetryAt: number };
 
 export type MonitorLine = {
   id: string;
@@ -197,6 +198,11 @@ export type LiveMonitorProps = {
   onSend?: (text: string) => void | Promise<void>;
   onSendBytes?: (bytes: number[]) => void | Promise<void>;
   onReconnect?: () => void | Promise<void>;
+  /** Per-session automatic reconnect is controlled by the workspace owner. */
+  autoReconnectEnabled?: boolean;
+  autoReconnectStatus?: AutoReconnectStatus;
+  autoReconnectBlockedReason?: 'storage-limit';
+  onAutoReconnectChange?: (enabled: boolean) => void;
   onDisconnect?: () => void | Promise<void>;
   onClear?: () => void;
   onClose?: () => void;
@@ -257,6 +263,10 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   onSend,
   onSendBytes,
   onReconnect,
+  autoReconnectEnabled = false,
+  autoReconnectStatus,
+  autoReconnectBlockedReason,
+  onAutoReconnectChange,
   onDisconnect,
   onClear,
   onClose,
@@ -292,12 +302,20 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   const [filterPreset, setFilterPreset] = useState<OutputFilterPreset>('all');
   const [outputFilter, setOutputFilter] = useState('');
   const [capturePathCopyStatus, setCapturePathCopyStatus] = useState<'idle' | 'copied' | 'error'>('idle');
+  const [retryClock, setRetryClock] = useState(() => Date.now());
   const filterPanelId = useId();
   const filterInputId = useId();
   const filterStatusId = useId();
   const sendInputId = useId();
   const sendModeId = useId();
   const sendEndingId = useId();
+
+  useEffect(() => {
+    if (!autoReconnectStatus) return undefined;
+    setRetryClock(Date.now());
+    const interval = window.setInterval(() => setRetryClock(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [autoReconnectStatus]);
   const sendHintId = useId();
   const sendErrorId = useId();
   const outputRef = useRef<HTMLDivElement>(null);
@@ -936,6 +954,26 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   }[connectionState];
   const StatusIcon = connectionCopy.Icon;
   const CaptureIcon = captureCopy.Icon;
+  const retrySecondsRemaining = autoReconnectStatus
+    ? Math.max(0, Math.ceil((autoReconnectStatus.nextRetryAt - retryClock) / 1_000))
+    : null;
+  const autoReconnectCopy = autoReconnectBlockedReason === 'storage-limit'
+    ? {
+        title: 'Automatic reconnect unavailable',
+        detail: 'Storage is full. Free space or raise the limit before reconnecting manually.',
+      }
+    : autoReconnectEnabled
+      ? autoReconnectStatus
+        ? {
+            title: `Retry attempt ${autoReconnectStatus.attempt} queued`,
+            detail: retrySecondsRemaining
+              ? `Trying ${port} again in ${retrySecondsRemaining} second${retrySecondsRemaining === 1 ? '' : 's'} · exponential backoff.`
+              : `Starting retry attempt ${autoReconnectStatus.attempt} now.`,
+          }
+        : connectionState === 'reconnecting'
+          ? { title: 'Automatic reconnect is trying', detail: `Attempting to reopen ${port}.` }
+          : { title: 'Automatic reconnect is on', detail: 'This terminal will retry if its device becomes unavailable.' }
+      : { title: 'Automatic reconnect is paused', detail: 'Use Reconnect to try now, or resume retries for this terminal.' };
 
   return (
     <section className="sd-monitor" aria-label={`${sessionName} live serial monitor`}>
@@ -969,6 +1007,23 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
           </button>
           <span className="sd-visually-hidden" role="status" aria-live="polite">{capturePathCopyStatus === 'copied' ? 'Raw capture path copied.' : capturePathCopyStatus === 'error' ? 'Could not copy the raw capture path.' : ''}</span>
         </div>}
+      </section>}
+
+      {nativeSession && <section className={`sd-auto-reconnect-control${autoReconnectBlockedReason ? ' is-unavailable' : ''}`} aria-labelledby={`auto-reconnect-${sessionId ?? 'session'}`}>
+        <div>
+          <strong id={`auto-reconnect-${sessionId ?? 'session'}`}>{autoReconnectCopy.title}</strong>
+          <span>{autoReconnectCopy.detail}</span>
+        </div>
+        <button
+          type="button"
+          className="sd-monitor-secondary"
+          onClick={() => onAutoReconnectChange?.(!autoReconnectEnabled)}
+          disabled={!onAutoReconnectChange || Boolean(autoReconnectBlockedReason)}
+          aria-pressed={autoReconnectEnabled}
+          title={autoReconnectBlockedReason ? 'Automatic reconnect is disabled while the storage limit is reached' : autoReconnectEnabled ? 'Pause automatic reconnect attempts for this terminal' : 'Resume automatic reconnect attempts for this terminal'}
+        >
+          <RotateCw size={14} aria-hidden="true" /> {autoReconnectEnabled ? 'Pause retries' : 'Resume retries'}
+        </button>
       </section>}
 
       <MobileSharePanel sessionId={sessionId} nativeSession={nativeSession} sessionConnected={connectionState === 'connected'} />
