@@ -2182,8 +2182,9 @@ mod tests {
         remove_log_text_indexes_for_path_in_directory, saved_log_text_index_path,
         search_fresh_log_text_index_in_directory, search_raw_log,
         validate_preference_log_directory, websocket_accept_key, ApplicationSettings, CaptureQuota,
-        FlowControlSetting, LogIndexRecord, ParitySetting, SerialState, StartSessionRequest,
-        StopBitsSetting, CAPTURE_DURABILITY_SYNC_INTERVAL, GIBIBYTE, SEARCH_CANCELLED_MESSAGE,
+        FlowControlSetting, LogIndexRecord, ParitySetting, SavedLogTextIndexHeader, SerialState,
+        StartSessionRequest, StopBitsSetting, CAPTURE_DURABILITY_SYNC_INTERVAL, GIBIBYTE,
+        SEARCH_CANCELLED_MESSAGE, SEARCH_INDEX_MAGIC, SEARCH_INDEX_SCHEMA_VERSION,
         SEARCH_PER_LOG_BYTE_LIMIT, SEARCH_READ_BUFFER_SIZE,
     };
     use std::{
@@ -2696,6 +2697,37 @@ mod tests {
         assert!(
             rebuild_log_text_index_in_directory(&index_directory, &log, u64::MAX, None).unwrap()
         );
+        remove_log_text_indexes_for_path_in_directory(&index_directory, &key).unwrap();
+        assert!(!index.exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn deleting_a_capture_cleans_up_a_parseable_prior_schema_text_index() {
+        let root =
+            std::env::temp_dir().join(format!("baudtide-text-index-upgrade-{}", Uuid::new_v4()));
+        let index_directory = root.join("index");
+        std::fs::create_dir_all(&index_directory).unwrap();
+        let log = root.join("capture.log");
+        std::fs::write(&log, b"old index format").unwrap();
+        let key = super::path_key(&log);
+        let index = saved_log_text_index_path(&index_directory, &key);
+        let header = SavedLogTextIndexHeader {
+            schema_version: SEARCH_INDEX_SCHEMA_VERSION - 1,
+            log_path: log.display().to_string(),
+            source_size: 0,
+            modified_seconds: 0,
+            modified_nanos: 0,
+        };
+        let encoded_header = serde_json::to_vec(&header).unwrap();
+        let mut file = File::create(&index).unwrap();
+        file.write_all(SEARCH_INDEX_MAGIC).unwrap();
+        file.write_all(&(encoded_header.len() as u64).to_le_bytes())
+            .unwrap();
+        file.write_all(&encoded_header).unwrap();
+        file.write_all(b"obsolete derived bytes").unwrap();
+        file.flush().unwrap();
+
         remove_log_text_indexes_for_path_in_directory(&index_directory, &key).unwrap();
         assert!(!index.exists());
         std::fs::remove_dir_all(&root).unwrap();
@@ -3381,9 +3413,11 @@ fn remove_log_text_indexes_for_path_in_directory(
         let Ok(header) = read_saved_log_text_index_header(&mut file) else {
             continue;
         };
-        if header.schema_version == SEARCH_INDEX_SCHEMA_VERSION
-            && path_key(Path::new(&header.log_path)) == log_key
-        {
+        // Cache schema versions can change independently of a raw capture.
+        // Once the header is parseable and names this exact capture, deleting
+        // it should clean up every disposable cache revision—including a
+        // cache written by the immediately preceding app version.
+        if path_key(Path::new(&header.log_path)) == log_key {
             std::fs::remove_file(&path).map_err(|error| {
                 format!(
                     "The capture was deleted, but its search index could not be removed: {error}"
