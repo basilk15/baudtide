@@ -57,6 +57,7 @@ const SEARCH_INDEX_MAGIC: &[u8] = b"BTSEARCH1";
 const SEARCH_INDEX_SCHEMA_VERSION: u8 = 2;
 const SEARCH_ID_BYTE_LIMIT: usize = 128;
 const SEARCH_CANCELLED_MESSAGE: &str = "Saved-log search was cancelled.";
+const SEARCH_SOURCE_STABILITY_ATTEMPTS: usize = 2;
 const SERIAL_WRITE_BYTE_LIMIT: usize = 64 * 1024;
 const SESSION_NAME_BYTE_LIMIT: usize = 120;
 const PORT_PATH_BYTE_LIMIT: usize = 256;
@@ -69,6 +70,12 @@ const MOBILE_SHARE_HEARTBEAT: Duration = Duration::from_secs(20);
 type CommandResult<T> = Result<T, String>;
 type SerialWriter = Arc<Mutex<Option<Box<dyn SerialPort>>>>;
 type SavedLogContentSearch = (u32, Vec<SavedLogSearchMatch>, u64, bool);
+
+#[derive(Clone)]
+struct VerifiedSavedLogContentSearch {
+    content: SavedLogContentSearch,
+    fingerprint: SavedLogFingerprint,
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -401,7 +408,7 @@ struct SavedLogTextIndexHeader {
     modified_nanos: u32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SavedLogFingerprint {
     size: u64,
     modified_seconds: u64,
@@ -753,17 +760,31 @@ fn run_saved_log_search(
         let metadata_match = saved_log_metadata(&log)
             .to_ascii_lowercase()
             .contains(&query.to_ascii_lowercase());
+        let mut verified_fingerprint = None;
+        // A complete search must take its limit from the verified source
+        // snapshot inside the search helper. The size collected above can be
+        // stale by the time a growing capture is opened; using it here could
+        // make a full search silently scan only the old prefix.
         let scan_limit = if full_search {
-            log.size_bytes
+            u64::MAX
         } else {
             total_remaining.min(SEARCH_PER_LOG_BYTE_LIMIT)
         };
         let (content_match_count, content_matches, _bytes_scanned, content_search_truncated) =
             if scan_limit == 0 {
-                if !full_search && log.size_bytes > 0 {
+                // No content budget remains for this quick-search entry, but
+                // still capture the source identity so a metadata-only result
+                // cannot be returned for a path that was replaced meanwhile.
+                let current_size = saved_log_fingerprint(Path::new(&log.path))
+                    .map(|fingerprint| {
+                        verified_fingerprint = Some(fingerprint);
+                        fingerprint.size
+                    })
+                    .unwrap_or(log.size_bytes);
+                if !full_search && current_size > 0 {
                     truncated = true;
                 }
-                (0, Vec::new(), 0, log.size_bytes > 0)
+                (0, Vec::new(), 0, current_size > 0)
             } else if full_search && log.state != "capturing" {
                 match search_fresh_log_text_index(
                     app,
@@ -774,21 +795,26 @@ fn run_saved_log_search(
                     Ok(Some(search)) => {
                         indexed_log_count += 1;
                         scanned_log_count += 1;
-                        scanned_bytes = scanned_bytes.saturating_add(search.2);
-                        search
+                        scanned_bytes = scanned_bytes.saturating_add(search.content.2);
+                        verified_fingerprint = Some(search.fingerprint);
+                        search.content
                     }
                     Ok(None) => {
                         index_fallback_log_count += 1;
-                        let search = search_raw_log(
+                        let Some(search) = search_stable_raw_log(
                             Path::new(&log.path),
                             &query_bytes,
                             scan_limit,
                             cancellation,
-                        )?;
+                        )?
+                        else {
+                            continue;
+                        };
                         scanned_log_count += 1;
-                        scanned_bytes = scanned_bytes.saturating_add(search.2);
+                        scanned_bytes = scanned_bytes.saturating_add(search.content.2);
+                        verified_fingerprint = Some(search.fingerprint);
                         let index_limit = index_update_budget.min(SEARCH_INDEX_PER_LOG_BYTE_LIMIT);
-                        if index_limit < log.size_bytes {
+                        if index_limit < search.fingerprint.size {
                             index_update_limited = true;
                         } else {
                             match rebuild_log_text_index(
@@ -800,7 +826,7 @@ fn run_saved_log_search(
                                 Ok(true) => {
                                     index_rebuilt_log_count += 1;
                                     index_update_budget =
-                                        index_update_budget.saturating_sub(log.size_bytes);
+                                        index_update_budget.saturating_sub(search.fingerprint.size);
                                 }
                                 Ok(false) => {}
                                 Err(error) if error == SEARCH_CANCELLED_MESSAGE => {
@@ -811,35 +837,41 @@ fn run_saved_log_search(
                                 Err(_) => {}
                             }
                         }
-                        search
+                        search.content
                     }
                     Err(error) if is_missing_search_path_error(&error) => continue,
                     Err(error) => return Err(error),
                 }
             } else {
-                let search = match search_raw_log(
+                let search = match search_stable_raw_log(
                     Path::new(&log.path),
                     &query_bytes,
                     scan_limit,
                     cancellation,
                 ) {
-                    Ok(search) => search,
+                    Ok(Some(search)) => search,
+                    Ok(None) => continue,
                     Err(error) if is_missing_search_path_error(&error) => continue,
                     Err(error) => return Err(error),
                 };
                 scanned_log_count += 1;
-                scanned_bytes = scanned_bytes.saturating_add(search.2);
+                scanned_bytes = scanned_bytes.saturating_add(search.content.2);
+                verified_fingerprint = Some(search.fingerprint);
                 if !full_search {
-                    total_remaining = total_remaining.saturating_sub(search.2);
+                    total_remaining = total_remaining.saturating_sub(search.content.2);
                 }
-                if search.3 {
+                if search.content.3 {
                     truncated = true;
                 }
-                search
+                search.content
             };
         // A deletion can race an index lookup or raw scan. Do the final
         // authority check against the raw path before returning a match.
-        if (metadata_match || content_match_count > 0) && Path::new(&log.path).is_file() {
+        let still_authoritative = verified_fingerprint.map_or_else(
+            || Path::new(&log.path).is_file(),
+            |fingerprint| saved_log_fingerprint(Path::new(&log.path)).ok() == Some(fingerprint),
+        );
+        if (metadata_match || content_match_count > 0) && still_authoritative {
             if results.len() == SEARCH_RESULT_LIMIT {
                 // Keep scanning after the result list fills so an explicitly
                 // requested full scan still examines every capture. The UI
@@ -2183,14 +2215,15 @@ mod tests {
         generated_log_path, index_records_by_path, mark_log_closing,
         normalize_application_settings, rebuild_log_text_index_in_directory, release_capture_quota,
         remove_log_text_indexes_for_path_in_directory, saved_log_text_index_path,
-        search_fresh_log_text_index_in_directory, search_raw_log,
+        search_fresh_log_text_index_in_directory, search_raw_log, stable_saved_log_content_search,
         validate_preference_log_directory, websocket_accept_key, ApplicationSettings, CaptureQuota,
-        FlowControlSetting, LogIndexRecord, ParitySetting, SavedLogTextIndexHeader, SerialSettings,
-        SerialState, StartSessionRequest, StopBitsSetting, CAPTURE_DURABILITY_SYNC_INTERVAL,
-        GIBIBYTE, SEARCH_CANCELLED_MESSAGE, SEARCH_INDEX_MAGIC, SEARCH_INDEX_SCHEMA_VERSION,
-        SEARCH_PER_LOG_BYTE_LIMIT, SEARCH_READ_BUFFER_SIZE,
+        FlowControlSetting, LogIndexRecord, ParitySetting, SavedLogFingerprint,
+        SavedLogTextIndexHeader, SerialSettings, SerialState, StartSessionRequest, StopBitsSetting,
+        CAPTURE_DURABILITY_SYNC_INTERVAL, GIBIBYTE, SEARCH_CANCELLED_MESSAGE, SEARCH_INDEX_MAGIC,
+        SEARCH_INDEX_SCHEMA_VERSION, SEARCH_PER_LOG_BYTE_LIMIT, SEARCH_READ_BUFFER_SIZE,
     };
     use std::{
+        cell::Cell,
         collections::HashMap,
         fs::File,
         io::Write,
@@ -2684,9 +2717,13 @@ mod tests {
             search_fresh_log_text_index_in_directory(&index_directory, &log, b"needle", None)
                 .unwrap()
                 .expect("a newly built index should be usable");
-        assert_eq!(fresh.0, 1);
-        assert!(!fresh.3);
-        assert!(fresh.1[0].snippet.as_deref().unwrap().contains("NEEDLE"));
+        assert_eq!(fresh.content.0, 1);
+        assert!(!fresh.content.3);
+        assert!(fresh.content.1[0]
+            .snippet
+            .as_deref()
+            .unwrap()
+            .contains("NEEDLE"));
 
         std::fs::write(&log, b"changed capture").unwrap();
         assert!(
@@ -2784,6 +2821,98 @@ mod tests {
                     .is_none()
         );
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn stable_saved_log_search_retries_until_the_source_fingerprint_stabilizes() {
+        let path = std::path::Path::new("/tmp/retry-search.log");
+        let first = SavedLogFingerprint {
+            size: 10,
+            modified_seconds: 1,
+            modified_nanos: 0,
+        };
+        let second = SavedLogFingerprint {
+            size: 12,
+            modified_seconds: 2,
+            modified_nanos: 0,
+        };
+        let inspect_calls = Cell::new(0usize);
+        let search_calls = Cell::new(0usize);
+
+        let search = stable_saved_log_content_search(
+            path,
+            || {
+                let next = match inspect_calls.get() {
+                    0 => first,
+                    1 => second,
+                    _ => second,
+                };
+                inspect_calls.set(inspect_calls.get() + 1);
+                Ok(next)
+            },
+            |fingerprint| {
+                search_calls.set(search_calls.get() + 1);
+                Ok(Some((
+                    if fingerprint == first { 1 } else { 2 },
+                    Vec::new(),
+                    fingerprint.size,
+                    false,
+                )))
+            },
+        )
+        .unwrap()
+        .expect("the second attempt should stabilize");
+
+        assert_eq!(search_calls.get(), 2);
+        assert_eq!(search.fingerprint, second);
+        assert_eq!(search.content.0, 2);
+        assert_eq!(search.content.2, second.size);
+    }
+
+    #[test]
+    fn stable_saved_log_search_drops_results_if_the_source_never_stabilizes() {
+        let path = std::path::Path::new("/tmp/unstable-search.log");
+        let fingerprints = [
+            SavedLogFingerprint {
+                size: 10,
+                modified_seconds: 1,
+                modified_nanos: 0,
+            },
+            SavedLogFingerprint {
+                size: 11,
+                modified_seconds: 2,
+                modified_nanos: 0,
+            },
+            SavedLogFingerprint {
+                size: 12,
+                modified_seconds: 3,
+                modified_nanos: 0,
+            },
+            SavedLogFingerprint {
+                size: 13,
+                modified_seconds: 4,
+                modified_nanos: 0,
+            },
+        ];
+        let inspect_calls = Cell::new(0usize);
+        let search_calls = Cell::new(0usize);
+
+        let search = stable_saved_log_content_search(
+            path,
+            || {
+                let index = inspect_calls.get();
+                inspect_calls.set(index + 1);
+                Ok(fingerprints[index])
+            },
+            |fingerprint| {
+                search_calls.set(search_calls.get() + 1);
+                Ok(Some((1, Vec::new(), fingerprint.size, false)))
+            },
+        )
+        .unwrap();
+
+        assert!(search.is_none());
+        assert_eq!(search_calls.get(), 2);
     }
 
     #[test]
@@ -3190,6 +3319,49 @@ fn saved_log_text_index_path(directory: &Path, log_key: &str) -> PathBuf {
     directory.join(format!("{:016x}.idx", hasher.finish()))
 }
 
+fn stable_saved_log_content_search<F, G>(
+    path: &Path,
+    mut inspect_fingerprint: G,
+    mut search: F,
+) -> CommandResult<Option<VerifiedSavedLogContentSearch>>
+where
+    F: FnMut(SavedLogFingerprint) -> CommandResult<Option<SavedLogContentSearch>>,
+    G: FnMut() -> io::Result<SavedLogFingerprint>,
+{
+    for _ in 0..SEARCH_SOURCE_STABILITY_ATTEMPTS {
+        let fingerprint = match inspect_fingerprint() {
+            Ok(fingerprint) => fingerprint,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(format!(
+                    "Could not inspect {} for search: {error}",
+                    path.display()
+                ))
+            }
+        };
+        let Some(content) = search(fingerprint)? else {
+            return Ok(None);
+        };
+        match inspect_fingerprint() {
+            Ok(current) if current == fingerprint => {
+                return Ok(Some(VerifiedSavedLogContentSearch {
+                    content,
+                    fingerprint,
+                }))
+            }
+            Ok(_) => continue,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(format!(
+                    "Could not inspect {} for search: {error}",
+                    path.display()
+                ))
+            }
+        }
+    }
+    Ok(None)
+}
+
 fn saved_log_fingerprint(path: &Path) -> io::Result<SavedLogFingerprint> {
     let metadata = path.metadata()?;
     let modified = metadata
@@ -3244,7 +3416,7 @@ fn search_fresh_log_text_index(
     path: &Path,
     needle: &[u8],
     cancellation: Option<&AtomicBool>,
-) -> CommandResult<Option<SavedLogContentSearch>> {
+) -> CommandResult<Option<VerifiedSavedLogContentSearch>> {
     search_fresh_log_text_index_in_directory(
         &saved_log_text_index_directory(app)?,
         path,
@@ -3258,45 +3430,40 @@ fn search_fresh_log_text_index_in_directory(
     path: &Path,
     needle: &[u8],
     cancellation: Option<&AtomicBool>,
-) -> CommandResult<Option<SavedLogContentSearch>> {
-    let fingerprint = match saved_log_fingerprint(path) {
-        Ok(fingerprint) => fingerprint,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(format!(
-                "Could not inspect {} for search: {error}",
-                path.display()
-            ))
-        }
-    };
-    let index_path = saved_log_text_index_path(directory, &path_key(path));
-    let mut file = match File::open(index_path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        // A damaged cache is disposable. Fall back to the raw capture.
-        Err(_) => return Ok(None),
-    };
-    let header = match read_saved_log_text_index_header(&mut file) {
-        Ok(header) => header,
-        Err(_) => return Ok(None),
-    };
-    if !text_index_header_matches(&header, path, fingerprint) {
-        return Ok(None);
-    }
-    let search = search_log_reader(
-        BufReader::with_capacity(SEARCH_READ_BUFFER_SIZE, file),
-        header.source_size,
-        needle,
-        header.source_size,
-        cancellation,
-    )?;
-    // Short/corrupt cache data is never authoritative, even if it happened to
-    // contain a match. Recheck the raw fingerprint so a concurrent change or
-    // deletion cannot return an obsolete path.
-    if search.3 || saved_log_fingerprint(path).ok() != Some(fingerprint) {
-        return Ok(None);
-    }
-    Ok(Some(search))
+) -> CommandResult<Option<VerifiedSavedLogContentSearch>> {
+    stable_saved_log_content_search(
+        path,
+        || saved_log_fingerprint(path),
+        |fingerprint| {
+            let index_path = saved_log_text_index_path(directory, &path_key(path));
+            let mut file = match File::open(index_path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                // A damaged cache is disposable. Fall back to the raw capture.
+                Err(_) => return Ok(None),
+            };
+            let header = match read_saved_log_text_index_header(&mut file) {
+                Ok(header) => header,
+                Err(_) => return Ok(None),
+            };
+            if !text_index_header_matches(&header, path, fingerprint) {
+                return Ok(None);
+            }
+            let search = search_log_reader(
+                BufReader::with_capacity(SEARCH_READ_BUFFER_SIZE, file),
+                header.source_size,
+                needle,
+                header.source_size,
+                cancellation,
+            )?;
+            // Short/corrupt cache data is never authoritative, even if it happened
+            // to contain a match.
+            if search.3 {
+                return Ok(None);
+            }
+            Ok(Some(search))
+        },
+    )
 }
 
 /// Rebuilds only derived data. A false result means the source moved, changed,
@@ -3658,6 +3825,7 @@ fn ensure_search_not_cancelled(cancellation: Option<&AtomicBool>) -> CommandResu
     }
 }
 
+#[cfg(test)]
 fn search_raw_log(
     path: &Path,
     needle: &[u8],
@@ -3676,6 +3844,38 @@ fn search_raw_log(
         needle,
         byte_limit,
         cancellation,
+    )
+}
+
+fn search_stable_raw_log(
+    path: &Path,
+    needle: &[u8],
+    byte_limit: u64,
+    cancellation: Option<&AtomicBool>,
+) -> CommandResult<Option<VerifiedSavedLogContentSearch>> {
+    stable_saved_log_content_search(
+        path,
+        || saved_log_fingerprint(path),
+        |fingerprint| {
+            let file = match File::open(path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => {
+                    return Err(format!(
+                        "Could not open {} for search: {error}",
+                        path.display()
+                    ))
+                }
+            };
+            let effective_limit = byte_limit.min(fingerprint.size);
+            Ok(Some(search_log_reader(
+                BufReader::with_capacity(SEARCH_READ_BUFFER_SIZE, file),
+                fingerprint.size,
+                needle,
+                effective_limit,
+                cancellation,
+            )?))
+        },
     )
 }
 

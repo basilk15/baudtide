@@ -111,6 +111,9 @@ function App() {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [theme, setTheme] = useState<AppTheme>('dark');
   const [preferences, setPreferences] = useState<BaudTidePreferences>(defaultPreferences);
+  // Native discovery temporarily switches surviving sessions into bounded
+  // replay mode. Do not let a new connection race that transition.
+  const [nativeRecoveryPending, setNativeRecoveryPending] = useState(nativeRuntime);
   // Apply continuous zoom directly to the shell so it never waits for React's
   // render scheduler before a wheel gesture becomes visible.
   const zoomRef = useRef(1);
@@ -123,6 +126,14 @@ function App() {
   const selectedSession = selectedSessionId ? liveSessions[selectedSessionId] : undefined;
 
   const openConnectionDialog = (port?: NativeSerialPort) => {
+    if (nativeRuntime && nativeRecoveryPending) {
+      publishNotification({
+        kind: 'connection',
+        title: 'Restoring active terminals',
+        detail: 'BaudTide is finishing terminal recovery. Try connecting again in a moment.',
+      });
+      return;
+    }
     setConnectionDefaults(port ? {
       port: port.path,
       baudRate: preferences.serial.baudRate,
@@ -132,6 +143,14 @@ function App() {
     setConnectionDialogOpen(true);
   };
   const openReconnectSetup = (defaults: ConnectionDialogDefaults) => {
+    if (nativeRuntime && nativeRecoveryPending) {
+      publishNotification({
+        kind: 'connection',
+        title: 'Restoring active terminals',
+        detail: 'BaudTide is finishing terminal recovery. Try reconnecting again in a moment.',
+      });
+      return;
+    }
     setConnectionDefaults(defaults);
     setConnectionDialogOpen(true);
   };
@@ -141,14 +160,14 @@ function App() {
   };
   const selectedMonitor = () => selectedSessionId ? monitorRefs.current[selectedSessionId] : null;
   const commandActions = useMemo<CommandPaletteAction[]>(() => [
-    { id: 'new-connection', label: 'New terminal', description: 'Choose a serial port and start monitoring', shortcut: 'N', icon: 'new' },
+    { id: 'new-connection', label: 'New terminal', description: 'Choose a serial port and start monitoring', shortcut: 'N', icon: 'new', disabled: nativeRecoveryPending },
     { id: 'pause-display', label: 'Pause or resume display', description: selectedSession ? `Toggle the display for ${selectedSession.sessionName}` : 'Select a live terminal first', shortcut: 'Space', icon: 'session', disabled: !selectedSession },
     { id: 'clear-display', label: 'Clear display', description: selectedSession ? `Clear ${selectedSession.sessionName} after confirmation` : 'Select a live terminal first', shortcut: '⌘/Ctrl ⌫', icon: 'session', disabled: !selectedSession },
     { id: 'find-output', label: 'Find in output', description: selectedSession ? `Filter visible output in ${selectedSession.sessionName}` : 'Select a live terminal first', shortcut: '⌘/Ctrl F', icon: 'log', disabled: !selectedSession },
     { id: 'sessions', label: 'Open live terminal', description: 'View active serial terminals', icon: 'session' },
     { id: 'logs', label: 'Open saved logs', description: 'Browse captured serial logs', icon: 'log' },
     { id: 'preferences', label: 'Open preferences', description: 'Configure application defaults', icon: 'preferences' },
-  ], [selectedSession]);
+  ], [nativeRecoveryPending, selectedSession]);
   const runCommand = (action: CommandPaletteAction) => {
     if (action.id === 'new-connection') openConnectionDialog();
     if (action.id === 'pause-display') { navigate('sessions'); selectedMonitor()?.toggleDisplayPause(); }
@@ -168,68 +187,80 @@ function App() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      // Start native discovery immediately so surviving readers return to
-      // bounded replay mode while preferences load in parallel.
-      const recovery = nativeRuntime
-        ? listActiveNativeSerialSessions()
-            .then((sessions) => ({ sessions }))
-            .catch(() => ({ sessions: null }))
-        : Promise.resolve({ sessions: [] });
-      const saved = await loadPreferences();
-      if (cancelled) return;
-      setPreferences(saved);
-      setTheme(saved.appearance.theme);
-      if (!nativeRuntime) return;
+      try {
+        // Start native discovery immediately so surviving readers return to
+        // bounded replay mode while preferences load in parallel.
+        const recovery = nativeRuntime
+          ? listActiveNativeSerialSessions()
+              .then((sessions) => ({ sessions }))
+              .catch(() => ({ sessions: null }))
+          : Promise.resolve({ sessions: [] });
+        const saved = await loadPreferences();
+        if (cancelled) return;
+        setPreferences(saved);
+        setTheme(saved.appearance.theme);
+        if (!nativeRuntime) return;
 
-      const { sessions: activeSessions } = await recovery;
-      if (cancelled) return;
-      if (!activeSessions) {
-        publishNotification({
-          kind: 'error',
-          title: 'Terminal recovery failed',
-          detail: 'Active desktop sessions could not be restored. Existing raw captures remain available.',
-        });
-        return;
-      }
-      if (activeSessions.length) {
-        setLiveSessions((current) => {
-          const next = { ...current };
-          for (const session of activeSessions) {
-            // Hydration and a user-created connection can finish in either
-            // order. Never duplicate the same native handle or port.
-            const alreadyRepresented = next[session.id]
-              || Object.values(next).some((candidate) => (
-                candidate.native && candidate.nativeSessionOpen && candidate.port === session.port
-              ));
-            if (alreadyRepresented) continue;
-            next[session.id] = {
-              id: session.id,
-              uiKey: `recovered-${session.id}`,
-              port: session.port,
-              baudRate: session.baudRate,
-              sessionName: session.sessionName,
-              manualPort: false,
-              settings: session.settings,
-              native: true,
-              nativeSessionOpen: true,
-              logPath: session.logPath,
-              lineEnding: saved.serial.lineEnding,
-              displayEncoding: saved.serial.displayEncoding,
-              showTimestamps: saved.serial.showTimestamps,
-              reconnectWhenDeviceReturns: saved.serial.reconnectWhenDeviceReturns,
-              connectionState: 'connected',
-            };
-          }
-          return next;
-        });
-        setSelectedSessionId((current) => current ?? activeSessions[0].id);
-        setWelcomeVisible(false);
-        setPage('sessions');
-        publishNotification({
-          kind: 'connection',
-          title: activeSessions.length === 1 ? 'Active terminal restored' : 'Active terminals restored',
-          detail: `${activeSessions.length} terminal${activeSessions.length === 1 ? '' : 's'} reattached. The raw capture contains any output missed during reload.`,
-        });
+        const { sessions: activeSessions } = await recovery;
+        if (cancelled) return;
+        if (!activeSessions) {
+          publishNotification({
+            kind: 'error',
+            title: 'Terminal recovery failed',
+            detail: 'Active desktop sessions could not be restored. Existing raw captures remain available.',
+          });
+          return;
+        }
+        if (activeSessions.length) {
+          setLiveSessions((current) => {
+            const next = { ...current };
+            for (const session of activeSessions) {
+              // Hydration and a user-created connection can finish in either
+              // order. Never duplicate the same native handle or port.
+              const alreadyRepresented = next[session.id]
+                || Object.values(next).some((candidate) => (
+                  candidate.native && candidate.nativeSessionOpen && candidate.port === session.port
+                ));
+              if (alreadyRepresented) continue;
+              next[session.id] = {
+                id: session.id,
+                uiKey: `recovered-${session.id}`,
+                port: session.port,
+                baudRate: session.baudRate,
+                sessionName: session.sessionName,
+                manualPort: false,
+                settings: session.settings,
+                native: true,
+                nativeSessionOpen: true,
+                logPath: session.logPath,
+                lineEnding: saved.serial.lineEnding,
+                displayEncoding: saved.serial.displayEncoding,
+                showTimestamps: saved.serial.showTimestamps,
+                reconnectWhenDeviceReturns: saved.serial.reconnectWhenDeviceReturns,
+                connectionState: 'connected',
+              };
+            }
+            return next;
+          });
+          setSelectedSessionId((current) => current ?? activeSessions[0].id);
+          setWelcomeVisible(false);
+          setPage('sessions');
+          publishNotification({
+            kind: 'connection',
+            title: activeSessions.length === 1 ? 'Active terminal restored' : 'Active terminals restored',
+            detail: `${activeSessions.length} terminal${activeSessions.length === 1 ? '' : 's'} reattached. The raw capture contains any output missed during reload.`,
+          });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          publishNotification({
+            kind: 'error',
+            title: 'BaudTide startup failed',
+            detail: error instanceof Error ? error.message : 'Preferences and active terminals could not be restored.',
+          });
+        }
+      } finally {
+        if (!cancelled) setNativeRecoveryPending(false);
       }
     })();
     return () => {
@@ -248,6 +279,9 @@ function App() {
   };
 
   const startMonitoring = async (request: ConnectionRequest) => {
+    if (nativeRuntime && nativeRecoveryPending) {
+      throw new Error('BaudTide is still restoring active terminals. Try again in a moment.');
+    }
     if (portIsInUse(request.port)) throw new Error(`${request.port} is already open in a BaudTide terminal.`);
     const uiKey = previewSessionId();
     const appliedSettings = {

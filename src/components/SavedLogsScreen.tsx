@@ -49,6 +49,10 @@ function formatBytes(bytes: number) {
   return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
 }
 
+function formatCount(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
 function formatCapturedAt(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return 'Unknown time';
@@ -108,6 +112,22 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
   const deleteTrigger = useRef<HTMLButtonElement | null>(null);
   const refreshButton = useRef<HTMLButtonElement | null>(null);
 
+  const describeSearchResponse = (response: SavedLogSearchResponse) => {
+    const messages: string[] = [];
+    if (response.fullSearch) {
+      messages.push(`Complete-capture search scanned ${formatBytes(response.scannedBytes)} across ${formatCount(response.scannedLogCount, 'log')}.`);
+      if (response.indexedLogCount) messages.push(`Used the local text index for ${formatCount(response.indexedLogCount, 'log')}.`);
+      if (response.indexRebuiltLogCount) messages.push(`Built or refreshed ${formatCount(response.indexRebuiltLogCount, 'index')}.`);
+      if (response.indexFallbackLogCount) messages.push(`Fell back to raw scanning for ${formatCount(response.indexFallbackLogCount, 'log')}.`);
+      if (response.indexUpdateLimited) messages.push('Some very large captures will remain on the cancellable raw-scan path until a later search.');
+    } else {
+      messages.push(`Quick search streams up to ${formatBytes(response.perLogByteLimit ?? 0)} per log and ${formatBytes(response.totalByteLimit ?? 0)} total. Turn on “Search complete captures” for an exact full-library scan.`);
+    }
+    if (response.truncated) messages.push('Some log bytes were not scanned within the quick-search limit.');
+    if (response.resultLimitReached) messages.push(`The first ${response.resultLimit} matching logs are shown.`);
+    return messages.join(' ');
+  };
+
   const refresh = async (showSpinner = true) => {
     if (!nativeEnabled) return;
     if (showSpinner) setRefreshing(true);
@@ -140,6 +160,7 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
     if (!nativeEnabled || !normalized) {
       setSearchResponse(null);
       setSearching(false);
+      setError('');
       return undefined;
     }
     let cancelled = false;
@@ -157,6 +178,7 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
     // debouncing so its results cannot be rendered under the new query, even
     // if the new native search subsequently fails.
     setSearchResponse(null);
+    setError('');
     setSearching(true);
     timer = window.setTimeout(() => {
       void searchNativeSavedLogs(normalized, fullSearch, searchId)
@@ -195,6 +217,7 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
     activeSearch.cancel();
     activeFullSearch.current = null;
     setSearchResponse(null);
+    setError('');
     setSearching(false);
   };
 
@@ -436,9 +459,7 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
       </div>
     </section>
 
-    {activeSearchResponse && <p className="sd-saved-logs-search-note">{activeSearchResponse.fullSearch
-      ? <>Complete-capture search scanned ${formatBytes(activeSearchResponse.scannedBytes)} across ${activeSearchResponse.scannedLogCount} logs. {activeSearchResponse.indexedLogCount ? `Used the local text index for ${activeSearchResponse.indexedLogCount} ${activeSearchResponse.indexedLogCount === 1 ? 'log' : 'logs'}. ` : ''}{activeSearchResponse.indexRebuiltLogCount ? `Built or refreshed ${activeSearchResponse.indexRebuiltLogCount} ${activeSearchResponse.indexRebuiltLogCount === 1 ? 'index' : 'indexes'}. ` : ''}{activeSearchResponse.indexFallbackLogCount ? `Fell back to raw scanning for ${activeSearchResponse.indexFallbackLogCount} ${activeSearchResponse.indexFallbackLogCount === 1 ? 'log' : 'logs'}. ` : ''}{activeSearchResponse.indexUpdateLimited ? 'Some very large captures will remain on the cancellable raw-scan path until a later search.' : ''}</>
-      : `Quick search streams up to ${formatBytes(activeSearchResponse.perLogByteLimit ?? 0)} per log and ${formatBytes(activeSearchResponse.totalByteLimit ?? 0)} total. Turn on “Search complete captures” for an exact full-library scan.`} {activeSearchResponse.truncated ? 'Some log bytes were not scanned within the quick-search limit.' : ''}{activeSearchResponse.resultLimitReached ? ` The first ${activeSearchResponse.resultLimit} matching logs are shown.` : ''}</p>}
+    {activeSearchResponse && <p className="sd-saved-logs-search-note">{describeSearchResponse(activeSearchResponse)}</p>}
 
     {isLoading || (isSearching && !activeSearchResponse) ? <div className="sd-saved-logs-loading"><LoaderCircle className="sd-spin" size={21} /> {isLoading ? 'Loading local captures…' : fullSearch ? 'Searching and refreshing the local text index…' : 'Searching local captures…'}</div>
       : organizedLogs.length ? <div className="sd-saved-log-list" role="list">
