@@ -830,7 +830,7 @@ fn run_saved_log_search(
                                 }
                                 Ok(false) => {}
                                 Err(error) if error == SEARCH_CANCELLED_MESSAGE => {
-                                    return Err(error)
+                                    return Err(error);
                                 }
                                 // Index files are derived data. Disk damage or a concurrent
                                 // cache cleanup must not hide a successful raw fallback.
@@ -1044,19 +1044,16 @@ fn start_mobile_share(
     session_id: String,
 ) -> CommandResult<MobileShareInfo> {
     let session_id = require_mobile_share_session_id(&session_id)?;
-    let session = {
+    {
         let sessions = state.sessions.lock().map_err(lock_error)?;
-        sessions
-            .get(&session_id)
-            .map(|session| session.info.clone())
-            .ok_or_else(|| "This serial session is no longer active.".to_string())?
-    };
-
-    let mut shares = state.mobile_shares.lock().map_err(lock_error)?;
-    if let Some(share) = shares.get(&session_id) {
-        return Ok(active_mobile_share_info(&session_id, share));
+        if !sessions.contains_key(&session_id) {
+            return Err("This serial session is no longer active.".into());
+        }
+        let shares = state.mobile_shares.lock().map_err(lock_error)?;
+        if let Some(share) = shares.get(&session_id) {
+            return Ok(active_mobile_share_info(&session_id, share));
+        }
     }
-
     let host = local_lan_ipv4()?;
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))
         .map_err(|error| format!("Could not start local mobile sharing: {error}"))?;
@@ -1071,43 +1068,64 @@ fn start_mobile_share(
     let stop = Arc::new(AtomicBool::new(false));
     let clients = Arc::new(Mutex::new(HashMap::new()));
     let next_client_id = Arc::new(AtomicU64::new(1));
-    let server_stop = Arc::clone(&stop);
-    let server_clients = Arc::clone(&clients);
-    let server_client_ids = Arc::clone(&next_client_id);
-    let server_token = token.clone();
-    let server_thread = thread::Builder::new()
-        .name(format!("mobile-share-{}", &session_id[..8]))
-        .spawn(move || {
-            run_mobile_share_server(
-                listener,
-                session,
-                server_token,
-                server_stop,
-                server_clients,
-                server_client_ids,
-            )
-        })
-        .map_err(|error| format!("Could not start local mobile sharing: {error}"))?;
-
-    shares.insert(
-        session_id.clone(),
-        ActiveMobileShare {
-            token: token.clone(),
-            host: host.clone(),
-            port,
-            stop,
-            clients,
-            server_thread,
+    let thread_session_id = session_id.clone();
+    let thread_name_suffix: String = thread_session_id.chars().take(8).collect();
+    register_mobile_share_for_session(
+        &state.sessions,
+        &state.mobile_shares,
+        &session_id,
+        move |session| {
+            let server_stop = Arc::clone(&stop);
+            let server_clients = Arc::clone(&clients);
+            let server_client_ids = Arc::clone(&next_client_id);
+            let server_token = token.clone();
+            let server_thread = thread::Builder::new()
+                .name(format!("mobile-share-{thread_name_suffix}"))
+                .spawn(move || {
+                    run_mobile_share_server(
+                        listener,
+                        session,
+                        server_token,
+                        server_stop,
+                        server_clients,
+                        server_client_ids,
+                    )
+                })
+                .map_err(|error| format!("Could not start local mobile sharing: {error}"))?;
+            Ok(ActiveMobileShare {
+                token: token.clone(),
+                host: host.clone(),
+                port,
+                stop,
+                clients,
+                server_thread,
+            })
         },
-    );
-    Ok(MobileShareInfo {
-        session_id,
-        url: mobile_share_url(&host, port, &token),
-        host,
-        port,
-        client_count: 0,
-        enabled: true,
-    })
+    )
+}
+
+fn register_mobile_share_for_session<F>(
+    sessions: &Arc<Mutex<HashMap<String, ActiveSession>>>,
+    shares: &Arc<Mutex<HashMap<String, ActiveMobileShare>>>,
+    session_id: &str,
+    build_share: F,
+) -> CommandResult<MobileShareInfo>
+where
+    F: FnOnce(SessionInfo) -> CommandResult<ActiveMobileShare>,
+{
+    let sessions = sessions.lock().map_err(lock_error)?;
+    let session = sessions
+        .get(session_id)
+        .map(|session| session.info.clone())
+        .ok_or_else(|| "This serial session is no longer active.".to_string())?;
+    let mut shares = shares.lock().map_err(lock_error)?;
+    if let Some(share) = shares.get(session_id) {
+        return Ok(active_mobile_share_info(session_id, share));
+    }
+    let share = build_share(session)?;
+    let info = active_mobile_share_info(session_id, &share);
+    shares.insert(session_id.to_string(), share);
+    Ok(info)
 }
 
 #[tauri::command]
@@ -1181,23 +1199,85 @@ fn mobile_share_url(host: &str, port: u16, token: &str) -> String {
     format!("http://{host}:{port}/share/{token}")
 }
 
-/// Finds the interface selected by the operating system's default route. UDP
-/// connect does not send a packet, but gives a dependable Wi-Fi/Ethernet LAN
-/// address to encode in the QR URL.
+/// Finds a LAN-reachable local IPv4 without depending on a routable internet
+/// destination. Probe private and non-routable destinations first so the
+/// kernel selects the default LAN interface; fall back to active Unix
+/// interface addresses when no route can be selected.
 fn local_lan_ipv4() -> CommandResult<String> {
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
-        .map_err(|error| format!("Could not find a local network address: {error}"))?;
-    socket
-        .connect((Ipv4Addr::new(8, 8, 8, 8), 80))
-        .map_err(|error| format!("Could not find a local network address: {error}"))?;
-    match socket
-        .local_addr()
-        .map_err(|error| format!("Could not find a local network address: {error}"))?
-        .ip()
+    if let Some(ip) = probe_local_lan_ipv4(&[
+        Ipv4Addr::new(192, 168, 0, 1),
+        Ipv4Addr::new(10, 0, 0, 1),
+        Ipv4Addr::new(172, 16, 0, 1),
+        Ipv4Addr::new(169, 254, 0, 1),
+        Ipv4Addr::new(192, 0, 2, 1),
+    ])
+    .map_err(|error| format!("Could not find a local network address: {error}"))?
     {
-        IpAddr::V4(ip) if !ip.is_unspecified() && !ip.is_loopback() => Ok(ip.to_string()),
-        _ => Err("Connect this computer to Wi-Fi or Ethernet before sharing with a phone.".into()),
+        return Ok(ip.to_string());
     }
+
+    #[cfg(unix)]
+    if let Ok(addresses) = unix_local_ipv4_addrs() {
+        if let Some(ip) = addresses.into_iter().find(|ip| is_usable_lan_ipv4(*ip)) {
+            return Ok(ip.to_string());
+        }
+    }
+
+    Err("Connect this computer to Wi-Fi or Ethernet before sharing with a phone.".into())
+}
+
+fn is_usable_lan_ipv4(ip: Ipv4Addr) -> bool {
+    !ip.is_unspecified() && !ip.is_loopback() && (ip.is_private() || ip.is_link_local())
+}
+
+fn probe_local_lan_ipv4(destinations: &[Ipv4Addr]) -> io::Result<Option<Ipv4Addr>> {
+    for destination in destinations {
+        let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+        if socket.connect((*destination, 80)).is_err() {
+            continue;
+        }
+        let IpAddr::V4(ip) = socket.local_addr()?.ip() else {
+            continue;
+        };
+        if is_usable_lan_ipv4(ip) {
+            return Ok(Some(ip));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(unix)]
+fn unix_local_ipv4_addrs() -> io::Result<Vec<Ipv4Addr>> {
+    struct InterfaceList(*mut libc::ifaddrs);
+
+    impl Drop for InterfaceList {
+        fn drop(&mut self) {
+            unsafe { libc::freeifaddrs(self.0) };
+        }
+    }
+
+    let mut head = std::ptr::null_mut();
+    if unsafe { libc::getifaddrs(&mut head) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let list = InterfaceList(head);
+    let mut cursor = list.0;
+    let mut addrs = Vec::new();
+    while !cursor.is_null() {
+        let entry = unsafe { &*cursor };
+        let flags = entry.ifa_flags as libc::c_uint;
+        let address = entry.ifa_addr;
+        if !address.is_null()
+            && flags & (libc::IFF_UP as libc::c_uint) != 0
+            && flags & (libc::IFF_LOOPBACK as libc::c_uint) == 0
+            && unsafe { (*address).sa_family as libc::c_int } == libc::AF_INET
+        {
+            let address = unsafe { *(address as *const libc::sockaddr_in) };
+            addrs.push(Ipv4Addr::from(u32::from_be(address.sin_addr.s_addr)));
+        }
+        cursor = entry.ifa_next;
+    }
+    Ok(addrs)
 }
 
 fn stop_mobile_share_for_session(
@@ -1340,50 +1420,109 @@ fn read_mobile_share_request(
     stream: &mut TcpStream,
 ) -> io::Result<(String, String, HashMap<String, String>)> {
     stream.set_read_timeout(Some(MOBILE_SHARE_WRITE_TIMEOUT))?;
+    read_mobile_share_request_from_reader(stream)
+}
+
+fn read_mobile_share_request_from_reader(
+    reader: &mut impl Read,
+) -> io::Result<(String, String, HashMap<String, String>)> {
     let mut bytes = Vec::with_capacity(1024);
     let mut buffer = [0_u8; 1024];
-    while bytes.len() < MOBILE_SHARE_REQUEST_BYTE_LIMIT {
-        let count = stream.read(&mut buffer)?;
+    let header_end = loop {
+        if bytes.len() >= MOBILE_SHARE_REQUEST_BYTE_LIMIT {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "request exceeds the size limit",
+            ));
+        }
+        let count = reader.read(&mut buffer)?;
         if count == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "request ended",
             ));
         }
-        bytes.extend_from_slice(&buffer[..count]);
-        if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-            break;
+        let remaining = MOBILE_SHARE_REQUEST_BYTE_LIMIT - bytes.len();
+        if count > remaining {
+            bytes.extend_from_slice(&buffer[..remaining]);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "request exceeds the size limit",
+            ));
         }
+        bytes.extend_from_slice(&buffer[..count]);
+        if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+            break end;
+        }
+    };
+    if header_end + 4 != bytes.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "request body is not allowed",
+        ));
     }
-    let request = std::str::from_utf8(&bytes)
+    parse_mobile_share_request_bytes(&bytes[..header_end])
+}
+
+fn parse_mobile_share_request_bytes(
+    request_bytes: &[u8],
+) -> io::Result<(String, String, HashMap<String, String>)> {
+    let request = std::str::from_utf8(request_bytes)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "request is not UTF-8"))?;
     let mut lines = request.split("\r\n");
     let request_line = lines
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing request line"))?;
-    let mut request_parts = request_line.split_whitespace();
-    let method = request_parts
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing method"))?
-        .to_owned();
-    let path = request_parts
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing path"))?
-        .to_owned();
-    if request_parts.next().is_none() || path.len() > MOBILE_SHARE_REQUEST_BYTE_LIMIT {
+    let mut request_parts = request_line.split(' ');
+    let method = request_parts.next().unwrap_or_default();
+    let path = request_parts.next().unwrap_or_default();
+    let version = request_parts.next().unwrap_or_default();
+    if request_parts.next().is_some()
+        || method.is_empty()
+        || path.is_empty()
+        || version != "HTTP/1.1"
+        || !method.bytes().all(is_http_token_byte)
+        || !path.starts_with('/')
+        || path.len() > MOBILE_SHARE_REQUEST_BYTE_LIMIT
+        || path.bytes().any(|byte| matches!(byte, 0x00..=0x20 | 0x7f))
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid request line",
         ));
     }
     let mut headers = HashMap::new();
-    for line in lines.take_while(|line| !line.is_empty()) {
+    for line in lines {
+        if line.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unexpected blank header line",
+            ));
+        }
         let Some((name, value)) = line.split_once(':') else {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid header"));
         };
-        headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_owned());
+        let name = name.trim();
+        let value = value.trim();
+        if name.is_empty()
+            || !name.bytes().all(is_http_token_byte)
+            || value.bytes().any(is_invalid_http_header_value_byte)
+            || headers
+                .insert(name.to_ascii_lowercase(), value.to_owned())
+                .is_some()
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid header"));
+        }
     }
-    Ok((method, path, headers))
+    Ok((method.to_owned(), path.to_owned(), headers))
+}
+
+fn is_http_token_byte(byte: u8) -> bool {
+    matches!(byte, b'!' | b'#'..=b'\'' | b'*' | b'+' | b'-' | b'.' | b'0'..=b'9' | b'A'..=b'Z' | b'^' | b'_' | b'`' | b'a'..=b'z' | b'|' | b'~')
+}
+
+fn is_invalid_http_header_value_byte(byte: u8) -> bool {
+    matches!(byte, 0x00..=0x08 | 0x0a..=0x1f | 0x7f)
 }
 
 fn write_http_response(
@@ -1468,18 +1607,7 @@ fn serve_mobile_share_websocket(
     clients: Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
     next_client_id: Arc<AtomicU64>,
 ) {
-    let key = headers
-        .get("sec-websocket-key")
-        .filter(|key| key.len() <= 128);
-    let upgrade = headers
-        .get("upgrade")
-        .is_some_and(|value| value.eq_ignore_ascii_case("websocket"));
-    let connection_upgrade = headers.get("connection").is_some_and(|value| {
-        value
-            .split(',')
-            .any(|part| part.trim().eq_ignore_ascii_case("upgrade"))
-    });
-    if !upgrade || !connection_upgrade || key.is_none() {
+    let Some(key) = validated_websocket_key(headers) else {
         let _ = write_http_response(
             stream,
             "400 Bad Request",
@@ -1488,8 +1616,8 @@ fn serve_mobile_share_websocket(
             &[],
         );
         return;
-    }
-    let accept = websocket_accept_key(key.expect("checked above"));
+    };
+    let accept = websocket_accept_key(key);
     let response = format!(
         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\nCache-Control: no-store\r\n\r\n"
     );
@@ -1598,6 +1726,29 @@ fn websocket_accept_key(key: &str) -> String {
     base64_encode(&sha1_digest(&input))
 }
 
+fn validated_websocket_key(headers: &HashMap<String, String>) -> Option<&str> {
+    let upgrade = headers
+        .get("upgrade")
+        .is_some_and(|value| value.eq_ignore_ascii_case("websocket"));
+    let connection_upgrade = headers.get("connection").is_some_and(|value| {
+        value
+            .split(',')
+            .any(|part| part.trim().eq_ignore_ascii_case("upgrade"))
+    });
+    let version_ok = headers
+        .get("sec-websocket-version")
+        .is_some_and(|value| value == "13");
+    let key = headers
+        .get("sec-websocket-key")
+        .filter(|key| key.len() <= 128)?;
+    let key_bytes = base64_decode(key)?;
+    if upgrade && connection_upgrade && version_ok && key_bytes.len() == 16 {
+        Some(key)
+    } else {
+        None
+    }
+}
+
 // WebSocket's RFC 6455 handshake requires SHA-1. Keeping this tiny,
 // self-contained implementation avoids pulling an HTTP server into the native
 // desktop binary solely for this intentionally small, local-only endpoint.
@@ -1662,6 +1813,59 @@ fn sha1_digest(input: &[u8]) -> [u8; 20] {
         output[index * 4..index * 4 + 4].copy_from_slice(&word.to_be_bytes());
     }
     output
+}
+
+fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    if input.is_empty() || input.len() % 4 != 0 {
+        return None;
+    }
+    let mut output = Vec::with_capacity(input.len() / 4 * 3);
+    let chunks = input.as_bytes().chunks_exact(4);
+    let chunk_count = chunks.len();
+    for (chunk_index, chunk) in chunks.enumerate() {
+        let is_last = chunk_index + 1 == chunk_count;
+        let a = decode_base64_char(chunk[0])?;
+        let b = decode_base64_char(chunk[1])?;
+        let c = match chunk[2] {
+            b'=' => 64,
+            byte => decode_base64_char(byte)?,
+        };
+        let d = match chunk[3] {
+            b'=' => 64,
+            byte => decode_base64_char(byte)?,
+        };
+        if (!is_last && d == 64) || (c == 64 && d != 64) {
+            return None;
+        }
+        // Reject non-canonical encodings with non-zero bits hidden by
+        // padding. This also keeps padding from representing an ambiguous
+        // WebSocket nonce.
+        if c == 64 && b & 0x0f != 0 {
+            return None;
+        }
+        if d == 64 && c != 64 && c & 0x03 != 0 {
+            return None;
+        }
+        output.push((a << 2) | (b >> 4));
+        if c != 64 {
+            output.push((b << 4) | (c >> 2));
+        }
+        if d != 64 {
+            output.push((c << 6) | d);
+        }
+    }
+    Some(output)
+}
+
+fn decode_base64_char(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -1744,7 +1948,7 @@ fn start_serial_session(
             return Err(format!(
                 "Could not create a reader for {}: {error}",
                 request.port
-            ))
+            ));
         }
     };
     let id = Uuid::new_v4().to_string();
@@ -2211,14 +2415,17 @@ mod tests {
         SerialDataEvent, SerialEventDelivery,
     };
     use super::{
-        begin_saved_log_search, data_bits, disconnect_status_message, ensure_search_not_cancelled,
-        generated_log_path, index_records_by_path, mark_log_closing,
-        normalize_application_settings, rebuild_log_text_index_in_directory, release_capture_quota,
-        remove_log_text_indexes_for_path_in_directory, saved_log_text_index_path,
-        search_fresh_log_text_index_in_directory, search_raw_log, stable_saved_log_content_search,
-        validate_preference_log_directory, websocket_accept_key, ApplicationSettings, CaptureQuota,
-        FlowControlSetting, LogIndexRecord, ParitySetting, SavedLogFingerprint,
-        SavedLogTextIndexHeader, SerialSettings, SerialState, StartSessionRequest, StopBitsSetting,
+        base64_decode, begin_saved_log_search, data_bits, disconnect_status_message,
+        ensure_search_not_cancelled, generated_log_path, index_records_by_path, is_usable_lan_ipv4,
+        mark_log_closing, normalize_application_settings, read_mobile_share_request_from_reader,
+        rebuild_log_text_index_in_directory, register_mobile_share_for_session,
+        release_capture_quota, remove_log_text_indexes_for_path_in_directory,
+        saved_log_text_index_path, search_fresh_log_text_index_in_directory, search_raw_log,
+        stable_saved_log_content_search, stop_mobile_share_for_session,
+        validate_preference_log_directory, validated_websocket_key, websocket_accept_key,
+        ActiveMobileShare, ActiveSession, ApplicationSettings, CaptureQuota, FlowControlSetting,
+        LogIndexRecord, ParitySetting, SavedLogFingerprint, SavedLogTextIndexHeader,
+        SerialSettings, SerialState, SessionInfo, StartSessionRequest, StopBitsSetting,
         CAPTURE_DURABILITY_SYNC_INTERVAL, GIBIBYTE, SEARCH_CANCELLED_MESSAGE, SEARCH_INDEX_MAGIC,
         SEARCH_INDEX_SCHEMA_VERSION, SEARCH_PER_LOG_BYTE_LIMIT, SEARCH_READ_BUFFER_SIZE,
     };
@@ -2226,11 +2433,13 @@ mod tests {
         cell::Cell,
         collections::HashMap,
         fs::File,
-        io::Write,
+        io::{self, Cursor, Write},
+        net::Ipv4Addr,
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc,
+            mpsc, Arc, Mutex,
         },
+        thread,
         time::Duration,
     };
     use uuid::Uuid;
@@ -2239,6 +2448,34 @@ mod tests {
     struct TestSession {
         id: String,
         port: String,
+    }
+
+    fn send_mobile_share_request(
+        bytes: &[u8],
+    ) -> io::Result<(String, String, HashMap<String, String>)> {
+        read_mobile_share_request_from_reader(&mut Cursor::new(bytes))
+    }
+
+    fn test_session_info(id: &str) -> SessionInfo {
+        SessionInfo {
+            id: id.into(),
+            port: "/dev/ttyUSB0".into(),
+            baud_rate: 115_200,
+            session_name: "Bench".into(),
+            log_path: "/tmp/bench.log".into(),
+            state: "capturing",
+            settings: SerialSettings::default(),
+        }
+    }
+
+    fn test_active_session(id: &str) -> ActiveSession {
+        ActiveSession {
+            info: test_session_info(id),
+            stop: Arc::new(AtomicBool::new(false)),
+            writer: Arc::new(Mutex::new(None)),
+            event_delivery: Arc::new(Mutex::new(SerialEventDelivery::Live { next_sequence: 0 })),
+            reader_thread: thread::spawn(|| {}),
+        }
     }
 
     #[test]
@@ -2916,6 +3153,126 @@ mod tests {
     }
 
     #[test]
+    fn mobile_share_request_parser_rejects_extra_body_bytes_and_duplicate_headers() {
+        let body_error = send_mobile_share_request(
+            b"GET /share/token HTTP/1.1\r\nHost: phone\r\n\r\nunexpected",
+        )
+        .unwrap_err();
+        assert_eq!(body_error.kind(), io::ErrorKind::InvalidData);
+
+        let duplicate_error = send_mobile_share_request(
+            b"GET /share/token/events HTTP/1.1\r\nHost: phone\r\nHost: duplicate\r\n\r\n",
+        )
+        .unwrap_err();
+        assert_eq!(duplicate_error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn websocket_validation_requires_rfc_6455_version_and_key_shape() {
+        let valid = HashMap::from([
+            ("upgrade".into(), "websocket".into()),
+            ("connection".into(), "keep-alive, Upgrade".into()),
+            ("sec-websocket-version".into(), "13".into()),
+            (
+                "sec-websocket-key".into(),
+                "dGhlIHNhbXBsZSBub25jZQ==".into(),
+            ),
+        ]);
+        assert_eq!(
+            validated_websocket_key(&valid),
+            Some("dGhlIHNhbXBsZSBub25jZQ==")
+        );
+
+        let wrong_version = HashMap::from([
+            ("upgrade".into(), "websocket".into()),
+            ("connection".into(), "Upgrade".into()),
+            ("sec-websocket-version".into(), "12".into()),
+            (
+                "sec-websocket-key".into(),
+                "dGhlIHNhbXBsZSBub25jZQ==".into(),
+            ),
+        ]);
+        assert!(validated_websocket_key(&wrong_version).is_none());
+
+        let wrong_key = HashMap::from([
+            ("upgrade".into(), "websocket".into()),
+            ("connection".into(), "Upgrade".into()),
+            ("sec-websocket-version".into(), "13".into()),
+            ("sec-websocket-key".into(), "Zm9v".into()),
+        ]);
+        assert!(validated_websocket_key(&wrong_key).is_none());
+        assert!(base64_decode("AA==AAAA").is_none());
+        assert!(base64_decode("AB==").is_none());
+    }
+
+    #[test]
+    fn lan_address_filter_accepts_only_private_or_link_local_ipv4() {
+        assert!(is_usable_lan_ipv4(Ipv4Addr::new(192, 168, 1, 20)));
+        assert!(is_usable_lan_ipv4(Ipv4Addr::new(169, 254, 8, 9)));
+        assert!(!is_usable_lan_ipv4(Ipv4Addr::LOCALHOST));
+        assert!(!is_usable_lan_ipv4(Ipv4Addr::UNSPECIFIED));
+        assert!(!is_usable_lan_ipv4(Ipv4Addr::new(8, 8, 8, 8)));
+    }
+
+    #[test]
+    fn mobile_share_registration_leaves_no_orphan_when_session_stops_during_start() {
+        let session_id = "session-1";
+        let sessions = Arc::new(Mutex::new(HashMap::from([(
+            session_id.to_string(),
+            test_active_session(session_id),
+        )])));
+        let shares = Arc::new(Mutex::new(HashMap::new()));
+        let (started_tx, started_rx) = mpsc::channel();
+        let remover_sessions = Arc::clone(&sessions);
+        let remover_shares = Arc::clone(&shares);
+        let server_exited = Arc::new(AtomicBool::new(false));
+        let remover = thread::spawn(move || {
+            started_rx.recv().unwrap();
+            let removed = remover_sessions
+                .lock()
+                .unwrap()
+                .remove(session_id)
+                .expect("session should still exist until registration finishes");
+            stop_mobile_share_for_session(&remover_shares, session_id);
+            removed.reader_thread.join().unwrap();
+        });
+
+        let exit_flag = Arc::clone(&server_exited);
+        let info = register_mobile_share_for_session(&sessions, &shares, session_id, move |_| {
+            started_tx.send(()).unwrap();
+            thread::sleep(Duration::from_millis(100));
+            let stop = Arc::new(AtomicBool::new(false));
+            let server_stop = Arc::clone(&stop);
+            let server_exit = Arc::clone(&exit_flag);
+            let server_thread = thread::spawn(move || {
+                while !server_stop.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                server_exit.store(true, Ordering::Release);
+            });
+            Ok(ActiveMobileShare {
+                token: "token".into(),
+                host: "192.168.1.50".into(),
+                port: 4321,
+                stop,
+                clients: Arc::new(Mutex::new(HashMap::new())),
+                server_thread,
+            })
+        })
+        .unwrap();
+
+        assert_eq!(info.session_id, session_id);
+        assert_eq!(info.url, "http://192.168.1.50:4321/share/token");
+        assert_eq!(info.host, "192.168.1.50");
+        assert_eq!(info.port, 4321);
+        assert_eq!(info.client_count, 0);
+        assert!(info.enabled);
+        remover.join().unwrap();
+        assert!(shares.lock().unwrap().is_empty());
+        assert!(server_exited.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn websocket_handshake_accept_key_matches_rfc_6455() {
         assert_eq!(
             websocket_accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
@@ -3336,7 +3693,7 @@ where
                 return Err(format!(
                     "Could not inspect {} for search: {error}",
                     path.display()
-                ))
+                ));
             }
         };
         let Some(content) = search(fingerprint)? else {
@@ -3347,7 +3704,7 @@ where
                 return Ok(Some(VerifiedSavedLogContentSearch {
                     content,
                     fingerprint,
-                }))
+                }));
             }
             Ok(_) => continue,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -3355,7 +3712,7 @@ where
                 return Err(format!(
                     "Could not inspect {} for search: {error}",
                     path.display()
-                ))
+                ));
             }
         }
     }
@@ -3496,7 +3853,7 @@ fn rebuild_log_text_index_in_directory(
             return Err(format!(
                 "Could not inspect {} for indexing: {error}",
                 path.display()
-            ))
+            ));
         }
     };
     if fingerprint.size > byte_limit {
@@ -3864,7 +4221,7 @@ fn search_stable_raw_log(
                     return Err(format!(
                         "Could not open {} for search: {error}",
                         path.display()
-                    ))
+                    ));
                 }
             };
             let effective_limit = byte_limit.min(fingerprint.size);

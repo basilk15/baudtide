@@ -208,8 +208,8 @@ export type LiveMonitorProps = {
   onClose?: () => void;
   onConnectionStateChange?: (state: MonitorConnectionState) => void;
   /** Called when the native backend reports a terminal reader/logging failure. */
-  onNativeSessionEnded?: () => void;
-  onNativeStorageLimit?: () => void;
+  onNativeSessionEnded?: (sessionId: string) => void;
+  onNativeStorageLimit?: (sessionId: string) => void;
   /** Called when the WebView cannot finish its listener/startup handoff. */
   onNativeSessionStartupFailure?: () => void | Promise<void>;
   sessionId?: string;
@@ -616,7 +616,10 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
         terminalFailureReported = true;
         flushFinalPartialLine();
         updateConnectionState('error');
-        onNativeSessionEndedRef.current?.();
+        // Keep the event's physical session ID attached to the callback. A
+        // reconnect can replace the callback ref before an already queued
+        // status event from the old native session is delivered.
+        onNativeSessionEndedRef.current?.(sessionId);
       };
       const reportFrontendStartupFailure = () => {
         if (startupFailureReported || disposed) return;
@@ -639,7 +642,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
             flushFinalPartialLine();
             updateConnectionState('error');
             appendDisplayLine({ id: `storage-limit-${sessionId}`, timestamp: currentTimestamp(), text: event.message, kind: 'error' });
-            onNativeStorageLimitRef.current?.();
+            onNativeStorageLimitRef.current?.(sessionId);
           }
           if (event.status === 'disconnected') {
             flushFinalPartialLine();

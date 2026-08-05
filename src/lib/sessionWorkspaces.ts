@@ -25,6 +25,50 @@ export type SessionWorkspaceSnapshot = {
   selectedSessionIdentity: string | null;
 };
 
+export type SessionWorkspaceLoadResult = {
+  workspaces: SavedSessionWorkspace[];
+  error: 'storage-unavailable' | 'storage-read-failed' | null;
+};
+
+export type SessionWorkspaceSaveResult =
+  | { ok: true; workspace: SavedSessionWorkspace }
+  | {
+      ok: false;
+      error:
+        | 'invalid-snapshot'
+        | 'storage-unavailable'
+        | 'storage-read-failed'
+        | 'storage-write-failed'
+        | 'storage-quota-exceeded';
+    };
+
+export type SessionWorkspaceUpdateResult =
+  | { ok: true; workspaces: SavedSessionWorkspace[]; workspace: SavedSessionWorkspace }
+  | {
+      ok: false;
+      error:
+        | 'invalid-id'
+        | 'invalid-name'
+        | 'missing-workspace'
+        | 'storage-unavailable'
+        | 'storage-read-failed'
+        | 'storage-write-failed'
+        | 'storage-quota-exceeded';
+    };
+
+export type SessionWorkspaceDeleteResult =
+  | { ok: true; workspaces: SavedSessionWorkspace[] }
+  | {
+      ok: false;
+      error:
+        | 'invalid-id'
+        | 'missing-workspace'
+        | 'storage-unavailable'
+        | 'storage-read-failed'
+        | 'storage-write-failed'
+        | 'storage-quota-exceeded';
+    };
+
 type UnknownRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -111,31 +155,41 @@ export function normalizeSessionWorkspaces(value: unknown): SavedSessionWorkspac
   return workspaces;
 }
 
-function getStorage(): Storage | null {
-  if (typeof window === 'undefined') return null;
+function getStorage(): { ok: true; storage: Storage } | { ok: false; error: 'storage-unavailable' } {
+  if (typeof window === 'undefined') return { ok: false, error: 'storage-unavailable' };
   try {
-    return window.localStorage;
+    return { ok: true, storage: window.localStorage };
   } catch {
-    return null;
+    return { ok: false, error: 'storage-unavailable' };
   }
 }
 
-function readWorkspaces(storage: Storage): SavedSessionWorkspace[] | null {
+function readWorkspaces(storage: Storage): SessionWorkspaceLoadResult {
   try {
     const raw = storage.getItem(STORAGE_KEY);
-    return normalizeSessionWorkspaces(JSON.parse(raw ?? '{}'));
+    return { workspaces: normalizeSessionWorkspaces(JSON.parse(raw ?? '{}')), error: null };
   } catch {
-    return [];
+    return { workspaces: [], error: 'storage-read-failed' };
   }
 }
 
-function writeWorkspaces(storage: Storage, workspaces: SavedSessionWorkspace[]): boolean {
+function classifyWriteError(error: unknown): 'storage-write-failed' | 'storage-quota-exceeded' {
+  const hasDomException = typeof DOMException !== 'undefined';
+  return hasDomException && error instanceof DOMException && error.name === 'QuotaExceededError'
+    ? 'storage-quota-exceeded'
+    : 'storage-write-failed';
+}
+
+function writeWorkspaces(
+  storage: Storage,
+  workspaces: SavedSessionWorkspace[],
+): { ok: true } | { ok: false; error: 'storage-write-failed' | 'storage-quota-exceeded' } {
   try {
     if (workspaces.length) storage.setItem(STORAGE_KEY, JSON.stringify({ version: STORAGE_VERSION, workspaces }));
     else storage.removeItem(STORAGE_KEY);
-    return true;
-  } catch {
-    return false;
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: classifyWriteError(error) };
   }
 }
 
@@ -147,49 +201,64 @@ function parseSnapshot(snapshot: SessionWorkspaceSnapshot): SessionWorkspaceSnap
   const name = normalizeName(snapshot.name);
   const sessionIdentities = normalizeIdentities(snapshot.sessionIdentities);
   if (!name || !sessionIdentities || (snapshot.layout !== 'tabs' && snapshot.layout !== 'tiled')) return null;
-  if (snapshot.selectedSessionIdentity !== null && !sessionIdentities.includes(snapshot.selectedSessionIdentity)) return null;
-  return { ...snapshot, name, sessionIdentities };
+  const selectedSessionIdentity = snapshot.selectedSessionIdentity === null
+    ? null
+    : validString(snapshot.selectedSessionIdentity, 8192) ? snapshot.selectedSessionIdentity.trim() : null;
+  if (snapshot.selectedSessionIdentity !== null && !selectedSessionIdentity) return null;
+  if (selectedSessionIdentity && !sessionIdentities.includes(selectedSessionIdentity)) return null;
+  return { ...snapshot, name, sessionIdentities, selectedSessionIdentity };
 }
 
 /** Load local-only saved layouts. Storage or JSON failures are intentionally non-fatal. */
-export function loadSessionWorkspaces(): SavedSessionWorkspace[] {
+export function loadSessionWorkspaces(): SessionWorkspaceLoadResult {
   const storage = getStorage();
-  return storage ? readWorkspaces(storage) ?? [] : [];
+  return storage.ok ? readWorkspaces(storage.storage) : { workspaces: [], error: storage.error };
 }
 
 /** Save a snapshot without touching any native serial session. */
-export function saveSessionWorkspace(snapshot: SessionWorkspaceSnapshot): SavedSessionWorkspace | null {
+export function saveSessionWorkspace(snapshot: SessionWorkspaceSnapshot): SessionWorkspaceSaveResult {
   const normalized = parseSnapshot(snapshot);
   const storage = getStorage();
-  if (!normalized || !storage) return null;
-  const current = readWorkspaces(storage);
-  if (!current) return null;
+  if (!normalized) return { ok: false, error: 'invalid-snapshot' };
+  if (!storage.ok) return { ok: false, error: storage.error };
+  const current = readWorkspaces(storage.storage);
+  if (current.error) return { ok: false, error: current.error };
   const now = Date.now();
   const workspace: SavedSessionWorkspace = { id: createId(), ...normalized, createdAt: now, updatedAt: now };
-  const next = [workspace, ...current].slice(0, MAX_WORKSPACES);
-  return writeWorkspaces(storage, next) ? workspace : null;
+  const next = [workspace, ...current.workspaces].slice(0, MAX_WORKSPACES);
+  const writeResult = writeWorkspaces(storage.storage, next);
+  return writeResult.ok ? { ok: true, workspace } : { ok: false, error: writeResult.error };
 }
 
-export function renameSessionWorkspace(id: string, name: string): SavedSessionWorkspace[] | null {
+export function renameSessionWorkspace(id: string, name: string): SessionWorkspaceUpdateResult {
   const storage = getStorage();
   const normalizedName = normalizeName(name);
-  if (!storage || !validString(id, 160) || !normalizedName) return null;
-  const current = readWorkspaces(storage);
-  if (!current) return null;
-  let changed = false;
-  const next = current.map((workspace) => {
+  if (!validString(id, 160)) return { ok: false, error: 'invalid-id' };
+  if (!normalizedName) return { ok: false, error: 'invalid-name' };
+  if (!storage.ok) return { ok: false, error: storage.error };
+  const current = readWorkspaces(storage.storage);
+  if (current.error) return { ok: false, error: current.error };
+  let updatedWorkspace: SavedSessionWorkspace | null = null;
+  const next = current.workspaces.map((workspace) => {
     if (workspace.id !== id) return workspace;
-    changed = true;
-    return { ...workspace, name: normalizedName, updatedAt: Date.now() };
+    updatedWorkspace = { ...workspace, name: normalizedName, updatedAt: Date.now() };
+    return updatedWorkspace;
   });
-  return changed && writeWorkspaces(storage, next) ? next : null;
+  if (!updatedWorkspace) return { ok: false, error: 'missing-workspace' };
+  const writeResult = writeWorkspaces(storage.storage, next);
+  return writeResult.ok
+    ? { ok: true, workspaces: next, workspace: updatedWorkspace }
+    : { ok: false, error: writeResult.error };
 }
 
-export function deleteSessionWorkspace(id: string): SavedSessionWorkspace[] | null {
+export function deleteSessionWorkspace(id: string): SessionWorkspaceDeleteResult {
   const storage = getStorage();
-  if (!storage || !validString(id, 160)) return null;
-  const current = readWorkspaces(storage);
-  if (!current) return null;
-  const next = current.filter((workspace) => workspace.id !== id);
-  return next.length !== current.length && writeWorkspaces(storage, next) ? next : null;
+  if (!validString(id, 160)) return { ok: false, error: 'invalid-id' };
+  if (!storage.ok) return { ok: false, error: storage.error };
+  const current = readWorkspaces(storage.storage);
+  if (current.error) return { ok: false, error: current.error };
+  const next = current.workspaces.filter((workspace) => workspace.id !== id);
+  if (next.length === current.workspaces.length) return { ok: false, error: 'missing-workspace' };
+  const writeResult = writeWorkspaces(storage.storage, next);
+  return writeResult.ok ? { ok: true, workspaces: next } : { ok: false, error: writeResult.error };
 }

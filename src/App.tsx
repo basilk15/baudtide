@@ -121,9 +121,37 @@ function App() {
   const monitorRefs = useRef<Record<string, LiveMonitorHandle | null>>({});
   const autoReconnectTimers = useRef<Record<string, AutoReconnectTimer>>({});
   const autoReconnectAttempts = useRef<Record<string, number>>({});
+  const liveSessionsRef = useRef<LiveSessions>({});
+  const reconnectGenerations = useRef<Record<string, number>>({});
+  const reconnectInFlight = useRef<Record<string, Promise<void>>>({});
+  const reconnectReleasedHandles = useRef<Record<string, boolean>>({});
+  const mountedRef = useRef(true);
   const { notifications, publish: publishNotification, markRead, markAllRead } = useNotifications();
   const sessions = Object.values(liveSessions);
   const selectedSession = selectedSessionId ? liveSessions[selectedSessionId] : undefined;
+  liveSessionsRef.current = liveSessions;
+
+  const findSessionEntryByUiKey = (sessionMap: LiveSessions, uiKey: string) => {
+    return Object.entries(sessionMap).find(([, session]) => session.uiKey === uiKey);
+  };
+  const getReconnectKey = (sessionId: string, session?: LiveSession) => session?.uiKey ?? liveSessionsRef.current[sessionId]?.uiKey ?? sessionId;
+  const getReconnectGeneration = (reconnectKey: string) => reconnectGenerations.current[reconnectKey] ?? 0;
+  const invalidateReconnectGeneration = (reconnectKey: string) => {
+    reconnectGenerations.current[reconnectKey] = getReconnectGeneration(reconnectKey) + 1;
+  };
+  const canApplyReconnectResult = (reconnectKey: string, generation: number) => mountedRef.current && getReconnectGeneration(reconnectKey) === generation;
+  const setAutoReconnectStatusForKey = (reconnectKey: string, status?: AutoReconnectStatus) => {
+    setLiveSessions((current) => {
+      const entry = findSessionEntryByUiKey(current, reconnectKey);
+      if (!entry) return current;
+      const [currentSessionId, currentSession] = entry;
+      if (status === undefined && !currentSession.autoReconnectStatus) return current;
+      return {
+        ...current,
+        [currentSessionId]: { ...currentSession, autoReconnectStatus: status },
+      };
+    });
+  };
 
   const openConnectionDialog = (port?: NativeSerialPort) => {
     if (nativeRuntime && nativeRecoveryPending) {
@@ -178,7 +206,7 @@ function App() {
     if (action.id === 'preferences') navigate('preferences');
   };
 
-  const portIsInUse = (port: string, exceptSessionId?: string) => sessions.some((session) => (
+  const portIsInUse = (port: string, exceptSessionId?: string) => Object.values(liveSessionsRef.current).some((session) => (
     session.id !== exceptSessionId
     && session.port === port
     && (session.native ? session.nativeSessionOpen : true)
@@ -329,20 +357,31 @@ function App() {
       : current);
   };
 
-  const clearAutoReconnect = (sessionId: string, clearAttempts = true) => {
-    const pending = autoReconnectTimers.current[sessionId];
+  const clearAutoReconnect = (sessionId: string, clearAttempts = true, session?: LiveSession) => {
+    const reconnectKey = getReconnectKey(sessionId, session);
+    const pending = autoReconnectTimers.current[reconnectKey];
     if (pending) {
       window.clearTimeout(pending.timer);
-      delete autoReconnectTimers.current[sessionId];
+      delete autoReconnectTimers.current[reconnectKey];
     }
-    if (clearAttempts) delete autoReconnectAttempts.current[sessionId];
-    setLiveSessions((current) => current[sessionId]?.autoReconnectStatus
-      ? { ...current, [sessionId]: { ...current[sessionId], autoReconnectStatus: undefined } }
-      : current);
+    if (clearAttempts) delete autoReconnectAttempts.current[reconnectKey];
+    setAutoReconnectStatusForKey(reconnectKey, undefined);
+  };
+
+  const invalidateSessionReconnectWork = (sessionId: string, clearAttempts = true, session?: LiveSession) => {
+    const reconnectKey = getReconnectKey(sessionId, session);
+    clearAutoReconnect(sessionId, clearAttempts, session);
+    invalidateReconnectGeneration(reconnectKey);
+    return reconnectKey;
+  };
+
+  const waitForReconnectToSettle = async (reconnectKey: string) => {
+    const pending = reconnectInFlight.current[reconnectKey];
+    if (pending) await pending.catch(() => undefined);
   };
 
   const setSessionAutoReconnect = (sessionId: string, enabled: boolean) => {
-    const session = liveSessions[sessionId];
+    const session = liveSessionsRef.current[sessionId];
     // Storage exhaustion is deliberately non-retryable: a returning device
     // cannot make room for the capture that was safely stopped.
     if (!session || (enabled && session.autoReconnectBlockedReason)) return;
@@ -362,7 +401,7 @@ function App() {
   // A native `error` status is terminal: the backend has already released this
   // session's port and log capture, so the tab must not keep reserving the port.
   const markNativeSessionEnded = (sessionId: string) => {
-    const session = liveSessions[sessionId];
+    const session = liveSessionsRef.current[sessionId];
     setLiveSessions((current) => current[sessionId]
       ? { ...current, [sessionId]: { ...current[sessionId], nativeSessionOpen: false } }
       : current);
@@ -370,7 +409,7 @@ function App() {
   };
 
   const markNativeStorageLimit = (sessionId: string) => {
-    const session = liveSessions[sessionId];
+    const session = liveSessionsRef.current[sessionId];
     clearAutoReconnect(sessionId);
     setLiveSessions((current) => current[sessionId]
       ? {
@@ -394,155 +433,239 @@ function App() {
   // Listener setup runs after the native session starts. Unlike a backend
   // terminal error, that failure leaves the port open until we release it.
   const releaseNativeSessionAfterStartupFailure = async (sessionId: string) => {
-    const session = liveSessions[sessionId];
+    const session = liveSessionsRef.current[sessionId];
     if (!session?.native || !session.nativeSessionOpen) return;
+    invalidateReconnectGeneration(session.uiKey);
     try {
       await disconnectNativeSerialSession(session.id);
       setLiveSessions((current) => current[sessionId]
         ? { ...current, [sessionId]: { ...current[sessionId], nativeSessionOpen: false, connectionState: 'error' } }
         : current);
-      publishNotification({ kind: 'error', title: 'Terminal display setup failed', detail: `${session.sessionName} was safely disconnected and can retry ${session.port}.` });
+      if (mountedRef.current) publishNotification({ kind: 'error', title: 'Terminal display setup failed', detail: `${session.sessionName} was safely disconnected and can retry ${session.port}.` });
     } catch {
       // Keep the reservation when native cleanup is uncertain so another tab
       // cannot claim a port still owned by the backend.
       updateSessionState(sessionId, 'error');
-      publishNotification({ kind: 'error', title: 'Terminal cleanup failed', detail: `${session.sessionName} may still hold ${session.port}. Retry or close the tab to try again.` });
+      if (mountedRef.current) publishNotification({ kind: 'error', title: 'Terminal cleanup failed', detail: `${session.sessionName} may still hold ${session.port}. Retry or close the tab to try again.` });
     }
   };
 
   const disconnectSession = async (sessionId: string) => {
-    const session = liveSessions[sessionId];
+    const session = liveSessionsRef.current[sessionId];
     if (!session) return;
     // Disconnect is intentional, so cancel a pending automatic retry before
     // releasing the backend handle. The session remains manually reconnectable.
-    clearAutoReconnect(sessionId);
-    if (session.native && session.nativeSessionOpen) {
+    const reconnectKey = invalidateSessionReconnectWork(sessionId, true, session);
+    await waitForReconnectToSettle(reconnectKey);
+    const currentEntry = findSessionEntryByUiKey(liveSessionsRef.current, reconnectKey);
+    const currentSession = currentEntry?.[1];
+    const currentSessionId = currentEntry?.[0] ?? sessionId;
+    const nativeHandleAlreadyReleased = reconnectReleasedHandles.current[reconnectKey] === true;
+    if (currentSession?.native && currentSession.nativeSessionOpen && !nativeHandleAlreadyReleased) {
       try {
-        await disconnectNativeSerialSession(session.id);
+        await disconnectNativeSerialSession(currentSession.id);
       } catch (error) {
-        updateSessionState(sessionId, 'error');
+        updateSessionState(currentSessionId, 'error');
         throw error;
       }
     }
-    setLiveSessions((current) => current[sessionId]
-      ? { ...current, [sessionId]: { ...current[sessionId], connectionState: 'disconnected', nativeSessionOpen: false } }
-      : current);
-    publishNotification({ kind: 'connection', title: 'Terminal disconnected', detail: `${session.sessionName} stopped monitoring ${session.port}.` });
+    setLiveSessions((current) => {
+      const entry = findSessionEntryByUiKey(current, reconnectKey);
+      if (!entry) return current;
+      const [id, value] = entry;
+      return { ...current, [id]: { ...value, connectionState: 'disconnected', nativeSessionOpen: false } };
+    });
+    delete reconnectReleasedHandles.current[reconnectKey];
+    if (mountedRef.current) publishNotification({ kind: 'connection', title: 'Terminal disconnected', detail: `${session.sessionName} stopped monitoring ${session.port}.` });
   };
 
   const closeSession = async (sessionId: string) => {
-    const session = liveSessions[sessionId];
+    const session = liveSessionsRef.current[sessionId];
     if (!session) return;
-    clearAutoReconnect(sessionId);
-    if (session.native && session.nativeSessionOpen) {
+    const reconnectKey = invalidateSessionReconnectWork(sessionId, true, session);
+    await waitForReconnectToSettle(reconnectKey);
+    const currentEntry = findSessionEntryByUiKey(liveSessionsRef.current, reconnectKey);
+    const currentSession = currentEntry?.[1];
+    const currentSessionId = currentEntry?.[0] ?? sessionId;
+    const nativeHandleAlreadyReleased = reconnectReleasedHandles.current[reconnectKey] === true;
+    if (currentSession?.native && currentSession.nativeSessionOpen && !nativeHandleAlreadyReleased) {
       try {
-        await disconnectNativeSerialSession(session.id);
+        await disconnectNativeSerialSession(currentSession.id);
       } catch {
         // Keep the tab available when the native session could not be closed; it is still recoverable.
-        updateSessionState(sessionId, 'error');
+        updateSessionState(currentSessionId, 'error');
         return;
       }
     }
-    const nextSelected = selectedSessionId === sessionId
-      ? sessions.find((candidate) => candidate.id !== sessionId)?.id ?? null
+    const remainingSessions = Object.values(liveSessionsRef.current).filter((candidate) => candidate.id !== currentSessionId);
+    const nextSelected = selectedSessionId === currentSessionId
+      ? remainingSessions[0]?.id ?? null
       : selectedSessionId;
     setLiveSessions((current) => {
-      const { [sessionId]: _closed, ...remaining } = current;
+      const entry = findSessionEntryByUiKey(current, reconnectKey);
+      if (!entry) return current;
+      const [id, _value] = entry;
+      const { [id]: _closed, ...remaining } = current;
       return remaining;
     });
+    delete reconnectReleasedHandles.current[reconnectKey];
     setSelectedSessionId(nextSelected);
   };
 
   const reconnectSession = async (sessionId: string, automatic = false) => {
-    const session = liveSessions[sessionId];
+    const session = liveSessionsRef.current[sessionId];
     if (!session || !session.native) return;
-    // A manual retry replaces a scheduled one and begins a fresh backoff if it
-    // fails. The timer callback has already removed its own entry.
-    if (!automatic) clearAutoReconnect(sessionId);
-    if (portIsInUse(session.port, sessionId)) throw new Error(`${session.port} is already open in another BaudTide terminal.`);
-    updateSessionState(sessionId, 'reconnecting');
-    let releasedNativeHandle = false;
-    try {
-      if (session.nativeSessionOpen) {
-        await disconnectNativeSerialSession(session.id);
-        releasedNativeHandle = true;
-      }
-      // A reconnect starts a new physical capture. Do not carry the previous
-      // raw-log path forward: each backend session owns one log and sidecar.
-      const restarted = await startNativeSerialSession({
-        port: session.port,
-        baudRate: session.baudRate,
-        sessionName: session.sessionName,
-        settings: session.settings,
-      });
-      const next: LiveSession = {
-        ...session,
-        id: restarted.id,
-        logPath: restarted.logPath,
-        nativeSessionOpen: true,
-        connectionState: 'connected',
-        // A successful manual restart proves the storage condition was dealt
-        // with (or a larger limit was selected), so restore the per-session
-        // control without silently re-enabling retries.
-        autoReconnectStatus: undefined,
-        autoReconnectBlockedReason: undefined,
+    const reconnectKey = session.uiKey;
+    const existing = reconnectInFlight.current[reconnectKey];
+    if (existing) return existing;
+
+    const reconnectPromise = (async () => {
+      // A manual retry replaces a scheduled one and begins a fresh backoff if it
+      // fails. The timer callback has already removed its own entry.
+      if (!automatic) clearAutoReconnect(sessionId, true, session);
+      if (portIsInUse(session.port, sessionId)) throw new Error(`${session.port} is already open in another BaudTide terminal.`);
+      const generation = getReconnectGeneration(reconnectKey);
+      updateSessionState(sessionId, 'reconnecting');
+      let releasedNativeHandle = false;
+      let restartedSessionId: string | null = null;
+      delete reconnectReleasedHandles.current[reconnectKey];
+      const markReleasedNativeHandle = () => {
+        if (!releasedNativeHandle) return;
+        reconnectReleasedHandles.current[reconnectKey] = true;
+        if (!mountedRef.current) return;
+        setLiveSessions((current) => {
+          const entry = findSessionEntryByUiKey(current, reconnectKey);
+          if (!entry) return current;
+          const [currentSessionId, currentSession] = entry;
+          return currentSession.nativeSessionOpen
+            ? { ...current, [currentSessionId]: { ...currentSession, nativeSessionOpen: false } }
+            : current;
+        });
       };
-      setLiveSessions((current) => {
-        if (!current[sessionId]) return current;
-        const { [sessionId]: _previous, ...remaining } = current;
-        return { ...remaining, [next.id]: next };
-      });
-      setSelectedSessionId((current) => current === sessionId ? next.id : current);
-      delete autoReconnectAttempts.current[sessionId];
-      publishNotification({ kind: 'connection', title: 'Terminal reconnected', detail: `${next.sessionName} is monitoring ${next.port} again.` });
-    } catch (error) {
-      if (releasedNativeHandle) {
-        setLiveSessions((current) => current[sessionId]
-          ? { ...current, [sessionId]: { ...current[sessionId], nativeSessionOpen: false } }
-          : current);
+      try {
+        if (session.nativeSessionOpen) {
+          await disconnectNativeSerialSession(session.id);
+          releasedNativeHandle = true;
+          reconnectReleasedHandles.current[reconnectKey] = true;
+        }
+        if (!canApplyReconnectResult(reconnectKey, generation)) {
+          markReleasedNativeHandle();
+          return;
+        }
+        // A reconnect starts a new physical capture. Do not carry the previous
+        // raw-log path forward: each backend session owns one log and sidecar.
+        const restarted = await startNativeSerialSession({
+          port: session.port,
+          baudRate: session.baudRate,
+          sessionName: session.sessionName,
+          settings: session.settings,
+        });
+        restartedSessionId = restarted.id;
+        if (!canApplyReconnectResult(reconnectKey, generation)) {
+          await disconnectNativeSerialSession(restarted.id).catch(() => undefined);
+          markReleasedNativeHandle();
+          return;
+        }
+        setLiveSessions((current) => {
+          const entry = findSessionEntryByUiKey(current, reconnectKey);
+          if (!entry) return current;
+          const [currentSessionId, currentSession] = entry;
+          const next: LiveSession = {
+            ...currentSession,
+            id: restarted.id,
+            logPath: restarted.logPath,
+            nativeSessionOpen: true,
+            connectionState: 'connected',
+            // A successful manual restart proves the storage condition was dealt
+            // with (or a larger limit was selected), so restore the per-session
+            // control without silently re-enabling retries.
+            autoReconnectStatus: undefined,
+            autoReconnectBlockedReason: undefined,
+          };
+          const { [currentSessionId]: _previous, ...remaining } = current;
+          return { ...remaining, [next.id]: next };
+        });
+        delete reconnectReleasedHandles.current[reconnectKey];
+        setSelectedSessionId((current) => current === sessionId ? restarted.id : current);
+        if (monitorRefs.current[sessionId]) {
+          monitorRefs.current[restarted.id] = monitorRefs.current[sessionId];
+        }
+        delete monitorRefs.current[sessionId];
+        delete autoReconnectAttempts.current[reconnectKey];
+        if (mountedRef.current) publishNotification({ kind: 'connection', title: 'Terminal reconnected', detail: `${session.sessionName} is monitoring ${session.port} again.` });
+      } catch (error) {
+        if (restartedSessionId && !canApplyReconnectResult(reconnectKey, generation)) {
+          await disconnectNativeSerialSession(restartedSessionId).catch(() => undefined);
+          markReleasedNativeHandle();
+          return;
+        }
+        if (releasedNativeHandle) {
+          markReleasedNativeHandle();
+        }
+        const currentSessionId = findSessionEntryByUiKey(liveSessionsRef.current, reconnectKey)?.[0];
+        if (currentSessionId) updateSessionState(currentSessionId, 'error');
+        // A disconnected device can take minutes to return. The first reader
+        // failure already notified the user; automatic retries stay quiet so the
+        // notification history is not flooded while exponential backoff runs.
+        if (!automatic && mountedRef.current) publishNotification({ kind: 'error', title: 'Reconnect failed', detail: `${session.sessionName} could not reopen ${session.port}.` });
+        throw error;
       }
-      updateSessionState(sessionId, 'error');
-      // A disconnected device can take minutes to return. The first reader
-      // failure already notified the user; automatic retries stay quiet so the
-      // notification history is not flooded while exponential backoff runs.
-      if (!automatic) publishNotification({ kind: 'error', title: 'Reconnect failed', detail: `${session.sessionName} could not reopen ${session.port}.` });
-      throw error;
+    })();
+
+    reconnectInFlight.current[reconnectKey] = reconnectPromise;
+    try {
+      await reconnectPromise;
+    } finally {
+      if (reconnectInFlight.current[reconnectKey] === reconnectPromise) delete reconnectInFlight.current[reconnectKey];
     }
   };
 
   useEffect(() => {
-    const retryableSessionIds = new Set(sessions
+    const retryableSessionKeys = new Set(sessions
       .filter((session) => session.native && !session.nativeSessionOpen && session.connectionState === 'error' && session.reconnectWhenDeviceReturns)
-      .map((session) => session.id));
-    for (const [sessionId, timer] of Object.entries(autoReconnectTimers.current)) {
-      if (!retryableSessionIds.has(sessionId)) {
+      .map((session) => session.uiKey));
+    for (const [reconnectKey, timer] of Object.entries(autoReconnectTimers.current)) {
+      if (!retryableSessionKeys.has(reconnectKey)) {
         window.clearTimeout(timer.timer);
-        delete autoReconnectTimers.current[sessionId];
-        delete autoReconnectAttempts.current[sessionId];
+        delete autoReconnectTimers.current[reconnectKey];
+        delete autoReconnectAttempts.current[reconnectKey];
       }
     }
-    for (const sessionId of retryableSessionIds) {
-      if (autoReconnectTimers.current[sessionId]) continue;
-      const attempts = autoReconnectAttempts.current[sessionId] ?? 0;
+    for (const reconnectKey of retryableSessionKeys) {
+      if (autoReconnectTimers.current[reconnectKey] !== undefined || reconnectInFlight.current[reconnectKey] !== undefined) continue;
+      const currentSessionId = findSessionEntryByUiKey(liveSessionsRef.current, reconnectKey)?.[0];
+      if (!currentSessionId) continue;
+      const attempts = autoReconnectAttempts.current[reconnectKey] ?? 0;
       const delay = Math.min(AUTO_RECONNECT_INITIAL_DELAY_MS * (2 ** attempts), AUTO_RECONNECT_MAX_DELAY_MS);
       const nextRetryAt = Date.now() + delay;
-      setLiveSessions((current) => current[sessionId]
-        ? { ...current, [sessionId]: { ...current[sessionId], autoReconnectStatus: { attempt: attempts + 1, nextRetryAt } } }
-        : current);
+      const generation = getReconnectGeneration(reconnectKey);
+      setAutoReconnectStatusForKey(reconnectKey, { attempt: attempts + 1, nextRetryAt });
       const timer = window.setTimeout(() => {
-        delete autoReconnectTimers.current[sessionId];
-        autoReconnectAttempts.current[sessionId] = attempts + 1;
-        setLiveSessions((current) => current[sessionId]?.autoReconnectStatus
-          ? { ...current, [sessionId]: { ...current[sessionId], autoReconnectStatus: undefined } }
-          : current);
-        void reconnectSession(sessionId, true).catch(() => undefined);
+        delete autoReconnectTimers.current[reconnectKey];
+        if (!canApplyReconnectResult(reconnectKey, generation)) return;
+        autoReconnectAttempts.current[reconnectKey] = attempts + 1;
+        setAutoReconnectStatusForKey(reconnectKey, undefined);
+        const latestSessionId = findSessionEntryByUiKey(liveSessionsRef.current, reconnectKey)?.[0];
+        if (!latestSessionId) return;
+        void reconnectSession(latestSessionId, true).catch(() => undefined);
       }, delay);
-      autoReconnectTimers.current[sessionId] = { timer, attempts, nextRetryAt };
+      autoReconnectTimers.current[reconnectKey] = { timer, attempts, nextRetryAt };
     }
   }, [liveSessions]);
 
-  useEffect(() => () => {
-    for (const { timer } of Object.values(autoReconnectTimers.current)) window.clearTimeout(timer);
+  useEffect(() => {
+    // StrictMode mounts effects, runs their cleanup, then mounts them again in
+    // development. Mark the component live on every setup so the probe cleanup
+    // cannot permanently disable reconnect results for the real mount.
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      for (const { timer } of Object.values(autoReconnectTimers.current)) window.clearTimeout(timer);
+      autoReconnectTimers.current = {};
+      autoReconnectAttempts.current = {};
+      reconnectReleasedHandles.current = {};
+      for (const session of Object.values(liveSessionsRef.current)) invalidateReconnectGeneration(session.uiKey);
+    };
   }, []);
 
   useEffect(() => {
@@ -715,7 +838,7 @@ function SessionsWorkspace({ sessions, selectedSessionId, onSelect, onRequestCon
       </div>
       <div className={`sd-session-monitors ${activeView === 'tiled' ? 'is-tiled' : ''}`} aria-label={activeView === 'tiled' ? 'Tiled serial terminals' : undefined}>
         {sessions.map((session) => <div className="sd-session-panel" id={`monitor-${session.uiKey}`} role={activeView === 'tabs' ? 'tabpanel' : 'region'} aria-labelledby={activeView === 'tabs' ? `tab-${session.uiKey}` : undefined} aria-label={activeView === 'tiled' ? `${session.sessionName} on ${session.port} terminal` : undefined} hidden={activeView === 'tabs' && session.id !== selectedSessionId} key={session.uiKey}>
-          <LiveMonitor ref={(monitor) => onMonitorRef(session.id, monitor)} sessionName={session.sessionName} port={session.port} baudRate={session.baudRate} lineEnding={session.lineEnding} displayEncoding={session.displayEncoding} showTimestamps={session.showTimestamps} sessionId={session.id} nativeSession={session.native} capturePath={session.logPath} initialConnectionState={session.connectionState} autoReconnectEnabled={session.reconnectWhenDeviceReturns} autoReconnectStatus={session.autoReconnectStatus} autoReconnectBlockedReason={session.autoReconnectBlockedReason} onAutoReconnectChange={session.native ? (enabled) => onAutoReconnectChange(session.id, enabled) : undefined} onConnectionStateChange={(state) => onConnectionStateChange(session.id, state)} onNativeSessionEnded={session.native ? () => onNativeSessionEnded(session.id) : undefined} onNativeStorageLimit={session.native ? () => onNativeStorageLimit(session.id) : undefined} onNativeSessionStartupFailure={session.native ? async () => { await onNativeSessionStartupFailure(session.id); } : undefined} onSend={session.native ? async (text) => { await sendNativeSerialText(session.id, text); } : undefined} onSendBytes={session.native ? async (bytes) => { await sendNativeSerialBytes(session.id, bytes); } : undefined} onDisconnect={session.native ? async () => { await onDisconnect(session.id); } : undefined} onReconnect={session.native ? async () => { await onReconnect(session.id); } : undefined} onClose={async () => { await onClose(session.id); }} />
+          <LiveMonitor ref={(monitor) => onMonitorRef(session.id, monitor)} sessionName={session.sessionName} port={session.port} baudRate={session.baudRate} lineEnding={session.lineEnding} displayEncoding={session.displayEncoding} showTimestamps={session.showTimestamps} sessionId={session.id} nativeSession={session.native} capturePath={session.logPath} initialConnectionState={session.connectionState} autoReconnectEnabled={session.reconnectWhenDeviceReturns} autoReconnectStatus={session.autoReconnectStatus} autoReconnectBlockedReason={session.autoReconnectBlockedReason} onAutoReconnectChange={session.native ? (enabled) => onAutoReconnectChange(session.id, enabled) : undefined} onConnectionStateChange={(state) => onConnectionStateChange(session.id, state)} onNativeSessionEnded={session.native ? (eventSessionId) => onNativeSessionEnded(eventSessionId) : undefined} onNativeStorageLimit={session.native ? (eventSessionId) => onNativeStorageLimit(eventSessionId) : undefined} onNativeSessionStartupFailure={session.native ? async () => { await onNativeSessionStartupFailure(session.id); } : undefined} onSend={session.native ? async (text) => { await sendNativeSerialText(session.id, text); } : undefined} onSendBytes={session.native ? async (bytes) => { await sendNativeSerialBytes(session.id, bytes); } : undefined} onDisconnect={session.native ? async () => { await onDisconnect(session.id); } : undefined} onReconnect={session.native ? async () => { await onReconnect(session.id); } : undefined} onClose={async () => { await onClose(session.id); }} />
         </div>)}
       </div>
     </>}
