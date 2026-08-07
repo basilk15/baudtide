@@ -35,9 +35,10 @@ export type StartedSerialSession = {
 };
 
 /**
- * A session-scoped, read-only LAN link for the mobile companion. The pairing
- * token is deliberately contained only in `url`; do not display or persist it
- * separately.
+ * A session-scoped LAN link for the mobile companion. The pairing token is
+ * deliberately contained only in `url`; do not display or persist it
+ * separately. Remote control is always disabled until the desktop explicitly
+ * enables it for this link.
  */
 export type MobileShareInfo = {
   sessionId: string;
@@ -45,6 +46,16 @@ export type MobileShareInfo = {
   host: string;
   port: number;
   clientCount: number;
+  enabled: boolean;
+  controlEnabled: boolean;
+};
+
+export type MobileWorkspaceShareInfo = {
+  url: string;
+  host: string;
+  port: number;
+  clientCount: number;
+  sessionCount: number;
   enabled: boolean;
 };
 
@@ -194,6 +205,26 @@ export async function getMobileShareStatus(sessionId: string) {
 export async function stopMobileShare(sessionId: string) {
   ensureNativeRuntime();
   return invoke<MobileShareInfo>('stop_mobile_share', { sessionId });
+}
+
+export async function setMobileShareControl(sessionId: string, enabled: boolean) {
+  ensureNativeRuntime();
+  return invoke<MobileShareInfo>('set_mobile_share_control', { sessionId, enabled });
+}
+
+export async function startMobileWorkspaceShare() {
+  ensureNativeRuntime();
+  return invoke<MobileWorkspaceShareInfo>('start_mobile_workspace_share');
+}
+
+export async function getMobileWorkspaceShareStatus() {
+  ensureNativeRuntime();
+  return invoke<MobileWorkspaceShareInfo>('get_mobile_workspace_share_status');
+}
+
+export async function stopMobileWorkspaceShare() {
+  ensureNativeRuntime();
+  return invoke<MobileWorkspaceShareInfo>('stop_mobile_workspace_share');
 }
 
 export async function listNativeSavedLogs() {

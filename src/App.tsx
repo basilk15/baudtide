@@ -3,6 +3,7 @@ import { CommandPalette, type CommandPaletteAction } from './components/CommandP
 import { ConnectionDialog, type ConnectionDialogDefaults, type ConnectionRequest } from './components/ConnectionDialog';
 import { HelpFeedbackPanel } from './components/HelpFeedbackPanel';
 import { LiveMonitor, type LiveMonitorHandle, type MonitorConnectionState } from './components/LiveMonitor';
+import { WorkspaceMobileSharePanel } from './components/MobileSharePanel';
 import { NotificationsPanel } from './components/NotificationsPanel';
 import { useNotifications } from './components/notifications';
 import { PreferencesScreen } from './components/PreferencesScreen';
@@ -828,6 +829,7 @@ function SessionsWorkspace({ sessions, selectedSessionId, onSelect, onRequestCon
   };
   return <section ref={workspaceRef} className="sd-sessions-workspace" aria-label="Live terminal workspace">
     <header className="sd-sessions-workspace-header"><div><p>LIVE TERMINAL WORKSPACE</p><h1>Live terminal</h1><span>{activeView === 'tiled' ? 'Compare active serial monitors side by side.' : 'Run independent serial monitors in separate terminal tabs.'}</span></div><div className="sd-sessions-workspace-actions">{showViewControl && <div className="sd-session-view-switch" role="group" aria-label="Terminal layout"><button type="button" className={view === 'tabs' ? 'is-selected' : ''} aria-pressed={view === 'tabs'} onClick={() => setView('tabs')}>Tabs</button><button type="button" className={view === 'tiled' ? 'is-selected' : ''} aria-pressed={view === 'tiled'} onClick={() => setView('tiled')}>Tiled</button></div>}<SessionWorkspaceManager layout={view} sessions={sessions.map((session) => ({ id: session.id, identity: stableTerminalSessionIdentity(session) }))} selectedSessionId={selectedSessionId} onApply={applySavedWorkspace} /><span className="sd-session-count"><i className={activeCount ? 'is-active' : ''} /> {activeCount} active</span><button ref={newTerminalButtonRef} className="sd-primary-button" type="button" onClick={onRequestConnection}><Radio size={16} /> New terminal</button></div></header>
+    <WorkspaceMobileSharePanel nativeEnabled={nativeRuntime} activeSessionCount={activeCount} />
     {!sessions.length && <article className="sd-sessions-empty-panel"><div className="sd-sessions-empty-icon"><TerminalSquare size={21} /></div><div><h2>No terminal tabs are open.</h2><p>Use <strong>New terminal</strong> to add a live serial monitor to this workspace.</p></div></article>}
     {sessions.length > 0 && <>
       <div className="sd-session-tabs" role={activeView === 'tabs' ? 'tablist' : 'list'} aria-label={activeView === 'tabs' ? 'Open serial terminals' : 'Open serial terminals; select one for terminal actions'}>
