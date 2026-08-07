@@ -22,8 +22,8 @@ use uuid::Uuid;
 
 use super::{
     activate_serial_event_delivery, buffer_serial_event, run_serial_capture_loop,
-    write_serial_bytes, CaptureQuota, SerialEventDelivery, SerialSettings, SessionInfo,
-    SERIAL_WRITE_BYTE_LIMIT,
+    write_serial_bytes, write_serial_bytes_authorized, CaptureQuota, SerialEventDelivery,
+    SerialSettings, SessionInfo, SERIAL_WRITE_BYTE_LIMIT,
 };
 
 struct PtyPair {
@@ -279,6 +279,40 @@ fn baudtide_writer_preserves_exact_bytes_and_enforces_limit() {
         error,
         format!("Serial writes are limited to {SERIAL_WRITE_BYTE_LIMIT} bytes.")
     );
+}
+
+#[test]
+fn mobile_writer_defaults_to_denied_and_reports_session_errors() {
+    let mut pty = PtyPair::new();
+    let writer = Mutex::new(Some(open_serial(&pty, Duration::from_millis(150))));
+    let stopped = AtomicBool::new(false);
+    let control_enabled = AtomicBool::new(false);
+    let denied = write_serial_bytes_authorized(&writer, &stopped, &pty.slave_path, b"PING", || {
+        control_enabled.load(Ordering::Acquire)
+    })
+    .unwrap_err();
+    assert_eq!(denied, "Remote control is disabled on the desktop.");
+
+    control_enabled.store(true, Ordering::Release);
+    let payload = [0x00, 0xff, b'P'];
+    assert_eq!(
+        write_serial_bytes_authorized(&writer, &stopped, &pty.slave_path, &payload, || {
+            control_enabled.load(Ordering::Acquire)
+        },)
+        .unwrap(),
+        payload.len()
+    );
+    let mut received = [0_u8; 3];
+    read_exact_with_deadline(&mut pty.master, &mut received, Duration::from_secs(1));
+    assert_eq!(received, payload);
+
+    stopped.store(true, Ordering::Release);
+    let inactive =
+        write_serial_bytes_authorized(&writer, &stopped, &pty.slave_path, b"NOPE", || {
+            control_enabled.load(Ordering::Acquire)
+        })
+        .unwrap_err();
+    assert_eq!(inactive, "This serial session is no longer active.");
 }
 
 #[test]
