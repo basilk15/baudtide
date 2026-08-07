@@ -66,6 +66,14 @@ const MOBILE_SHARE_CLIENT_LIMIT: usize = 8;
 const MOBILE_SHARE_ACCEPT_POLL: Duration = Duration::from_millis(100);
 const MOBILE_SHARE_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const MOBILE_SHARE_HEARTBEAT: Duration = Duration::from_secs(20);
+/// The mobile viewer gets a recent event tail from the same ordered event
+/// stream as the desktop UI. Keep this small enough for several active
+/// sessions while still being useful after a phone is paired late.
+const MOBILE_SHARE_REPLAY_BYTE_LIMIT: usize = 512 * 1024;
+const MOBILE_SHARE_REPLAY_EVENT_LIMIT: usize = 96;
+/// One replay notice plus the bounded event tail must fit before live traffic
+/// can compete for a slow client's queue.
+const MOBILE_SHARE_QUEUE_LIMIT: usize = 128;
 
 type CommandResult<T> = Result<T, String>;
 type SerialWriter = Arc<Mutex<Option<Box<dyn SerialPort>>>>;
@@ -305,6 +313,104 @@ struct PendingSerialData {
     next_sequence: u64,
 }
 
+/// A bounded, in-memory tail of structured serial events. This is deliberately
+/// separate from the raw capture: replay never reads or rewrites the capture,
+/// while the event's `bytes` field keeps the viewer tied to the exact bytes that
+/// were captured and sequenced by the native reader.
+struct MobileReplayBuffer {
+    events: Vec<SerialDataEvent>,
+    byte_count: usize,
+    dropped_event_count: u64,
+    event_limit: usize,
+    byte_limit: usize,
+}
+
+struct MobileReplaySnapshot {
+    events: Vec<SerialDataEvent>,
+    first_sequence: Option<u64>,
+    next_sequence: u64,
+    replay_truncated: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MobileReplayNotice {
+    kind: &'static str,
+    first_sequence: Option<u64>,
+    next_sequence: u64,
+    replay_truncated: bool,
+}
+
+impl Default for MobileReplayBuffer {
+    fn default() -> Self {
+        Self::with_limits(
+            MOBILE_SHARE_REPLAY_EVENT_LIMIT,
+            MOBILE_SHARE_REPLAY_BYTE_LIMIT,
+        )
+    }
+}
+
+impl MobileReplayBuffer {
+    fn with_limits(event_limit: usize, byte_limit: usize) -> Self {
+        Self {
+            events: Vec::new(),
+            byte_count: 0,
+            dropped_event_count: 0,
+            event_limit,
+            byte_limit,
+        }
+    }
+
+    fn push(&mut self, event: SerialDataEvent) {
+        // The reader is the only producer and assigns increasing sequences.
+        // Treat an accidental replay of an older event as a no-op so this
+        // bounded source cannot introduce a duplicate or reorder a client.
+        if self
+            .events
+            .last()
+            .is_some_and(|last| last.sequence >= event.sequence)
+        {
+            return;
+        }
+        if event.bytes.len() > self.byte_limit {
+            self.events.clear();
+            self.byte_count = 0;
+            self.dropped_event_count = self.dropped_event_count.saturating_add(1);
+            return;
+        }
+        self.byte_count = self.byte_count.saturating_add(event.bytes.len());
+        self.events.push(event);
+        while self.events.len() > self.event_limit || self.byte_count > self.byte_limit {
+            let removed = self.events.remove(0);
+            self.byte_count = self.byte_count.saturating_sub(removed.bytes.len());
+            self.dropped_event_count = self.dropped_event_count.saturating_add(1);
+        }
+    }
+
+    fn snapshot_after(&self, after_sequence: Option<u64>) -> MobileReplaySnapshot {
+        let first_sequence = self.events.first().map(|event| event.sequence);
+        let next_sequence = self
+            .events
+            .last()
+            .map(|event| event.sequence.saturating_add(1))
+            .unwrap_or(1);
+        let requested_replay_has_gap = after_sequence
+            .zip(first_sequence)
+            .is_some_and(|(after, first)| first > after.saturating_add(1));
+        MobileReplaySnapshot {
+            events: self
+                .events
+                .iter()
+                .filter(|event| after_sequence.map_or(true, |after| event.sequence > after))
+                .cloned()
+                .collect(),
+            first_sequence,
+            next_sequence,
+            replay_truncated: self.dropped_event_count > 0 || requested_replay_has_gap,
+        }
+    }
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SerialStatusEvent {
@@ -433,6 +539,7 @@ struct ActiveSession {
     stop: Arc<AtomicBool>,
     writer: SerialWriter,
     event_delivery: Arc<Mutex<SerialEventDelivery>>,
+    mobile_replay: Arc<Mutex<MobileReplayBuffer>>,
     reader_thread: JoinHandle<()>,
 }
 
@@ -442,6 +549,7 @@ struct ReaderContext {
     event_delivery: Arc<Mutex<SerialEventDelivery>>,
     quota: Arc<Mutex<CaptureQuota>>,
     mobile_shares: Arc<Mutex<HashMap<String, ActiveMobileShare>>>,
+    mobile_replay: Arc<Mutex<MobileReplayBuffer>>,
 }
 
 struct CaptureQuota {
@@ -1044,16 +1152,17 @@ fn start_mobile_share(
     session_id: String,
 ) -> CommandResult<MobileShareInfo> {
     let session_id = require_mobile_share_session_id(&session_id)?;
-    {
+    let mobile_replay = {
         let sessions = state.sessions.lock().map_err(lock_error)?;
-        if !sessions.contains_key(&session_id) {
-            return Err("This serial session is no longer active.".into());
-        }
+        let session = sessions
+            .get(&session_id)
+            .ok_or_else(|| "This serial session is no longer active.".to_string())?;
         let shares = state.mobile_shares.lock().map_err(lock_error)?;
         if let Some(share) = shares.get(&session_id) {
             return Ok(active_mobile_share_info(&session_id, share));
         }
-    }
+        Arc::clone(&session.mobile_replay)
+    };
     let host = local_lan_ipv4()?;
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))
         .map_err(|error| format!("Could not start local mobile sharing: {error}"))?;
@@ -1076,6 +1185,7 @@ fn start_mobile_share(
         &session_id,
         move |session| {
             let server_stop = Arc::clone(&stop);
+            let server_replay = Arc::clone(&mobile_replay);
             let server_clients = Arc::clone(&clients);
             let server_client_ids = Arc::clone(&next_client_id);
             let server_token = token.clone();
@@ -1087,6 +1197,7 @@ fn start_mobile_share(
                         session,
                         server_token,
                         server_stop,
+                        server_replay,
                         server_clients,
                         server_client_ids,
                     )
@@ -1310,6 +1421,7 @@ fn run_mobile_share_server(
     session: SessionInfo,
     token: String,
     stop: Arc<AtomicBool>,
+    replay: Arc<Mutex<MobileReplayBuffer>>,
     clients: Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
     next_client_id: Arc<AtomicU64>,
 ) {
@@ -1330,6 +1442,7 @@ fn run_mobile_share_server(
                 let request_session = session.clone();
                 let request_token = token.clone();
                 let request_stop = Arc::clone(&stop);
+                let request_replay = Arc::clone(&replay);
                 let request_clients = Arc::clone(&clients);
                 let request_client_ids = Arc::clone(&next_client_id);
                 let _ = thread::Builder::new()
@@ -1340,6 +1453,7 @@ fn run_mobile_share_server(
                             request_session,
                             request_token,
                             request_stop,
+                            request_replay,
                             request_clients,
                             request_client_ids,
                         )
@@ -1365,6 +1479,7 @@ fn handle_mobile_share_connection(
     session: SessionInfo,
     token: String,
     stop: Arc<AtomicBool>,
+    replay: Arc<Mutex<MobileReplayBuffer>>,
     clients: Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
     next_client_id: Arc<AtomicU64>,
 ) {
@@ -1383,10 +1498,12 @@ fn handle_mobile_share_connection(
     };
     let (method, path, headers) = request;
     let page_path = format!("/share/{token}");
+    let events_path = format!("{page_path}/events");
+    let events_after = parse_mobile_share_events_path(&path, &events_path);
     if method != "GET"
         || !constant_time_eq(path.as_bytes(), page_path.as_bytes())
             && !constant_time_eq(path.as_bytes(), format!("{page_path}/download").as_bytes())
-            && !constant_time_eq(path.as_bytes(), format!("{page_path}/events").as_bytes())
+            && events_after.is_none()
     {
         let _ = write_http_response(
             &stream,
@@ -1412,8 +1529,38 @@ fn handle_mobile_share_connection(
     } else if path.ends_with("/download") {
         serve_mobile_share_download(&mut stream, &session.log_path);
     } else {
-        serve_mobile_share_websocket(&mut stream, &headers, stop, clients, next_client_id);
+        serve_mobile_share_websocket(
+            &mut stream,
+            &headers,
+            stop,
+            replay,
+            clients,
+            next_client_id,
+            events_after.expect("validated mobile events path"),
+        );
     }
+}
+
+/// The browser uses this tiny query parameter to ask for only events after its
+/// last accepted sequence on reconnect. Keep the grammar intentionally narrow:
+/// no decoded paths, fragments, or unknown query fields are accepted.
+fn parse_mobile_share_events_path(path: &str, events_path: &str) -> Option<Option<u64>> {
+    let (pathname, query) = path.split_once('?').unwrap_or((path, ""));
+    if !constant_time_eq(pathname.as_bytes(), events_path.as_bytes()) {
+        return None;
+    }
+    if query.is_empty() {
+        return Some(None);
+    }
+    let (name, value) = query.split_once('=')?;
+    if name != "after"
+        || value.is_empty()
+        || value.bytes().any(|byte| !byte.is_ascii_digit())
+        || query.matches('&').count() > 0
+    {
+        return None;
+    }
+    value.parse::<u64>().ok().map(Some)
 }
 
 fn read_mobile_share_request(
@@ -1604,8 +1751,10 @@ fn serve_mobile_share_websocket(
     stream: &mut TcpStream,
     headers: &HashMap<String, String>,
     stop: Arc<AtomicBool>,
+    replay: Arc<Mutex<MobileReplayBuffer>>,
     clients: Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
     next_client_id: Arc<AtomicU64>,
+    after_sequence: Option<u64>,
 ) {
     let Some(key) = validated_websocket_key(headers) else {
         let _ = write_http_response(
@@ -1625,16 +1774,10 @@ fn serve_mobile_share_websocket(
         return;
     }
     let client_id = next_client_id.fetch_add(1, Ordering::Relaxed);
-    let (sender, receiver) = std::sync::mpsc::sync_channel(128);
-    let inserted = clients.lock().ok().and_then(|mut clients| {
-        if clients.len() >= MOBILE_SHARE_CLIENT_LIMIT {
-            None
-        } else {
-            clients.insert(client_id, sender);
-            Some(())
-        }
-    });
-    if inserted.is_none() {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(MOBILE_SHARE_QUEUE_LIMIT);
+    let registered =
+        register_mobile_share_client(client_id, after_sequence, &replay, &clients, sender);
+    if !registered {
         let _ = write_websocket_close(stream, 1013, "Too many viewers");
         return;
     }
@@ -1659,7 +1802,68 @@ fn serve_mobile_share_websocket(
     if let Ok(mut clients) = clients.lock() {
         clients.remove(&client_id);
     }
-    let _ = write_websocket_close(stream, 1000, "Sharing ended");
+    let (close_code, close_reason) = mobile_share_close_status(stop.load(Ordering::Acquire));
+    let _ = write_websocket_close(stream, close_code, close_reason);
+}
+
+fn mobile_share_close_status(share_stopping: bool) -> (u16, &'static str) {
+    if share_stopping {
+        (1000, "Sharing ended")
+    } else {
+        // A slow queue or a transient socket write failure should let the
+        // mobile page reconnect from its last sequence instead of looking
+        // like an intentional share revocation.
+        (1012, "Connection interrupted")
+    }
+}
+
+/// Snapshotting the replay and inserting a client share the same lock order as
+/// live publishing (`replay` then `clients`). That makes the handoff atomic:
+/// a data event is either in the replay sent to this client or queued after it,
+/// never both and never neither.
+fn register_mobile_share_client(
+    client_id: u64,
+    after_sequence: Option<u64>,
+    replay: &Arc<Mutex<MobileReplayBuffer>>,
+    clients: &Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
+    sender: std::sync::mpsc::SyncSender<String>,
+) -> bool {
+    let Ok(replay) = replay.lock() else {
+        return false;
+    };
+    let snapshot = replay.snapshot_after(after_sequence);
+    let replay_capacity = MOBILE_SHARE_QUEUE_LIMIT.saturating_sub(1);
+    let first_replay_index = snapshot.events.len().saturating_sub(replay_capacity);
+    let Ok(notice) = serde_json::to_string(&MobileReplayNotice {
+        kind: "replay",
+        first_sequence: snapshot.first_sequence,
+        next_sequence: snapshot.next_sequence,
+        replay_truncated: snapshot.replay_truncated || first_replay_index > 0,
+    }) else {
+        return false;
+    };
+    let Ok(mut clients) = clients.lock() else {
+        return false;
+    };
+    if clients.len() >= MOBILE_SHARE_CLIENT_LIMIT {
+        return false;
+    }
+    // The replay event bound deliberately leaves room for this notice and
+    // future live events. Retain the newest part if a future configuration
+    // changes those bounds without allowing an unbounded initial queue.
+    if sender.try_send(notice).is_err() {
+        return false;
+    }
+    for event in snapshot.events.iter().skip(first_replay_index) {
+        let Ok(payload) = serde_json::to_string(event) else {
+            return false;
+        };
+        if sender.try_send(payload).is_err() {
+            return false;
+        }
+    }
+    clients.insert(client_id, sender);
+    true
 }
 
 fn write_websocket_text(stream: &mut TcpStream, message: &str) -> io::Result<()> {
@@ -1692,12 +1896,20 @@ fn write_websocket_frame(stream: &mut TcpStream, opcode: u8, payload: &[u8]) -> 
 
 fn broadcast_mobile_serial_data(
     shares: &Arc<Mutex<HashMap<String, ActiveMobileShare>>>,
+    replay: &Arc<Mutex<MobileReplayBuffer>>,
     event: &SerialDataEvent,
 ) {
     let payload = match serde_json::to_string(event) {
         Ok(payload) => payload,
         Err(_) => return,
     };
+    // Publishing owns the replay-to-live handoff lock. A client registering at
+    // this point therefore sees this event either in its snapshot or queued
+    // after the snapshot, never twice and never out of order.
+    let Ok(mut replay) = replay.lock() else {
+        return;
+    };
+    replay.push(event.clone());
     let clients = match shares.lock() {
         Ok(shares) => shares
             .get(&event.session_id)
@@ -1891,7 +2103,246 @@ fn base64_encode(bytes: &[u8]) -> String {
     output
 }
 
-const MOBILE_SHARE_PAGE: &str = r##"<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#111827"><title>BaudTide live log</title><style>body{margin:0;background:#111827;color:#e5e7eb;font:16px system-ui,sans-serif}main{max-width:900px;margin:auto;padding:16px}header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}h1{font-size:1.2rem;margin:0}#state{color:#93c5fd}a{color:#bfdbfe}pre{box-sizing:border-box;min-height:70vh;max-height:70vh;overflow:auto;white-space:pre-wrap;word-break:break-word;padding:14px;border:1px solid #374151;border-radius:8px;background:#030712;line-height:1.45}button{border:1px solid #4b5563;border-radius:6px;color:#e5e7eb;background:#1f2937;padding:8px 10px}</style><main><header><div><h1>BaudTide · live serial log</h1><span id="state">Connecting…</span></div><div><button id="pause">Pause</button> <a id="download" download>Download capture</a></div></header><pre id="log" aria-live="polite"></pre></main><script>(()=>{const log=document.querySelector('#log'),state=document.querySelector('#state'),pause=document.querySelector('#pause'),download=document.querySelector('#download');const base=location.pathname.replace(/\/$/,'');download.href=base+'/download';let paused=false;pause.onclick=()=>{paused=!paused;pause.textContent=paused?'Resume':'Pause'};const ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+base+'/events');ws.onopen=()=>state.textContent='Live · read-only';ws.onclose=()=>state.textContent='Disconnected · sharing ended';ws.onerror=()=>state.textContent='Connection error';ws.onmessage=e=>{if(paused)return;try{const item=JSON.parse(e.data);log.textContent+=item.text??'';if(log.textContent.length>500000)log.textContent=log.textContent.slice(-400000);log.scrollTop=log.scrollHeight}catch{}}})();</script>"##;
+const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#111827">
+  <title>BaudTide mobile log</title>
+  <style>
+    :root{color-scheme:dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    *{box-sizing:border-box}
+    body{margin:0;background:#111827;color:#e5e7eb;font-size:15px}
+    main{max-width:960px;margin:auto;padding:14px}
+    header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+    h1{font-size:1.18rem;line-height:1.2;margin:0 0 4px}
+    #state{display:block;color:#93c5fd;font-size:.84rem}
+    #summary{display:block;margin-top:3px;color:#94a3b8;font-size:.72rem}
+    a{color:#bfdbfe}
+    .controls{display:grid;gap:9px;margin-bottom:10px;padding:10px;border:1px solid #374151;border-radius:9px;background:#172131}
+    .control-row,.filter-row{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+    button{min-height:34px;border:1px solid #4b5563;border-radius:7px;color:#e5e7eb;background:#1f2937;padding:7px 10px;font:inherit;font-size:.8rem;cursor:pointer}
+    button:hover{border-color:#7dd3fc;background:#26364a}
+    button.active{border-color:#4adeba;background:#173d38;color:#baf5e3}
+    button:focus-visible,input:focus-visible{outline:2px solid #75dfc0;outline-offset:2px}
+    .download{margin-left:auto;padding:8px 2px;font-size:.8rem}
+    .search{display:flex;align-items:center;gap:7px;color:#b6c5d5;font-size:.78rem}
+    .search input{width:100%;min-width:0;border:1px solid #4b5563;border-radius:7px;padding:8px 9px;background:#0b1220;color:#f3f4f6;font:inherit;font-size:.82rem}
+    .filter-label{color:#9caec0;font-size:.72rem}
+    .filter-row button{min-height:29px;padding:4px 9px;font-size:.72rem}
+    #notice{margin:0 0 10px;padding:8px 10px;border:1px solid #755e32;border-radius:7px;background:#302817;color:#f5d58a;font-size:.76rem;line-height:1.35}
+    #log{height:66vh;min-height:360px;max-height:760px;overflow:auto;border:1px solid #374151;border-radius:9px;background:#030712;padding:8px;line-height:1.38;overscroll-behavior:contain}
+    .entry{display:grid;grid-template-columns:86px minmax(0,1fr);gap:8px;padding:3px 4px;border-bottom:1px solid #111827;white-space:pre-wrap;overflow-wrap:anywhere}
+    .entry-time{color:#7dd3fc;font:11px ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap}
+    .entry-text{color:#e5e7eb;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}
+    .empty{padding:28px 12px;color:#8190a2;text-align:center;font-size:.82rem}
+    @media(max-width:520px){main{padding:10px}.download{margin-left:0}.entry{grid-template-columns:72px minmax(0,1fr);gap:6px}.entry-time{font-size:10px}.entry-text{font-size:11px}#log{min-height:320px;height:64vh}}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><h1>BaudTide · live serial log</h1><span id="state" role="status">Connecting…</span><span id="summary">Waiting for a recent capture tail…</span></div>
+      <a id="download" class="download" download>Download raw capture</a>
+    </header>
+    <section class="controls" aria-label="Log viewer controls">
+      <div class="control-row">
+        <button id="pause" type="button">Pause</button>
+        <button id="follow" type="button" aria-pressed="true">Following</button>
+        <button id="latest" type="button" hidden>Jump to latest</button>
+      </div>
+      <label class="search">Search <input id="search" type="search" maxlength="128" autocomplete="off" placeholder="Find in the recent tail"></label>
+      <div class="filter-row" role="group" aria-label="High-signal filters">
+        <span class="filter-label">Show</span>
+        <button type="button" data-filter="all" class="active">All</button>
+        <button type="button" data-filter="errors">Errors</button>
+        <button type="button" data-filter="wifi">Wi-Fi</button>
+      </div>
+    </section>
+    <div id="notice" hidden></div>
+    <div id="log" role="log" aria-live="polite" aria-label="Serial log"><div class="empty">Waiting for serial data…</div></div>
+  </main>
+  <script>
+  (()=>{
+    'use strict';
+    const log=document.querySelector('#log');
+    const state=document.querySelector('#state');
+    const summary=document.querySelector('#summary');
+    const notice=document.querySelector('#notice');
+    const pauseButton=document.querySelector('#pause');
+    const followButton=document.querySelector('#follow');
+    const latestButton=document.querySelector('#latest');
+    const searchInput=document.querySelector('#search');
+    const download=document.querySelector('#download');
+    const base=location.pathname.replace(/\/$/,'');
+    download.href=base+'/download';
+    const MAX_RETAINED_EVENTS=700;
+    const MAX_RETAINED_BYTES=320000;
+    const MAX_RECONNECT_DELAY=8000;
+    const ERROR_PATTERN=/\b(?:error|err|fail(?:ed|ure)?|panic|fatal|exception|abort(?:ed)?)\b/i;
+    const WIFI_PATTERN=/\b(?:wi-?fi|wlan|ssid|bssid|rssi|ip address|disconnect(?:ed|ion)?|reconnect(?:ed|ing)?)\b/i;
+    let socket=null;
+    let reconnectTimer=null;
+    let reconnectAttempt=0;
+    let stopped=false;
+    let paused=false;
+    let follow=true;
+    let filter='all';
+    let query='';
+    let entries=[];
+    let retainedBytes=0;
+    let lastSequence=0;
+    let renderPending=false;
+    let connectionLabel='Connecting…';
+
+    function pad(value,width=2){return String(value).padStart(width,'0')}
+    function timestamp(value){
+      const date=new Date(typeof value==='string'?value:'');
+      if(Number.isNaN(date.getTime())) return typeof value==='string'&&value?value:'—';
+      return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(),3)}`;
+    }
+    function setConnection(label){
+      connectionLabel=label;
+      state.textContent=paused&&label.startsWith('Live')?`${label} · paused`:label;
+    }
+    function setNotice(message){
+      notice.textContent=message||'';
+      notice.hidden=!message;
+    }
+    function updateFollowButton(){
+      followButton.textContent=follow?'Following':'Follow';
+      followButton.setAttribute('aria-pressed',String(follow));
+      followButton.classList.toggle('active',follow);
+      latestButton.hidden=follow;
+    }
+    function matches(entry){
+      const text=entry.text.toLowerCase();
+      const needle=query.trim().toLowerCase();
+      if(needle&&!text.includes(needle)) return false;
+      if(filter==='errors'&&!ERROR_PATTERN.test(entry.text)) return false;
+      if(filter==='wifi'&&!WIFI_PATTERN.test(entry.text)) return false;
+      return true;
+    }
+    function render(){
+      renderPending=false;
+      const visible=entries.filter(matches);
+      log.replaceChildren();
+      if(!visible.length){
+        const empty=document.createElement('div');
+        empty.className='empty';
+        empty.textContent=entries.length?'No retained chunks match this filter.':'Waiting for serial data…';
+        log.append(empty);
+      }else{
+        const fragment=document.createDocumentFragment();
+        visible.forEach(entry=>{
+          const row=document.createElement('div');
+          row.className='entry';
+          const time=document.createElement('time');
+          time.className='entry-time';
+          time.textContent=timestamp(entry.timestamp);
+          const text=document.createElement('span');
+          text.className='entry-text';
+          text.textContent=entry.text;
+          row.append(time,text);
+          fragment.append(row);
+        });
+        log.append(fragment);
+      }
+      summary.textContent=`${visible.length} shown · ${entries.length} retained${lastSequence?` · sequence ${lastSequence}`:''}`;
+      if(follow&&!paused) log.scrollTop=log.scrollHeight;
+    }
+    function requestRender(){
+      if(paused||renderPending) return;
+      renderPending=true;
+      if(window.requestAnimationFrame) window.requestAnimationFrame(render);
+      else window.setTimeout(render,0);
+    }
+    function retain(item){
+      if(!Number.isSafeInteger(item.sequence)||item.sequence<1) return;
+      if(item.sequence<=lastSequence) return;
+      if(lastSequence&&item.sequence>lastSequence+1) setNotice(`Some live chunks were missed; showing the available tail from sequence ${item.sequence}.`);
+      lastSequence=item.sequence;
+      const text=typeof item.text==='string'?item.text.slice(0,8192):'';
+      const bytes=Array.isArray(item.bytes)?item.bytes.length:0;
+      const size=text.length+bytes;
+      entries.push({sequence:item.sequence,timestamp:item.timestamp,text,size});
+      retainedBytes+=size;
+      while(entries.length>MAX_RETAINED_EVENTS||retainedBytes>MAX_RETAINED_BYTES){
+        const removed=entries.shift();
+        if(removed) retainedBytes=Math.max(0,retainedBytes-removed.size);
+      }
+      if(paused) setConnection(connectionLabel);
+      requestRender();
+    }
+    function handleMessage(raw){
+      let item;
+      try{item=JSON.parse(raw)}catch{return}
+      if(item&&item.kind==='replay'){
+        if(item.replayTruncated){
+          const first=Number.isSafeInteger(item.firstSequence)?` from sequence ${item.firstSequence}`:'';
+          setNotice(`Showing the bounded recent tail${first}; older chunks are still available in the raw download.`);
+        }
+        return;
+      }
+      if(item&&typeof item==='object') retain(item);
+    }
+    function connect(){
+      if(stopped||socket) return;
+      const suffix=lastSequence?`?after=${encodeURIComponent(lastSequence)}`:'';
+      const url=(location.protocol==='https:'?'wss':'ws')+'://'+location.host+base+'/events'+suffix;
+      setConnection(reconnectAttempt?'Reconnecting…':'Connecting…');
+      try{socket=new WebSocket(url)}catch{socket=null;scheduleReconnect();return}
+      socket.onopen=()=>{
+        reconnectAttempt=0;
+        setConnection('Live · read-only');
+      };
+      socket.onmessage=event=>handleMessage(event.data);
+      socket.onerror=()=>setConnection('Connection error · retrying…');
+      socket.onclose=event=>{
+        socket=null;
+        if(stopped) return;
+        if(event.code===1000&&event.reason==='Sharing ended'){
+          stopped=true;
+          setConnection('Disconnected · sharing ended');
+          return;
+        }
+        setConnection('Disconnected · retrying…');
+        scheduleReconnect();
+      };
+    }
+    function scheduleReconnect(){
+      if(stopped||reconnectTimer) return;
+      const delay=Math.min(1000*2**Math.min(reconnectAttempt,3),MAX_RECONNECT_DELAY);
+      reconnectAttempt+=1;
+      reconnectTimer=window.setTimeout(()=>{reconnectTimer=null;connect()},delay);
+    }
+    pauseButton.onclick=()=>{
+      paused=!paused;
+      pauseButton.textContent=paused?'Resume':'Pause';
+      pauseButton.classList.toggle('active',paused);
+      setConnection(connectionLabel);
+      if(!paused) {render();if(follow) log.scrollTop=log.scrollHeight;}
+    };
+    followButton.onclick=()=>{follow=!follow;updateFollowButton();if(follow){render();log.scrollTop=log.scrollHeight}};
+    latestButton.onclick=()=>{follow=true;updateFollowButton();render();log.scrollTop=log.scrollHeight};
+    log.addEventListener('scroll',()=>{
+      const nearBottom=log.scrollHeight-log.scrollTop-log.clientHeight<36;
+      if(nearBottom!==follow){follow=nearBottom;updateFollowButton()}
+    });
+    searchInput.addEventListener('input',()=>{query=searchInput.value.slice(0,128);render()});
+    document.querySelectorAll('[data-filter]').forEach(button=>button.addEventListener('click',()=>{
+      filter=button.dataset.filter||'all';
+      document.querySelectorAll('[data-filter]').forEach(item=>item.classList.toggle('active',item===button));
+      render();
+    }));
+    updateFollowButton();
+    render();
+    connect();
+  })();
+  </script>
+</body>
+</html>"###;
 
 #[tauri::command]
 fn start_serial_session(
@@ -1976,7 +2427,9 @@ fn start_serial_session(
         dropped_event_count: 0,
         next_sequence: 1,
     }));
+    let mobile_replay = Arc::new(Mutex::new(MobileReplayBuffer::default()));
     let reader_event_delivery = Arc::clone(&event_delivery);
+    let reader_mobile_replay = Arc::clone(&mobile_replay);
     let reader_info = info.clone();
     let reader_app = app.clone();
     let reader_sessions = Arc::clone(&state.sessions);
@@ -1996,6 +2449,7 @@ fn start_serial_session(
                     event_delivery: reader_event_delivery,
                     quota: reader_quota,
                     mobile_shares: reader_mobile_shares,
+                    mobile_replay: reader_mobile_replay,
                 },
             )
         }) {
@@ -2013,6 +2467,7 @@ fn start_serial_session(
             stop,
             writer: Arc::new(Mutex::new(Some(port))),
             event_delivery,
+            mobile_replay,
             reader_thread,
         },
     );
@@ -2153,7 +2608,7 @@ fn read_serial_loop(
         stop.as_ref(),
         &context.quota,
         |event| {
-            broadcast_mobile_serial_data(&context.mobile_shares, &event);
+            broadcast_mobile_serial_data(&context.mobile_shares, &context.mobile_replay, &event);
             deliver_serial_data(&context.app, &context.event_delivery, event);
         },
     );
@@ -2415,19 +2870,21 @@ mod tests {
         SerialDataEvent, SerialEventDelivery,
     };
     use super::{
-        base64_decode, begin_saved_log_search, data_bits, disconnect_status_message,
-        ensure_search_not_cancelled, generated_log_path, index_records_by_path, is_usable_lan_ipv4,
-        mark_log_closing, normalize_application_settings, read_mobile_share_request_from_reader,
-        rebuild_log_text_index_in_directory, register_mobile_share_for_session,
-        release_capture_quota, remove_log_text_indexes_for_path_in_directory,
-        saved_log_text_index_path, search_fresh_log_text_index_in_directory, search_raw_log,
-        stable_saved_log_content_search, stop_mobile_share_for_session,
-        validate_preference_log_directory, validated_websocket_key, websocket_accept_key,
-        ActiveMobileShare, ActiveSession, ApplicationSettings, CaptureQuota, FlowControlSetting,
-        LogIndexRecord, ParitySetting, SavedLogFingerprint, SavedLogTextIndexHeader,
-        SerialSettings, SerialState, SessionInfo, StartSessionRequest, StopBitsSetting,
-        CAPTURE_DURABILITY_SYNC_INTERVAL, GIBIBYTE, SEARCH_CANCELLED_MESSAGE, SEARCH_INDEX_MAGIC,
-        SEARCH_INDEX_SCHEMA_VERSION, SEARCH_PER_LOG_BYTE_LIMIT, SEARCH_READ_BUFFER_SIZE,
+        base64_decode, begin_saved_log_search, broadcast_mobile_serial_data, data_bits,
+        disconnect_status_message, ensure_search_not_cancelled, generated_log_path,
+        index_records_by_path, is_usable_lan_ipv4, mark_log_closing, mobile_share_close_status,
+        normalize_application_settings, parse_mobile_share_events_path,
+        read_mobile_share_request_from_reader, rebuild_log_text_index_in_directory,
+        register_mobile_share_client, register_mobile_share_for_session, release_capture_quota,
+        remove_log_text_indexes_for_path_in_directory, saved_log_text_index_path,
+        search_fresh_log_text_index_in_directory, search_raw_log, stable_saved_log_content_search,
+        stop_mobile_share_for_session, validate_preference_log_directory, validated_websocket_key,
+        websocket_accept_key, ActiveMobileShare, ActiveSession, ApplicationSettings, CaptureQuota,
+        FlowControlSetting, LogIndexRecord, MobileReplayBuffer, ParitySetting, SavedLogFingerprint,
+        SavedLogTextIndexHeader, SerialSettings, SerialState, SessionInfo, StartSessionRequest,
+        StopBitsSetting, CAPTURE_DURABILITY_SYNC_INTERVAL, GIBIBYTE, SEARCH_CANCELLED_MESSAGE,
+        SEARCH_INDEX_MAGIC, SEARCH_INDEX_SCHEMA_VERSION, SEARCH_PER_LOG_BYTE_LIMIT,
+        SEARCH_READ_BUFFER_SIZE,
     };
     use std::{
         cell::Cell,
@@ -2456,6 +2913,17 @@ mod tests {
         read_mobile_share_request_from_reader(&mut Cursor::new(bytes))
     }
 
+    fn mobile_event(sequence: u64, byte_count: usize) -> SerialDataEvent {
+        SerialDataEvent {
+            session_id: "session-1".into(),
+            port: "/dev/ttyUSB0".into(),
+            sequence,
+            timestamp: "2026-08-07T10:00:00.000Z".into(),
+            text: format!("event-{sequence}"),
+            bytes: vec![sequence as u8; byte_count],
+        }
+    }
+
     fn test_session_info(id: &str) -> SessionInfo {
         SessionInfo {
             id: id.into(),
@@ -2474,6 +2942,7 @@ mod tests {
             stop: Arc::new(AtomicBool::new(false)),
             writer: Arc::new(Mutex::new(None)),
             event_delivery: Arc::new(Mutex::new(SerialEventDelivery::Live { next_sequence: 0 })),
+            mobile_replay: Arc::new(Mutex::new(MobileReplayBuffer::default())),
             reader_thread: thread::spawn(|| {}),
         }
     }
@@ -3150,6 +3619,150 @@ mod tests {
 
         assert!(search.is_none());
         assert_eq!(search_calls.get(), 2);
+    }
+
+    #[test]
+    fn mobile_replay_tail_is_bounded_by_event_and_byte_limits() {
+        let mut replay = MobileReplayBuffer::with_limits(3, 10);
+        replay.push(mobile_event(1, 4));
+        replay.push(mobile_event(2, 4));
+        replay.push(mobile_event(3, 4));
+        replay.push(mobile_event(4, 4));
+
+        assert_eq!(
+            replay
+                .events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        assert!(replay.events.len() <= 3);
+        assert!(replay.byte_count <= 10);
+        assert!(replay.dropped_event_count > 0);
+    }
+
+    #[test]
+    fn mobile_replay_cursor_preserves_order_and_deduplicates_old_events() {
+        let mut replay = MobileReplayBuffer::with_limits(8, 128);
+        for sequence in 1..=5 {
+            replay.push(mobile_event(sequence, 1));
+        }
+        replay.push(mobile_event(3, 1));
+
+        let snapshot = replay.snapshot_after(Some(2));
+        assert_eq!(
+            snapshot
+                .events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![3, 4, 5]
+        );
+        assert_eq!(snapshot.first_sequence, Some(1));
+        assert_eq!(snapshot.next_sequence, 6);
+        assert!(!snapshot.replay_truncated);
+    }
+
+    #[test]
+    fn mobile_share_queues_replay_before_a_new_live_event() {
+        let replay = Arc::new(Mutex::new(MobileReplayBuffer::with_limits(8, 128)));
+        replay.lock().unwrap().push(mobile_event(1, 1));
+        replay.lock().unwrap().push(mobile_event(2, 1));
+        let clients = Arc::new(Mutex::new(HashMap::new()));
+        let (sender, receiver) = mpsc::sync_channel(8);
+
+        assert!(register_mobile_share_client(
+            7, None, &replay, &clients, sender,
+        ));
+        let notice: serde_json::Value = serde_json::from_str(&receiver.recv().unwrap()).unwrap();
+        assert_eq!(notice["kind"], "replay");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&receiver.recv().unwrap()).unwrap()
+                ["sequence"],
+            1
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&receiver.recv().unwrap()).unwrap()
+                ["sequence"],
+            2
+        );
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let shares = Arc::new(Mutex::new(HashMap::from([(
+            "session-1".to_string(),
+            ActiveMobileShare {
+                token: "token".into(),
+                host: "192.168.1.50".into(),
+                port: 4321,
+                stop,
+                clients: Arc::clone(&clients),
+                server_thread: thread::spawn(|| {}),
+            },
+        )])));
+        broadcast_mobile_serial_data(&shares, &replay, &mobile_event(3, 1));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&receiver.recv().unwrap()).unwrap()
+                ["sequence"],
+            3
+        );
+    }
+
+    #[test]
+    fn mobile_reconnect_cursor_reports_when_older_tail_is_unavailable() {
+        let mut replay = MobileReplayBuffer::with_limits(3, 128);
+        for sequence in 1..=5 {
+            replay.push(mobile_event(sequence, 1));
+        }
+
+        let snapshot = replay.snapshot_after(Some(1));
+        assert_eq!(snapshot.first_sequence, Some(3));
+        assert_eq!(snapshot.next_sequence, 6);
+        assert_eq!(
+            snapshot
+                .events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![3, 4, 5]
+        );
+        assert!(snapshot.replay_truncated);
+    }
+
+    #[test]
+    fn mobile_share_events_path_accepts_only_the_reconnect_cursor() {
+        let events_path = "/share/token/events";
+        assert_eq!(
+            parse_mobile_share_events_path(events_path, events_path),
+            Some(None)
+        );
+        assert_eq!(
+            parse_mobile_share_events_path("/share/token/events?after=42", events_path),
+            Some(Some(42))
+        );
+        assert!(
+            parse_mobile_share_events_path("/share/token/events?after=", events_path).is_none()
+        );
+        assert!(parse_mobile_share_events_path(
+            "/share/token/events?after=42&extra=1",
+            events_path
+        )
+        .is_none());
+        assert!(
+            parse_mobile_share_events_path("/share/token/events?after=-1", events_path).is_none()
+        );
+        assert!(
+            parse_mobile_share_events_path("/share/other/events?after=42", events_path).is_none()
+        );
+    }
+
+    #[test]
+    fn mobile_share_only_marks_an_intentional_stop_as_a_clean_disconnect() {
+        assert_eq!(mobile_share_close_status(true), (1000, "Sharing ended"));
+        assert_eq!(
+            mobile_share_close_status(false),
+            (1012, "Connection interrupted")
+        );
     }
 
     #[test]

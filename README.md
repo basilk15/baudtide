@@ -45,9 +45,12 @@ npm run tauri dev
 
 BaudTide can share one live terminal with a phone on the same local network.
 Open the terminal's **Mobile sharing** panel, choose **Start sharing**, and scan
-the displayed QR code from the phone. The phone view is read-only: it shows the
-live output and lets the paired device download the active raw capture. It
-cannot send data to the serial device.
+the displayed QR code from the phone. The phone view is read-only: it starts
+with a bounded recent tail, continues with live output, reconnects from its
+last event sequence after a brief network interruption, and lets the paired
+device download the active raw capture. Search, pause/resume, auto-follow, and
+high-signal Error/Wi-Fi filters operate on the retained mobile tail. It cannot
+send data to the serial device.
 
 Each share gets a new unguessable pairing URL. Stop sharing to immediately
 revoke it; sharing also stops automatically when its serial session disconnects
