@@ -227,7 +227,7 @@ export function MobileSharePanel({ sessionId, nativeSession, sessionConnected }:
       {nativeSession && !sessionConnected && <div className="sd-mobile-share-preview"><Wifi size={17} /><span>Connect this serial session before creating a mobile link.</span></div>}
 
       {canShare && !share && <div className="sd-mobile-share-start">
-        <p>Let a phone on the same Wi-Fi view this session’s live output and download its shared log.</p>
+        <p>Let a phone on the same Wi-Fi view a recent tail and continue with live output. It can also download the raw capture.</p>
         <button className="sd-primary-button" type="button" onClick={() => void enable()} disabled={isWorking}>
           {isWorking ? <LoaderCircle className="sd-spin" size={16} /> : <QrCode size={16} />} Create mobile link
         </button>
@@ -238,7 +238,7 @@ export function MobileSharePanel({ sessionId, nativeSession, sessionConnected }:
           <PairingQr value={share.url} />
         </div>
         <div className="sd-mobile-share-details">
-          <p className="sd-mobile-share-instruction">Scan the QR code with your phone camera, or open the link below on the same Wi-Fi.</p>
+          <p className="sd-mobile-share-instruction">Scan the QR code with your phone camera, or open the link below on the same Wi-Fi. The viewer reconnects and resumes from its last sequence when the network blips.</p>
           <div className="sd-mobile-share-link"><code title={share.url}>{share.url}</code><button type="button" onClick={() => void copyLink()} title="Copy mobile link" aria-label="Copy mobile link">{copied ? <Check size={15} /> : <Copy size={15} />}</button></div>
           <div className="sd-mobile-share-metrics"><span><Users size={14} /> {share.clientCount} {share.clientCount === 1 ? 'phone connected' : 'phones connected'}</span><span><Wifi size={14} /> {share.host}:{share.port}</span></div>
           <button className="sd-mobile-share-revoke" type="button" onClick={() => void revoke()} disabled={isWorking}>{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : null} Revoke mobile link</button>
