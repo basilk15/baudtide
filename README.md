@@ -41,7 +41,7 @@ Run the complete desktop app with native serial-port access:
 npm run tauri dev
 ```
 
-## View a live capture on a phone
+## View active sessions on a phone
 
 BaudTide can share one live terminal with a phone on the same local network.
 Open the terminal's **Mobile sharing** panel, choose **Create mobile link**, and
@@ -67,6 +67,27 @@ only use it on a trusted LAN and do not treat it as an internet-facing service.
 The control permission applies to every write request, but an in-flight write
 may finish if it races with a disable/revoke action. The feature exposes no
 arbitrary file, shell, or system actions.
+
+BaudTide can create one read-only mobile dashboard for all native serial
+sessions that are active when the link is created. Open **Live terminal**, use
+the **Mobile workspace** panel, and scan its QR code from a phone on the same
+local network. The phone can switch between the included session names and
+ports while receiving their live, session-tagged output. It cannot send data,
+control a serial device, or browse arbitrary files.
+
+Each workspace dashboard gets a new unguessable bearer URL. Its session scope
+is a snapshot: later terminals and reconnects are not added automatically.
+Included sessions remain visible when they disconnect or hit an `error` or
+`storage-limit` state, so the phone can explain why a stream stopped. Revoke
+the workspace link to close it immediately; it also ends when BaudTide exits.
+The dashboard accepts at most 32 scoped sessions and 8 simultaneous viewers,
+with bounded per-viewer event queues and phone-side output buffers.
+
+The per-terminal **Mobile companion** panel and `/share/<token>` URL remain
+available for backward compatibility. Those links show one session and retain
+the existing active-capture download behavior. Only use either feature on a
+network you trust: the listener is IPv4 local-network-only and the URL token is
+the sole phone authentication credential.
 
 ## Native serial backend
 

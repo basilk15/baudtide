@@ -9,7 +9,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     thread::{self, JoinHandle},
@@ -63,6 +63,9 @@ const SESSION_NAME_BYTE_LIMIT: usize = 120;
 const PORT_PATH_BYTE_LIMIT: usize = 256;
 const MOBILE_SHARE_REQUEST_BYTE_LIMIT: usize = 16 * 1024;
 const MOBILE_SHARE_CLIENT_LIMIT: usize = 8;
+const MOBILE_SHARE_EVENT_QUEUE_LIMIT: usize = 128;
+const MOBILE_WORKSPACE_SESSION_LIMIT: usize = 32;
+const MOBILE_WORKSPACE_MESSAGE_BYTE_LIMIT: usize = 8 * 1024;
 const MOBILE_SHARE_ACCEPT_POLL: Duration = Duration::from_millis(100);
 const MOBILE_SHARE_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const MOBILE_SHARE_HEARTBEAT: Duration = Duration::from_secs(20);
@@ -554,6 +557,7 @@ struct ReaderContext {
     quota: Arc<Mutex<CaptureQuota>>,
     mobile_shares: Arc<Mutex<HashMap<String, ActiveMobileShare>>>,
     mobile_replay: Arc<Mutex<MobileReplayBuffer>>,
+    mobile_workspace_share: Arc<Mutex<Option<ActiveMobileWorkspaceShare>>>,
 }
 
 struct CaptureQuota {
@@ -575,6 +579,7 @@ struct SerialState {
     sessions: Arc<Mutex<HashMap<String, ActiveSession>>>,
     closing_log_paths: Arc<Mutex<HashSet<String>>>,
     mobile_shares: Arc<Mutex<HashMap<String, ActiveMobileShare>>>,
+    mobile_workspace_share: Arc<Mutex<Option<ActiveMobileWorkspaceShare>>>,
     saved_log_searches: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     capture_quota: Arc<Mutex<CaptureQuota>>,
     shutting_down: Arc<AtomicBool>,
@@ -594,6 +599,17 @@ struct MobileShareInfo {
     control_enabled: bool,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MobileWorkspaceShareInfo {
+    url: String,
+    host: String,
+    port: u16,
+    client_count: usize,
+    session_count: usize,
+    enabled: bool,
+}
+
 struct ActiveMobileShare {
     token: String,
     host: String,
@@ -611,6 +627,7 @@ struct MobileShareServerContext {
     replay: Arc<Mutex<MobileReplayBuffer>>,
     clients: Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
     next_client_id: Arc<AtomicU64>,
+    connection_slots: Arc<AtomicUsize>,
     control_enabled: Arc<AtomicBool>,
     write_rate_limiter: Arc<Mutex<MobileWriteRateState>>,
     writer: SerialWriter,
@@ -679,6 +696,43 @@ struct MobileWriteSuccessResponse {
 struct MobileErrorResponse {
     ok: bool,
     error: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MobileWorkspaceSession {
+    session_id: String,
+    session_name: String,
+    port: String,
+    state: String,
+    message: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum MobileWorkspaceMessage {
+    Snapshot {
+        sessions: Vec<MobileWorkspaceSession>,
+    },
+    Data {
+        event: SerialDataEvent,
+    },
+    Status {
+        session_id: String,
+        port: String,
+        status: String,
+        message: String,
+    },
+}
+
+struct ActiveMobileWorkspaceShare {
+    token: String,
+    host: String,
+    port: u16,
+    stop: Arc<AtomicBool>,
+    sessions: Arc<Mutex<BTreeMap<String, MobileWorkspaceSession>>>,
+    clients: Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
+    server_thread: JoinHandle<()>,
 }
 
 /// Removes its cancellation flag when the matching search completes. Matching
@@ -1262,6 +1316,7 @@ fn start_mobile_share(
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let stop = Arc::new(AtomicBool::new(false));
     let clients = Arc::new(Mutex::new(HashMap::new()));
+    let connection_slots = Arc::new(AtomicUsize::new(0));
     let control_enabled = Arc::new(AtomicBool::new(false));
     let write_rate_limiter = Arc::new(Mutex::new(MobileWriteRateState::default()));
     let next_client_id = Arc::new(AtomicU64::new(1));
@@ -1273,6 +1328,7 @@ fn start_mobile_share(
         replay: Arc::clone(&mobile_replay),
         clients: Arc::clone(&clients),
         next_client_id: Arc::clone(&next_client_id),
+        connection_slots: Arc::clone(&connection_slots),
         control_enabled: Arc::clone(&control_enabled),
         write_rate_limiter: Arc::clone(&write_rate_limiter),
         writer: Arc::clone(&session_writer),
@@ -1386,6 +1442,163 @@ fn stop_mobile_share(
         enabled: false,
         control_enabled: false,
     })
+}
+
+/// Starts one read-only dashboard whose scope is the set of native sessions
+/// that are active at creation time. The scope is deliberately immutable: a
+/// later terminal or reconnect receives a new native session ID and cannot
+/// enter an already-issued bearer link.
+#[tauri::command]
+fn start_mobile_workspace_share(
+    state: State<'_, SerialState>,
+) -> CommandResult<MobileWorkspaceShareInfo> {
+    // Keep this order (`sessions` then `mobile_workspace_share`) consistent
+    // with serial startup, which publishes its connected status while holding
+    // the native-session map. This prevents a startup/share deadlock.
+    let _sessions_guard = state.sessions.lock().map_err(lock_error)?;
+    let mut active_share = state.mobile_workspace_share.lock().map_err(lock_error)?;
+    if let Some(share) = active_share.as_ref() {
+        return Ok(active_mobile_workspace_share_info(share));
+    }
+
+    // Keep the native-session map locked through registration. A reader that
+    // fails during this small window then waits until the workspace share is
+    // visible and can publish its terminal status instead of leaving a stale
+    // connected row in the snapshot.
+    let session_scope = mobile_workspace_session_scope(&_sessions_guard)?;
+    let host = local_lan_ipv4()?;
+    let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))
+        .map_err(|error| format!("Could not start local mobile workspace sharing: {error}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| format!("Could not configure local mobile workspace sharing: {error}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("Could not inspect local mobile workspace sharing: {error}"))?
+        .port();
+    let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    let stop = Arc::new(AtomicBool::new(false));
+    let sessions = Arc::new(Mutex::new(session_scope));
+    let clients = Arc::new(Mutex::new(HashMap::new()));
+    let connection_slots = Arc::new(AtomicUsize::new(0));
+    let next_client_id = Arc::new(AtomicU64::new(1));
+    let server_stop = Arc::clone(&stop);
+    let server_sessions = Arc::clone(&sessions);
+    let server_clients = Arc::clone(&clients);
+    let server_connection_slots = Arc::clone(&connection_slots);
+    let server_client_ids = Arc::clone(&next_client_id);
+    let server_token = token.clone();
+    let server_thread = thread::Builder::new()
+        .name("mobile-workspace-share".into())
+        .spawn(move || {
+            run_mobile_workspace_share_server(
+                listener,
+                server_token,
+                server_stop,
+                server_sessions,
+                server_clients,
+                server_connection_slots,
+                server_client_ids,
+            )
+        })
+        .map_err(|error| format!("Could not start local mobile workspace sharing: {error}"))?;
+    let share = ActiveMobileWorkspaceShare {
+        token,
+        host,
+        port,
+        stop,
+        sessions,
+        clients,
+        server_thread,
+    };
+    let info = active_mobile_workspace_share_info(&share);
+    *active_share = Some(share);
+    Ok(info)
+}
+
+#[tauri::command]
+fn get_mobile_workspace_share_status(
+    state: State<'_, SerialState>,
+) -> CommandResult<MobileWorkspaceShareInfo> {
+    let active_share = state.mobile_workspace_share.lock().map_err(lock_error)?;
+    Ok(active_share
+        .as_ref()
+        .map(active_mobile_workspace_share_info)
+        .unwrap_or_else(empty_mobile_workspace_share_info))
+}
+
+#[tauri::command]
+fn stop_mobile_workspace_share(
+    state: State<'_, SerialState>,
+) -> CommandResult<MobileWorkspaceShareInfo> {
+    stop_mobile_workspace_share_for_state(&state.mobile_workspace_share);
+    Ok(empty_mobile_workspace_share_info())
+}
+
+fn empty_mobile_workspace_share_info() -> MobileWorkspaceShareInfo {
+    MobileWorkspaceShareInfo {
+        url: String::new(),
+        host: String::new(),
+        port: 0,
+        client_count: 0,
+        session_count: 0,
+        enabled: false,
+    }
+}
+
+fn active_mobile_workspace_share_info(
+    share: &ActiveMobileWorkspaceShare,
+) -> MobileWorkspaceShareInfo {
+    MobileWorkspaceShareInfo {
+        url: mobile_workspace_share_url(&share.host, share.port, &share.token),
+        host: share.host.clone(),
+        port: share.port,
+        client_count: share
+            .clients
+            .lock()
+            .map(|clients| clients.len())
+            .unwrap_or(0),
+        session_count: share
+            .sessions
+            .lock()
+            .map(|sessions| sessions.len())
+            .unwrap_or(0),
+        enabled: !share.stop.load(Ordering::Acquire),
+    }
+}
+
+fn mobile_workspace_share_url(host: &str, port: u16, token: &str) -> String {
+    format!("http://{host}:{port}/workspace/{token}")
+}
+
+fn mobile_workspace_session_scope(
+    sessions: &HashMap<String, ActiveSession>,
+) -> CommandResult<BTreeMap<String, MobileWorkspaceSession>> {
+    if sessions.is_empty() {
+        return Err(
+            "Open at least one active serial session before creating a workspace link.".into(),
+        );
+    }
+    if sessions.len() > MOBILE_WORKSPACE_SESSION_LIMIT {
+        return Err(format!(
+            "Workspace mobile sharing is limited to {MOBILE_WORKSPACE_SESSION_LIMIT} active sessions."
+        ));
+    }
+    Ok(sessions
+        .values()
+        .map(|session| {
+            (
+                session.info.id.clone(),
+                MobileWorkspaceSession {
+                    session_id: session.info.id.clone(),
+                    session_name: session.info.session_name.clone(),
+                    port: session.info.port.clone(),
+                    state: "connected".into(),
+                    message: "Port opened and raw logging started.".into(),
+                },
+            )
+        })
+        .collect())
 }
 
 fn require_mobile_share_session_id(session_id: &str) -> CommandResult<String> {
@@ -1512,6 +1725,16 @@ fn stop_mobile_share_for_session(
     }
 }
 
+fn stop_mobile_workspace_share_for_state(
+    share_state: &Arc<Mutex<Option<ActiveMobileWorkspaceShare>>>,
+) {
+    let share = share_state.lock().ok().and_then(|mut share| share.take());
+    if let Some(share) = share {
+        share.stop.store(true, Ordering::Release);
+        let _ = share.server_thread.join();
+    }
+}
+
 fn shutdown_mobile_shares(shares: &Arc<Mutex<HashMap<String, ActiveMobileShare>>>) {
     let shares = match shares.lock() {
         Ok(mut shares) => shares.drain().map(|(_, share)| share).collect::<Vec<_>>(),
@@ -1521,6 +1744,44 @@ fn shutdown_mobile_shares(shares: &Arc<Mutex<HashMap<String, ActiveMobileShare>>
         share.stop.store(true, Ordering::Release);
         let _ = share.server_thread.join();
     }
+}
+
+fn shutdown_mobile_workspace_share(share_state: &Arc<Mutex<Option<ActiveMobileWorkspaceShare>>>) {
+    stop_mobile_workspace_share_for_state(share_state);
+}
+
+fn try_reserve_mobile_connection(slots: &AtomicUsize) -> bool {
+    let mut current = slots.load(Ordering::Relaxed);
+    loop {
+        if current >= MOBILE_SHARE_CLIENT_LIMIT {
+            return false;
+        }
+        match slots.compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Relaxed)
+        {
+            Ok(_) => return true,
+            Err(next) => current = next,
+        }
+    }
+}
+
+struct MobileConnectionSlot(Arc<AtomicUsize>);
+
+impl Drop for MobileConnectionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn register_mobile_client(
+    clients: &mut HashMap<u64, std::sync::mpsc::SyncSender<String>>,
+    client_id: u64,
+    sender: std::sync::mpsc::SyncSender<String>,
+) -> Option<()> {
+    if clients.len() >= MOBILE_SHARE_CLIENT_LIMIT {
+        return None;
+    }
+    clients.insert(client_id, sender);
+    Some(())
 }
 
 fn run_mobile_share_server(
@@ -1542,13 +1803,28 @@ fn run_mobile_share_server(
                     let _ = stream.shutdown(Shutdown::Both);
                     continue;
                 }
+                if !try_reserve_mobile_connection(&context.connection_slots) {
+                    let _ = write_http_response(
+                        &stream,
+                        "503 Service Unavailable",
+                        "text/plain; charset=utf-8",
+                        b"Too many mobile viewers.\n",
+                        &[],
+                    );
+                    let _ = stream.shutdown(Shutdown::Both);
+                    continue;
+                }
                 let request_session = session.clone();
                 let request_context = context.clone();
-                let _ = thread::Builder::new()
+                if thread::Builder::new()
                     .name("mobile-share-client".into())
                     .spawn(move || {
                         handle_mobile_share_connection(stream, request_session, request_context)
-                    });
+                    })
+                    .is_err()
+                {
+                    context.connection_slots.fetch_sub(1, Ordering::AcqRel);
+                }
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 thread::sleep(MOBILE_SHARE_ACCEPT_POLL)
@@ -1565,11 +1841,38 @@ fn is_local_network_peer(address: SocketAddr) -> bool {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MobileShareRoute {
+    Page,
+    Download,
+    Events,
+}
+
+fn authorized_mobile_share_route(
+    path: &str,
+    root: &str,
+    token: &str,
+    include_download: bool,
+) -> Option<MobileShareRoute> {
+    let page_path = format!("/{root}/{token}");
+    if constant_time_eq(path.as_bytes(), page_path.as_bytes()) {
+        return Some(MobileShareRoute::Page);
+    }
+    if include_download
+        && constant_time_eq(path.as_bytes(), format!("{page_path}/download").as_bytes())
+    {
+        return Some(MobileShareRoute::Download);
+    }
+    constant_time_eq(path.as_bytes(), format!("{page_path}/events").as_bytes())
+        .then_some(MobileShareRoute::Events)
+}
+
 fn handle_mobile_share_connection(
     mut stream: TcpStream,
     session: SessionInfo,
     context: MobileShareServerContext,
 ) {
+    let _connection_slot = MobileConnectionSlot(Arc::clone(&context.connection_slots));
     let request = match read_mobile_share_request(&mut stream) {
         Ok(request) => request,
         Err(_) => {
@@ -1619,6 +1922,10 @@ fn handle_mobile_share_connection(
                 ("Cache-Control", "no-store"),
                 ("Referrer-Policy", "no-referrer"),
                 ("X-Content-Type-Options", "nosniff"),
+                (
+                    "Content-Security-Policy",
+                    "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self' ws: wss:",
+                ),
             ],
         );
     } else if is_download {
@@ -1653,6 +1960,144 @@ fn handle_mobile_share_connection(
         let _ = write_mobile_json_response(&stream, "200 OK", &status, &[]);
     } else if is_control_write {
         handle_mobile_share_write(&stream, &request, &context, &session.port);
+    }
+}
+
+fn run_mobile_workspace_share_server(
+    listener: TcpListener,
+    token: String,
+    stop: Arc<AtomicBool>,
+    sessions: Arc<Mutex<BTreeMap<String, MobileWorkspaceSession>>>,
+    clients: Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
+    connection_slots: Arc<AtomicUsize>,
+    next_client_id: Arc<AtomicU64>,
+) {
+    while !stop.load(Ordering::Acquire) {
+        match listener.accept() {
+            Ok((stream, address)) => {
+                if !is_local_network_peer(address) {
+                    let _ = write_http_response(
+                        &stream,
+                        "403 Forbidden",
+                        "text/plain; charset=utf-8",
+                        b"Local network access only.\n",
+                        &[],
+                    );
+                    let _ = stream.shutdown(Shutdown::Both);
+                    continue;
+                }
+                if !try_reserve_mobile_connection(&connection_slots) {
+                    let _ = write_http_response(
+                        &stream,
+                        "503 Service Unavailable",
+                        "text/plain; charset=utf-8",
+                        b"Too many mobile viewers.\n",
+                        &[],
+                    );
+                    let _ = stream.shutdown(Shutdown::Both);
+                    continue;
+                }
+                let request_token = token.clone();
+                let request_stop = Arc::clone(&stop);
+                let request_sessions = Arc::clone(&sessions);
+                let request_clients = Arc::clone(&clients);
+                let request_connection_slots = Arc::clone(&connection_slots);
+                let request_client_ids = Arc::clone(&next_client_id);
+                if thread::Builder::new()
+                    .name("mobile-workspace-client".into())
+                    .spawn(move || {
+                        handle_mobile_workspace_share_connection(
+                            stream,
+                            request_token,
+                            request_stop,
+                            request_sessions,
+                            request_clients,
+                            request_connection_slots,
+                            request_client_ids,
+                        )
+                    })
+                    .is_err()
+                {
+                    connection_slots.fetch_sub(1, Ordering::AcqRel);
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(MOBILE_SHARE_ACCEPT_POLL)
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+fn handle_mobile_workspace_share_connection(
+    mut stream: TcpStream,
+    token: String,
+    stop: Arc<AtomicBool>,
+    sessions: Arc<Mutex<BTreeMap<String, MobileWorkspaceSession>>>,
+    clients: Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
+    connection_slots: Arc<AtomicUsize>,
+    next_client_id: Arc<AtomicU64>,
+) {
+    let _connection_slot = MobileConnectionSlot(connection_slots);
+    let request = match read_mobile_share_request(&mut stream) {
+        Ok(request) => request,
+        Err(_) => {
+            let _ = write_http_response(
+                &stream,
+                "400 Bad Request",
+                "text/plain; charset=utf-8",
+                b"Bad request.\n",
+                &[],
+            );
+            return;
+        }
+    };
+    let MobileShareRequest {
+        method,
+        path,
+        headers,
+        ..
+    } = request;
+    let Some(route) = (method == "GET")
+        .then(|| authorized_mobile_share_route(&path, "workspace", &token, false))
+        .flatten()
+    else {
+        let _ = write_http_response(
+            &stream,
+            "404 Not Found",
+            "text/plain; charset=utf-8",
+            b"Not found.\n",
+            &[],
+        );
+        return;
+    };
+    match route {
+        MobileShareRoute::Page => {
+            let _ = write_http_response(
+                &stream,
+                "200 OK",
+                "text/html; charset=utf-8",
+                MOBILE_WORKSPACE_SHARE_PAGE.as_bytes(),
+                &[
+                    ("Cache-Control", "no-store"),
+                    ("Referrer-Policy", "no-referrer"),
+                    ("X-Content-Type-Options", "nosniff"),
+                    (
+                        "Content-Security-Policy",
+                        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self' ws: wss:",
+                    ),
+                ],
+            );
+        }
+        MobileShareRoute::Events => serve_mobile_workspace_websocket(
+            &mut stream,
+            &headers,
+            stop,
+            sessions,
+            clients,
+            next_client_id,
+        ),
+        MobileShareRoute::Download => unreachable!("workspace routes do not expose downloads"),
     }
 }
 
@@ -2323,6 +2768,87 @@ fn register_mobile_share_client(
     true
 }
 
+fn serve_mobile_workspace_websocket(
+    stream: &mut TcpStream,
+    headers: &HashMap<String, String>,
+    stop: Arc<AtomicBool>,
+    sessions: Arc<Mutex<BTreeMap<String, MobileWorkspaceSession>>>,
+    clients: Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
+    next_client_id: Arc<AtomicU64>,
+) {
+    let Some(key) = validated_websocket_key(headers) else {
+        let _ = write_http_response(
+            stream,
+            "400 Bad Request",
+            "text/plain; charset=utf-8",
+            b"WebSocket upgrade required.\n",
+            &[],
+        );
+        return;
+    };
+    let accept = websocket_accept_key(key);
+    let response = format!(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\nCache-Control: no-store\r\n\r\n"
+    );
+    if stream.write_all(response.as_bytes()).is_err() || stream.flush().is_err() {
+        return;
+    }
+    let client_id = next_client_id.fetch_add(1, Ordering::Relaxed);
+    let (sender, receiver) = std::sync::mpsc::sync_channel(MOBILE_SHARE_EVENT_QUEUE_LIMIT);
+    let inserted = clients
+        .lock()
+        .ok()
+        .and_then(|mut clients| register_mobile_client(&mut clients, client_id, sender));
+    if inserted.is_none() {
+        let _ = write_websocket_close(stream, 1013, "Too many viewers");
+        return;
+    }
+
+    let Some(snapshot) = mobile_workspace_snapshot_payload(&sessions) else {
+        if let Ok(mut clients) = clients.lock() {
+            clients.remove(&client_id);
+        }
+        let _ = write_websocket_close(stream, 1011, "Workspace unavailable");
+        return;
+    };
+    if write_websocket_text(stream, &snapshot).is_err() {
+        if let Ok(mut clients) = clients.lock() {
+            clients.remove(&client_id);
+        }
+        return;
+    }
+
+    let _ = stream.set_write_timeout(Some(MOBILE_SHARE_WRITE_TIMEOUT));
+    let mut last_heartbeat = Instant::now();
+    while !stop.load(Ordering::Acquire) {
+        match receiver.recv_timeout(Duration::from_millis(250)) {
+            Ok(message) if write_websocket_text(stream, &message).is_err() => break,
+            Ok(_) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                if last_heartbeat.elapsed() >= MOBILE_SHARE_HEARTBEAT =>
+            {
+                if write_websocket_frame(stream, 0x9, &[]).is_err() {
+                    break;
+                }
+                last_heartbeat = Instant::now();
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
+    if let Ok(mut clients) = clients.lock() {
+        clients.remove(&client_id);
+    }
+    let _ = write_websocket_close(stream, 1000, "Sharing ended");
+}
+
+fn mobile_workspace_snapshot_payload(
+    sessions: &Arc<Mutex<BTreeMap<String, MobileWorkspaceSession>>>,
+) -> Option<String> {
+    let sessions = sessions.lock().ok()?.values().cloned().collect();
+    serde_json::to_string(&MobileWorkspaceMessage::Snapshot { sessions }).ok()
+}
+
 fn write_websocket_text(stream: &mut TcpStream, message: &str) -> io::Result<()> {
     write_websocket_frame(stream, 0x1, message.as_bytes())
 }
@@ -2379,6 +2905,100 @@ fn broadcast_mobile_serial_data(
     if let Ok(mut clients) = clients.lock() {
         clients.retain(|_, sender| sender.try_send(payload.clone()).is_ok());
     };
+}
+
+fn broadcast_mobile_workspace_serial_data(
+    share_state: &Arc<Mutex<Option<ActiveMobileWorkspaceShare>>>,
+    event: &SerialDataEvent,
+) {
+    let (sessions, clients) = match share_state.lock() {
+        Ok(share) => share.as_ref().map_or((None, None), |share| {
+            (
+                Some(Arc::clone(&share.sessions)),
+                Some(Arc::clone(&share.clients)),
+            )
+        }),
+        Err(_) => (None, None),
+    };
+    let (Some(sessions), Some(clients)) = (sessions, clients) else {
+        return;
+    };
+    if !sessions
+        .lock()
+        .ok()
+        .is_some_and(|sessions| sessions.contains_key(&event.session_id))
+    {
+        return;
+    }
+    broadcast_mobile_workspace_message(
+        &clients,
+        MobileWorkspaceMessage::Data {
+            event: event.clone(),
+        },
+    );
+}
+
+fn broadcast_mobile_workspace_status(
+    share_state: &Arc<Mutex<Option<ActiveMobileWorkspaceShare>>>,
+    info: &SessionInfo,
+    status: &str,
+    message: &str,
+) {
+    let (sessions, clients) = match share_state.lock() {
+        Ok(share) => share.as_ref().map_or((None, None), |share| {
+            (
+                Some(Arc::clone(&share.sessions)),
+                Some(Arc::clone(&share.clients)),
+            )
+        }),
+        Err(_) => (None, None),
+    };
+    let (Some(sessions), Some(clients)) = (sessions, clients) else {
+        return;
+    };
+    let bounded_message = bound_mobile_workspace_message(message);
+    let included = sessions.lock().ok().and_then(|mut sessions| {
+        let session = sessions.get_mut(&info.id)?;
+        session.state = status.into();
+        session.message = bounded_message.clone();
+        Some(())
+    });
+    if included.is_none() {
+        return;
+    }
+    broadcast_mobile_workspace_message(
+        &clients,
+        MobileWorkspaceMessage::Status {
+            session_id: info.id.clone(),
+            port: info.port.clone(),
+            status: status.into(),
+            message: bounded_message,
+        },
+    );
+}
+
+fn broadcast_mobile_workspace_message(
+    clients: &Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
+    message: MobileWorkspaceMessage,
+) {
+    let payload = match serde_json::to_string(&message) {
+        Ok(payload) => payload,
+        Err(_) => return,
+    };
+    if let Ok(mut clients) = clients.lock() {
+        clients.retain(|_, sender| sender.try_send(payload.clone()).is_ok());
+    }
+}
+
+fn bound_mobile_workspace_message(message: &str) -> String {
+    if message.len() <= MOBILE_WORKSPACE_MESSAGE_BYTE_LIMIT {
+        return message.into();
+    }
+    let mut end = MOBILE_WORKSPACE_MESSAGE_BYTE_LIMIT.saturating_sub(3);
+    while end > 0 && !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &message[..end])
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
@@ -2868,6 +3488,8 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
 </body>
 </html>"###;
 
+const MOBILE_WORKSPACE_SHARE_PAGE: &str = r##"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b1720"><title>BaudTide mobile dashboard</title><style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0b1720;color:#e5f1ee;font:15px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{width:min(100%,980px);margin:auto;padding:16px}header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:14px}h1,h2,p{margin:0}h1{font-size:1.25rem;letter-spacing:-.02em}header p{margin-top:5px;color:#9bb2bd;font-size:.82rem}#feed-state{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border:1px solid #2b5660;border-radius:999px;color:#a9ead8;font-size:.78rem;font-weight:700}#feed-state i{width:7px;height:7px;border-radius:50%;background:#79dfbd;box-shadow:0 0 0 4px #79dfbd22}.layout{display:grid;grid-template-columns:minmax(190px,260px) minmax(0,1fr);gap:13px}.panel{border:1px solid #29414d;border-radius:12px;background:#10232d;box-shadow:0 12px 35px #02070b44}.panel-head{padding:13px 14px;border-bottom:1px solid #29414d}.panel-head h2{font-size:.88rem}.panel-head p{margin-top:4px;color:#8fa8b2;font-size:.72rem;line-height:1.4}.sessions{padding:8px}.session{display:block;width:100%;margin:0 0 7px;padding:11px;border:1px solid transparent;border-radius:9px;background:#142b36;color:#e5f1ee;text-align:left;cursor:pointer}.session:last-child{margin-bottom:0}.session:hover{border-color:#3b7275}.session.active{border-color:#6cc7ac;background:#173b3d}.session-title{display:flex;align-items:center;gap:7px;font-weight:750;font-size:.83rem}.session-title i{width:8px;height:8px;flex:0 0 auto;border-radius:50%;background:#79dfbd}.session-title i.error{background:#f3a6a6}.session-title i.disconnected{background:#8da1ac}.session-title i.storage-limit{background:#f2c477}.session-title i.reconnecting{background:#8fcbf4}.session-meta{display:block;margin:5px 0 0 15px;color:#a5bbc2;font: .7rem ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-state{display:block;margin:7px 0 0 15px;color:#86d5be;font-size:.67rem;font-weight:700}.stream-panel{min-width:0}.stream-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:13px 14px;border-bottom:1px solid #29414d}.stream-head h2{font-size:.92rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.stream-head p{margin-top:5px;color:#9bb2bd;font-size:.72rem}.stream-head strong{color:#b9e9d7}.stream-state{color:#9bb2bd;font-size:.7rem;text-align:right}.stream-state.error,.stream-state.storage-limit{color:#ffb9b9}.stream-state.disconnected{color:#c4ced3}#stream{min-height:58vh;max-height:65vh;margin:0;padding:14px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:#061018;color:#d5e6e4;font: .78rem/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}#detail{min-height:22px;padding:9px 14px;border-top:1px solid #29414d;color:#a5bbc2;font-size:.72rem;line-height:1.4}.notice{margin-top:13px;padding:10px 12px;border:1px solid #38545c;border-radius:9px;background:#122933;color:#9eb7bf;font-size:.72rem;line-height:1.45}.notice strong{color:#c7e7dc}@media(max-width:680px){main{padding:11px}.layout{grid-template-columns:1fr}.sessions{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:7px}.session,.session:last-child{margin:0}.stream-head{align-items:flex-start}#stream{min-height:52vh;max-height:62vh}}</style></head><body><main><header><div><h1>BaudTide · mobile dashboard</h1><p>Read-only live streams from the shared terminal workspace.</p></div><span id="feed-state"><i></i><span>Connecting…</span></span></header><div class="layout"><section class="panel"><div class="panel-head"><h2>Shared terminals</h2><p id="scope">Waiting for the shared session list…</p></div><div id="sessions" class="sessions"></div></section><section class="panel stream-panel"><div class="stream-head"><div><h2 id="stream-title">Choose a terminal</h2><p id="stream-meta">No stream selected</p></div><span id="stream-state" class="stream-state">Waiting</span></div><pre id="stream" aria-live="polite">The dashboard will show live output after it connects.</pre><div id="detail">Only sessions included when this link was created can appear here.</div></section></div><div class="notice"><strong>Local and read-only.</strong> This link works only on the same local network. Output keeps the newest 240,000 characters per shared stream in this phone view; raw capture files stay on the desktop.</div></main><script>(()=>{const sessionsEl=document.querySelector('#sessions'),scopeEl=document.querySelector('#scope'),feedEl=document.querySelector('#feed-state span'),streamTitle=document.querySelector('#stream-title'),streamMeta=document.querySelector('#stream-meta'),streamState=document.querySelector('#stream-state'),streamEl=document.querySelector('#stream'),detailEl=document.querySelector('#detail');const sessions=new Map(),logs=new Map();const MAX_LOG_CHARS=240000;let selectedId='';const stateLabel=(state)=>state==='storage-limit'?'Storage limit':state==='disconnected'?'Disconnected':state==='error'?'Error':state==='reconnecting'?'Reconnecting':state==='connected'?'Connected':state||'Unknown';const select=(id)=>{if(!sessions.has(id))return;selectedId=id;render()};const render=()=>{sessionsEl.replaceChildren();for(const item of sessions.values()){const button=document.createElement('button');button.className='session'+(item.sessionId===selectedId?' active':'');button.type='button';button.onclick=()=>select(item.sessionId);const title=document.createElement('span');title.className='session-title';const dot=document.createElement('i');dot.className=item.state||'';title.append(dot,document.createTextNode(item.sessionName));const meta=document.createElement('span');meta.className='session-meta';meta.textContent=item.port;const state=document.createElement('span');state.className='session-state';state.textContent=stateLabel(item.state);button.append(title,meta,state);sessionsEl.append(button)}const current=sessions.get(selectedId);if(!current){streamTitle.textContent='Choose a terminal';streamMeta.textContent='No stream selected';streamState.textContent='Waiting';streamState.className='stream-state';streamEl.textContent='The dashboard will show live output after it connects.';detailEl.textContent='Only sessions included when this link was created can appear here.';return}streamTitle.textContent=current.sessionName;streamMeta.textContent=current.port;streamState.textContent=stateLabel(current.state);streamState.className='stream-state '+(current.state||'');streamEl.textContent=logs.get(selectedId)||'No output received for this stream yet.';detailEl.textContent=current.message||'Live output is read-only.';streamEl.scrollTop=streamEl.scrollHeight};const applySnapshot=(items)=>{sessions.clear();for(const item of items||[]){if(!item||typeof item.sessionId!=='string'||typeof item.sessionName!=='string'||typeof item.port!=='string')continue;sessions.set(item.sessionId,{...item})}if(!sessions.has(selectedId))selectedId=sessions.keys().next().value||'';scopeEl.textContent=sessions.size+' terminal'+(sessions.size===1?'':'s')+' included in this link';render()};const applyStatus=(item)=>{const current=sessions.get(item.sessionId);if(!current)return;current.state=typeof item.status==='string'?item.status:'error';current.message=typeof item.message==='string'?item.message:'The desktop reported a session state change.';render()};const appendData=(event)=>{if(!event||typeof event.sessionId!=='string'||!sessions.has(event.sessionId))return;const next=((logs.get(event.sessionId)||'')+(typeof event.text==='string'?event.text:''));logs.set(event.sessionId,next.length>MAX_LOG_CHARS?next.slice(-MAX_LOG_CHARS):next);if(event.sessionId===selectedId){streamEl.textContent=logs.get(event.sessionId)||'';streamEl.scrollTop=streamEl.scrollHeight}};const ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+location.pathname.replace(/\/$/,'')+'/events');ws.onopen=()=>{feedEl.textContent='Connected · read-only'};ws.onclose=()=>{feedEl.textContent='Disconnected · sharing ended';detailEl.textContent='The desktop ended this mobile share or the viewer connection was lost.'};ws.onerror=()=>{feedEl.textContent='Connection error · reload to retry'};ws.onmessage=(message)=>{try{const item=JSON.parse(message.data);if(item.type==='snapshot')applySnapshot(item.sessions);else if(item.type==='data')appendData(item.event);else if(item.type==='status')applyStatus(item)}catch{feedEl.textContent='Invalid feed · reload to retry'}}})();</script></body></html>"##;
+
 #[tauri::command]
 fn start_serial_session(
     app: AppHandle,
@@ -2959,6 +3581,7 @@ fn start_serial_session(
     let reader_sessions = Arc::clone(&state.sessions);
     let reader_quota = Arc::clone(&state.capture_quota);
     let reader_mobile_shares = Arc::clone(&state.mobile_shares);
+    let reader_mobile_workspace_share = Arc::clone(&state.mobile_workspace_share);
     let reader_thread = match thread::Builder::new()
         .name(format!("serial-reader-{}", &id[..8]))
         .spawn(move || {
@@ -2974,6 +3597,7 @@ fn start_serial_session(
                     quota: reader_quota,
                     mobile_shares: reader_mobile_shares,
                     mobile_replay: reader_mobile_replay,
+                    mobile_workspace_share: reader_mobile_workspace_share,
                 },
             )
         }) {
@@ -2997,6 +3621,12 @@ fn start_serial_session(
     );
     emit_status(
         &app,
+        &info,
+        "connected",
+        "Port opened and raw logging started.",
+    );
+    broadcast_mobile_workspace_status(
+        &state.mobile_workspace_share,
         &info,
         "connected",
         "Port opened and raw logging started.",
@@ -3115,6 +3745,12 @@ fn disconnect_serial_session(
     close_serial_writer(writer.as_ref())?;
     let message =
         disconnect_status_message(finalize_log_index_state(&app, &info.id, "disconnected"));
+    broadcast_mobile_workspace_status(
+        &state.mobile_workspace_share,
+        &info,
+        "disconnected",
+        &message,
+    );
     emit_status(&app, &info, "disconnected", &message);
     Ok(info)
 }
@@ -3146,6 +3782,7 @@ fn read_serial_loop(
         &context.quota,
         |event| {
             broadcast_mobile_serial_data(&context.mobile_shares, &context.mobile_replay, &event);
+            broadcast_mobile_workspace_serial_data(&context.mobile_workspace_share, &event);
             deliver_serial_data(&context.app, &context.event_delivery, event);
         },
     );
@@ -3158,6 +3795,12 @@ fn read_serial_loop(
                 "error"
             };
             let _ = finalize_log_index_state(&context.app, &info.id, index_state);
+            broadcast_mobile_workspace_status(
+                &context.mobile_workspace_share,
+                &info,
+                status,
+                &message,
+            );
             emit_status(&context.app, &info, status, &message);
         }
     }
@@ -3403,8 +4046,12 @@ mod pty_tests;
 #[cfg(test)]
 mod tests {
     use super::{
-        activate_serial_event_delivery, capture_durability_sync_is_due, remove_session_by_identity,
-        SerialDataEvent, SerialEventDelivery,
+        activate_serial_event_delivery, authorized_mobile_share_route,
+        broadcast_mobile_workspace_serial_data, broadcast_mobile_workspace_status,
+        capture_durability_sync_is_due, mobile_workspace_session_scope, register_mobile_client,
+        remove_session_by_identity, stop_mobile_workspace_share_for_state,
+        try_reserve_mobile_connection, MobileShareRoute, MobileWorkspaceSession, SerialDataEvent,
+        SerialEventDelivery,
     };
     use super::{
         base64_decode, begin_saved_log_search, broadcast_mobile_serial_data,
@@ -3417,22 +4064,22 @@ mod tests {
         remove_log_text_indexes_for_path_in_directory, saved_log_text_index_path,
         search_fresh_log_text_index_in_directory, search_raw_log, stable_saved_log_content_search,
         stop_mobile_share_for_session, validate_preference_log_directory, validated_websocket_key,
-        websocket_accept_key, ActiveMobileShare, ActiveSession, ApplicationSettings, CaptureQuota,
-        FlowControlSetting, LogIndexRecord, MobileReplayBuffer, MobileShareRequest,
-        MobileWritePayloadError, MobileWriteRateState, ParitySetting, SavedLogFingerprint,
-        SavedLogTextIndexHeader, SerialSettings, SerialState, SessionInfo, StartSessionRequest,
-        StopBitsSetting, CAPTURE_DURABILITY_SYNC_INTERVAL, GIBIBYTE, SEARCH_CANCELLED_MESSAGE,
-        SEARCH_INDEX_MAGIC, SEARCH_INDEX_SCHEMA_VERSION, SEARCH_PER_LOG_BYTE_LIMIT,
-        SEARCH_READ_BUFFER_SIZE,
+        websocket_accept_key, ActiveMobileShare, ActiveMobileWorkspaceShare, ActiveSession,
+        ApplicationSettings, CaptureQuota, FlowControlSetting, LogIndexRecord, MobileReplayBuffer,
+        MobileShareRequest, MobileWritePayloadError, MobileWriteRateState, ParitySetting,
+        SavedLogFingerprint, SavedLogTextIndexHeader, SerialSettings, SerialState, SessionInfo,
+        StartSessionRequest, StopBitsSetting, CAPTURE_DURABILITY_SYNC_INTERVAL, GIBIBYTE,
+        MOBILE_SHARE_EVENT_QUEUE_LIMIT, SEARCH_CANCELLED_MESSAGE, SEARCH_INDEX_MAGIC,
+        SEARCH_INDEX_SCHEMA_VERSION, SEARCH_PER_LOG_BYTE_LIMIT, SEARCH_READ_BUFFER_SIZE,
     };
     use std::{
         cell::Cell,
-        collections::HashMap,
+        collections::{BTreeMap, HashMap},
         fs::File,
         io::{self, Cursor, Write},
         net::Ipv4Addr,
         sync::{
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
             mpsc, Arc, Mutex,
         },
         thread,
@@ -3482,6 +4129,43 @@ mod tests {
             mobile_replay: Arc::new(Mutex::new(MobileReplayBuffer::default())),
             reader_thread: thread::spawn(|| {}),
         }
+    }
+
+    fn test_workspace_session(id: &str, name: &str, port: &str) -> MobileWorkspaceSession {
+        MobileWorkspaceSession {
+            session_id: id.into(),
+            session_name: name.into(),
+            port: port.into(),
+            state: "connected".into(),
+            message: "Port opened and raw logging started.".into(),
+        }
+    }
+
+    fn test_workspace_share_with_client(
+        scope: &[MobileWorkspaceSession],
+    ) -> (
+        Arc<Mutex<Option<ActiveMobileWorkspaceShare>>>,
+        mpsc::Receiver<String>,
+    ) {
+        let clients = Arc::new(Mutex::new(HashMap::new()));
+        let (sender, receiver) = mpsc::sync_channel(MOBILE_SHARE_EVENT_QUEUE_LIMIT);
+        assert!(register_mobile_client(&mut clients.lock().unwrap(), 1, sender).is_some());
+        let share = ActiveMobileWorkspaceShare {
+            token: "workspace-token".into(),
+            host: "192.168.1.50".into(),
+            port: 4321,
+            stop: Arc::new(AtomicBool::new(false)),
+            sessions: Arc::new(Mutex::new(
+                scope
+                    .iter()
+                    .cloned()
+                    .map(|session| (session.session_id.clone(), session))
+                    .collect::<BTreeMap<_, _>>(),
+            )),
+            clients,
+            server_thread: thread::spawn(|| {}),
+        };
+        (Arc::new(Mutex::new(Some(share))), receiver)
     }
 
     #[test]
@@ -4512,6 +5196,165 @@ mod tests {
         remover.join().unwrap();
         assert!(shares.lock().unwrap().is_empty());
         assert!(server_exited.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn workspace_scope_contains_only_the_active_sessions_at_creation() {
+        let sessions = HashMap::from([
+            ("session-1".into(), test_active_session("session-1")),
+            ("session-2".into(), test_active_session("session-2")),
+        ]);
+
+        let scope = mobile_workspace_session_scope(&sessions).unwrap();
+
+        assert_eq!(scope.len(), 2);
+        assert_eq!(scope["session-1"].session_name, "Bench");
+        assert_eq!(scope["session-2"].port, "/dev/ttyUSB0");
+        assert!(scope.values().all(|session| session.state == "connected"));
+    }
+
+    #[test]
+    fn workspace_scope_rejects_empty_or_over_limit_session_sets() {
+        assert!(mobile_workspace_session_scope(&HashMap::new()).is_err());
+        let mut sessions = HashMap::new();
+        for index in 0..=super::MOBILE_WORKSPACE_SESSION_LIMIT {
+            let id = format!("session-{index}");
+            sessions.insert(id.clone(), test_active_session(&id));
+        }
+        let error = match mobile_workspace_session_scope(&sessions) {
+            Ok(_) => panic!("an over-limit workspace scope should fail"),
+            Err(error) => error,
+        };
+        assert!(error.contains("limited to"));
+    }
+
+    #[test]
+    fn workspace_routes_require_the_exact_bearer_token() {
+        assert!(matches!(
+            authorized_mobile_share_route("/workspace/token", "workspace", "token", false),
+            Some(MobileShareRoute::Page)
+        ));
+        assert!(matches!(
+            authorized_mobile_share_route("/workspace/token/events", "workspace", "token", false),
+            Some(MobileShareRoute::Events)
+        ));
+        assert!(
+            authorized_mobile_share_route("/workspace/wrong", "workspace", "token", false)
+                .is_none()
+        );
+        assert!(authorized_mobile_share_route(
+            "/workspace/token/download",
+            "workspace",
+            "token",
+            false
+        )
+        .is_none());
+        assert!(matches!(
+            authorized_mobile_share_route("/share/token/download", "share", "token", true),
+            Some(MobileShareRoute::Download)
+        ));
+    }
+
+    #[test]
+    fn workspace_event_routing_multiplexes_only_scoped_session_data() {
+        let scope = vec![test_workspace_session("session-1", "Bench", "/dev/ttyUSB0")];
+        let (share_state, receiver) = test_workspace_share_with_client(&scope);
+        let event = |session_id: &str, text: &str| SerialDataEvent {
+            session_id: session_id.into(),
+            port: "/dev/ttyUSB0".into(),
+            sequence: 1,
+            timestamp: "2026-08-07T10:00:00.000Z".into(),
+            text: text.into(),
+            bytes: text.as_bytes().to_vec(),
+        };
+
+        broadcast_mobile_workspace_serial_data(&share_state, &event("session-1", "allowed"));
+        let payload = receiver.recv_timeout(Duration::from_millis(100)).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload["type"], "data");
+        assert_eq!(payload["event"]["sessionId"], "session-1");
+        assert_eq!(payload["event"]["text"], "allowed");
+
+        broadcast_mobile_workspace_serial_data(&share_state, &event("not-shared", "blocked"));
+        assert!(receiver.recv_timeout(Duration::from_millis(30)).is_err());
+    }
+
+    #[test]
+    fn workspace_lifecycle_status_is_visible_and_cleanup_stops_the_server() {
+        let info = test_session_info("session-1");
+        let scope = vec![test_workspace_session("session-1", "Bench", "/dev/ttyUSB0")];
+        let (share_state, receiver) = test_workspace_share_with_client(&scope);
+
+        for (status, message) in [
+            ("disconnected", "The user disconnected this terminal."),
+            ("error", "The serial reader failed."),
+            ("storage-limit", "Storage limit reached; logging stopped."),
+        ] {
+            broadcast_mobile_workspace_status(&share_state, &info, status, message);
+            let payload: serde_json::Value =
+                serde_json::from_str(&receiver.recv_timeout(Duration::from_millis(100)).unwrap())
+                    .unwrap();
+            assert_eq!(payload["type"], "status");
+            assert_eq!(payload["status"], status);
+            assert_eq!(payload["message"], message);
+        }
+        assert_eq!(
+            share_state
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .sessions
+                .lock()
+                .unwrap()["session-1"]
+                .state,
+            "storage-limit"
+        );
+
+        let server_stop = Arc::new(AtomicBool::new(false));
+        let server_exited = Arc::new(AtomicBool::new(false));
+        let stop_for_thread = Arc::clone(&server_stop);
+        let exited_for_thread = Arc::clone(&server_exited);
+        let replacement_share = ActiveMobileWorkspaceShare {
+            token: "cleanup-token".into(),
+            host: "192.168.1.50".into(),
+            port: 4321,
+            stop: Arc::clone(&server_stop),
+            sessions: Arc::new(Mutex::new(BTreeMap::new())),
+            clients: Arc::new(Mutex::new(HashMap::new())),
+            server_thread: thread::spawn(move || {
+                while !stop_for_thread.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                exited_for_thread.store(true, Ordering::Release);
+            }),
+        };
+        let cleanup_state = Arc::new(Mutex::new(Some(replacement_share)));
+        stop_mobile_workspace_share_for_state(&cleanup_state);
+        assert!(cleanup_state.lock().unwrap().is_none());
+        assert!(server_exited.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn mobile_client_slots_and_registration_are_bounded() {
+        let slots = AtomicUsize::new(0);
+        for _ in 0..super::MOBILE_SHARE_CLIENT_LIMIT {
+            assert!(try_reserve_mobile_connection(&slots));
+        }
+        assert!(!try_reserve_mobile_connection(&slots));
+        assert_eq!(
+            slots.load(Ordering::Acquire),
+            super::MOBILE_SHARE_CLIENT_LIMIT
+        );
+
+        let mut clients = HashMap::new();
+        for id in 0..super::MOBILE_SHARE_CLIENT_LIMIT as u64 {
+            let (sender, _receiver) = mpsc::sync_channel(MOBILE_SHARE_EVENT_QUEUE_LIMIT);
+            assert!(register_mobile_client(&mut clients, id, sender).is_some());
+        }
+        let (sender, _receiver) = mpsc::sync_channel(MOBILE_SHARE_EVENT_QUEUE_LIMIT);
+        assert!(register_mobile_client(&mut clients, 99, sender).is_none());
+        assert_eq!(clients.len(), super::MOBILE_SHARE_CLIENT_LIMIT);
     }
 
     #[test]
@@ -5663,6 +6506,7 @@ fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
 
 fn shutdown_serial_sessions(app: &AppHandle, state: &SerialState) {
     shutdown_mobile_shares(&state.mobile_shares);
+    shutdown_mobile_workspace_share(&state.mobile_workspace_share);
     let sessions = match state.sessions.lock() {
         Ok(mut sessions) => sessions
             .drain()
@@ -5715,6 +6559,9 @@ fn main() {
             get_mobile_share_status,
             set_mobile_share_control,
             stop_mobile_share,
+            start_mobile_workspace_share,
+            get_mobile_workspace_share_status,
+            stop_mobile_workspace_share,
             start_serial_session,
             send_serial_text,
             send_serial_bytes,
