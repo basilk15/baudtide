@@ -66,6 +66,10 @@ const MOBILE_SHARE_CLIENT_LIMIT: usize = 8;
 const MOBILE_SHARE_ACCEPT_POLL: Duration = Duration::from_millis(100);
 const MOBILE_SHARE_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const MOBILE_SHARE_HEARTBEAT: Duration = Duration::from_secs(20);
+const MOBILE_SHARE_WRITE_BYTE_LIMIT: usize = 4 * 1024;
+const MOBILE_SHARE_WRITE_REQUEST_LIMIT: usize = 10;
+const MOBILE_SHARE_WRITE_RATE_BYTE_LIMIT: usize = 16 * 1024;
+const MOBILE_SHARE_WRITE_RATE_WINDOW: Duration = Duration::from_secs(1);
 
 type CommandResult<T> = Result<T, String>;
 type SerialWriter = Arc<Mutex<Option<Box<dyn SerialPort>>>>;
@@ -479,6 +483,7 @@ struct MobileShareInfo {
     port: u16,
     client_count: usize,
     enabled: bool,
+    control_enabled: bool,
 }
 
 struct ActiveMobileShare {
@@ -487,7 +492,84 @@ struct ActiveMobileShare {
     port: u16,
     stop: Arc<AtomicBool>,
     clients: Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
+    control_enabled: Arc<AtomicBool>,
     server_thread: JoinHandle<()>,
+}
+
+#[derive(Clone)]
+struct MobileShareServerContext {
+    token: String,
+    stop: Arc<AtomicBool>,
+    clients: Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
+    next_client_id: Arc<AtomicU64>,
+    control_enabled: Arc<AtomicBool>,
+    write_rate_limiter: Arc<Mutex<MobileWriteRateState>>,
+    writer: SerialWriter,
+    session_stop: Arc<AtomicBool>,
+}
+
+#[derive(Debug)]
+struct MobileShareRequest {
+    method: String,
+    path: String,
+    headers: HashMap<String, String>,
+    body: Vec<u8>,
+}
+
+#[derive(Default)]
+struct MobileWriteRateState {
+    window_started: Option<Instant>,
+    request_count: usize,
+    byte_count: usize,
+}
+
+#[derive(Debug)]
+enum MobileWritePayloadError {
+    Invalid(String),
+    TooLarge(String),
+}
+
+#[derive(Debug)]
+struct MobileWritePayload {
+    mode: &'static str,
+    bytes: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+struct MobileWriteRequest {
+    mode: String,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    hex: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MobileControlStatusResponse {
+    ok: bool,
+    control_enabled: bool,
+    max_payload_bytes: usize,
+    max_writes_per_second: usize,
+    max_bytes_per_second: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MobileWriteSuccessResponse {
+    ok: bool,
+    mode: &'static str,
+    written_bytes: usize,
+    message: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MobileErrorResponse {
+    ok: bool,
+    error: String,
 }
 
 /// Removes its cancellation flag when the matching search completes. Matching
@@ -1035,25 +1117,25 @@ async fn save_saved_log(app: AppHandle, source_path: String) -> CommandResult<Op
     Ok(Some(destination.display().to_string()))
 }
 
-/// Enables an explicitly requested, read-only companion page for one live
-/// serial session. The listener is IPv4 LAN-only and exposes no route capable
-/// of writing to the serial device.
+/// Enables an explicitly requested companion page for one live serial session.
+/// The listener is IPv4 LAN-only and starts with remote control disabled.
 #[tauri::command]
 fn start_mobile_share(
     state: State<'_, SerialState>,
     session_id: String,
 ) -> CommandResult<MobileShareInfo> {
     let session_id = require_mobile_share_session_id(&session_id)?;
-    {
+    let (session_writer, session_stop) = {
         let sessions = state.sessions.lock().map_err(lock_error)?;
-        if !sessions.contains_key(&session_id) {
-            return Err("This serial session is no longer active.".into());
-        }
         let shares = state.mobile_shares.lock().map_err(lock_error)?;
         if let Some(share) = shares.get(&session_id) {
             return Ok(active_mobile_share_info(&session_id, share));
         }
-    }
+        let session = sessions
+            .get(&session_id)
+            .ok_or_else(|| "This serial session is no longer active.".to_string())?;
+        (Arc::clone(&session.writer), Arc::clone(&session.stop))
+    };
     let host = local_lan_ipv4()?;
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))
         .map_err(|error| format!("Could not start local mobile sharing: {error}"))?;
@@ -1067,30 +1149,30 @@ fn start_mobile_share(
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let stop = Arc::new(AtomicBool::new(false));
     let clients = Arc::new(Mutex::new(HashMap::new()));
+    let control_enabled = Arc::new(AtomicBool::new(false));
+    let write_rate_limiter = Arc::new(Mutex::new(MobileWriteRateState::default()));
     let next_client_id = Arc::new(AtomicU64::new(1));
     let thread_session_id = session_id.clone();
     let thread_name_suffix: String = thread_session_id.chars().take(8).collect();
+    let server_context = MobileShareServerContext {
+        token: token.clone(),
+        stop: Arc::clone(&stop),
+        clients: Arc::clone(&clients),
+        next_client_id: Arc::clone(&next_client_id),
+        control_enabled: Arc::clone(&control_enabled),
+        write_rate_limiter: Arc::clone(&write_rate_limiter),
+        writer: Arc::clone(&session_writer),
+        session_stop: Arc::clone(&session_stop),
+    };
     register_mobile_share_for_session(
         &state.sessions,
         &state.mobile_shares,
         &session_id,
         move |session| {
-            let server_stop = Arc::clone(&stop);
-            let server_clients = Arc::clone(&clients);
-            let server_client_ids = Arc::clone(&next_client_id);
-            let server_token = token.clone();
+            let server_context = server_context.clone();
             let server_thread = thread::Builder::new()
                 .name(format!("mobile-share-{thread_name_suffix}"))
-                .spawn(move || {
-                    run_mobile_share_server(
-                        listener,
-                        session,
-                        server_token,
-                        server_stop,
-                        server_clients,
-                        server_client_ids,
-                    )
-                })
+                .spawn(move || run_mobile_share_server(listener, session, server_context))
                 .map_err(|error| format!("Could not start local mobile sharing: {error}"))?;
             Ok(ActiveMobileShare {
                 token: token.clone(),
@@ -1098,6 +1180,7 @@ fn start_mobile_share(
                 port,
                 stop,
                 clients,
+                control_enabled,
                 server_thread,
             })
         },
@@ -1151,7 +1234,26 @@ fn get_mobile_share_status(
             port: 0,
             client_count: 0,
             enabled: false,
+            control_enabled: false,
         }))
+}
+
+#[tauri::command]
+fn set_mobile_share_control(
+    state: State<'_, SerialState>,
+    session_id: String,
+    enabled: bool,
+) -> CommandResult<MobileShareInfo> {
+    let session_id = require_mobile_share_session_id(&session_id)?;
+    let shares = state.mobile_shares.lock().map_err(lock_error)?;
+    let share = shares
+        .get(&session_id)
+        .ok_or_else(|| "Create a mobile link before changing remote control.".to_string())?;
+    if share.stop.load(Ordering::Acquire) {
+        return Err("This mobile link is no longer active.".into());
+    }
+    share.control_enabled.store(enabled, Ordering::Release);
+    Ok(active_mobile_share_info(&session_id, share))
 }
 
 #[tauri::command]
@@ -1168,6 +1270,7 @@ fn stop_mobile_share(
         port: 0,
         client_count: 0,
         enabled: false,
+        control_enabled: false,
     })
 }
 
@@ -1192,6 +1295,7 @@ fn active_mobile_share_info(session_id: &str, share: &ActiveMobileShare) -> Mobi
             .map(|clients| clients.len())
             .unwrap_or(0),
         enabled: !share.stop.load(Ordering::Acquire),
+        control_enabled: share.control_enabled.load(Ordering::Acquire),
     }
 }
 
@@ -1308,12 +1412,9 @@ fn shutdown_mobile_shares(shares: &Arc<Mutex<HashMap<String, ActiveMobileShare>>
 fn run_mobile_share_server(
     listener: TcpListener,
     session: SessionInfo,
-    token: String,
-    stop: Arc<AtomicBool>,
-    clients: Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
-    next_client_id: Arc<AtomicU64>,
+    context: MobileShareServerContext,
 ) {
-    while !stop.load(Ordering::Acquire) {
+    while !context.stop.load(Ordering::Acquire) {
         match listener.accept() {
             Ok((stream, address)) => {
                 if !is_local_network_peer(address) {
@@ -1328,21 +1429,11 @@ fn run_mobile_share_server(
                     continue;
                 }
                 let request_session = session.clone();
-                let request_token = token.clone();
-                let request_stop = Arc::clone(&stop);
-                let request_clients = Arc::clone(&clients);
-                let request_client_ids = Arc::clone(&next_client_id);
+                let request_context = context.clone();
                 let _ = thread::Builder::new()
                     .name("mobile-share-client".into())
                     .spawn(move || {
-                        handle_mobile_share_connection(
-                            stream,
-                            request_session,
-                            request_token,
-                            request_stop,
-                            request_clients,
-                            request_client_ids,
-                        )
+                        handle_mobile_share_connection(stream, request_session, request_context)
                     });
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -1363,10 +1454,7 @@ fn is_local_network_peer(address: SocketAddr) -> bool {
 fn handle_mobile_share_connection(
     mut stream: TcpStream,
     session: SessionInfo,
-    token: String,
-    stop: Arc<AtomicBool>,
-    clients: Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
-    next_client_id: Arc<AtomicU64>,
+    context: MobileShareServerContext,
 ) {
     let request = match read_mobile_share_request(&mut stream) {
         Ok(request) => request,
@@ -1381,12 +1469,21 @@ fn handle_mobile_share_connection(
             return;
         }
     };
-    let (method, path, headers) = request;
-    let page_path = format!("/share/{token}");
-    if method != "GET"
-        || !constant_time_eq(path.as_bytes(), page_path.as_bytes())
-            && !constant_time_eq(path.as_bytes(), format!("{page_path}/download").as_bytes())
-            && !constant_time_eq(path.as_bytes(), format!("{page_path}/events").as_bytes())
+    let page_path = format!("/share/{}", context.token);
+    let download_path = format!("{page_path}/download");
+    let events_path = format!("{page_path}/events");
+    let control_status_path = format!("{page_path}/control/status");
+    let control_write_path = format!("{page_path}/control/write");
+    let is_page = constant_time_eq(request.path.as_bytes(), page_path.as_bytes());
+    let is_download = constant_time_eq(request.path.as_bytes(), download_path.as_bytes());
+    let is_events = constant_time_eq(request.path.as_bytes(), events_path.as_bytes());
+    let is_control_status =
+        constant_time_eq(request.path.as_bytes(), control_status_path.as_bytes());
+    let is_control_write = constant_time_eq(request.path.as_bytes(), control_write_path.as_bytes());
+
+    if (request.method == "GET" && !(is_page || is_download || is_events || is_control_status))
+        || (request.method == "POST" && !is_control_write)
+        || (request.method != "GET" && request.method != "POST")
     {
         let _ = write_http_response(
             &stream,
@@ -1397,7 +1494,7 @@ fn handle_mobile_share_connection(
         );
         return;
     }
-    if constant_time_eq(path.as_bytes(), page_path.as_bytes()) {
+    if is_page {
         let _ = write_http_response(
             &stream,
             "200 OK",
@@ -1409,23 +1506,45 @@ fn handle_mobile_share_connection(
                 ("X-Content-Type-Options", "nosniff"),
             ],
         );
-    } else if path.ends_with("/download") {
+    } else if is_download {
         serve_mobile_share_download(&mut stream, &session.log_path);
-    } else {
-        serve_mobile_share_websocket(&mut stream, &headers, stop, clients, next_client_id);
+    } else if is_events {
+        serve_mobile_share_websocket(
+            &mut stream,
+            &request.headers,
+            Arc::clone(&context.stop),
+            Arc::clone(&context.clients),
+            Arc::clone(&context.next_client_id),
+        );
+    } else if is_control_status {
+        if !mobile_share_bearer_matches(&request.headers, &context.token) {
+            write_mobile_error_response(
+                &stream,
+                "401 Unauthorized",
+                "A valid mobile share capability is required.",
+                &[("WWW-Authenticate", "Bearer")],
+            );
+            return;
+        }
+        let status = MobileControlStatusResponse {
+            ok: true,
+            control_enabled: context.control_enabled.load(Ordering::Acquire),
+            max_payload_bytes: MOBILE_SHARE_WRITE_BYTE_LIMIT,
+            max_writes_per_second: MOBILE_SHARE_WRITE_REQUEST_LIMIT,
+            max_bytes_per_second: MOBILE_SHARE_WRITE_RATE_BYTE_LIMIT,
+        };
+        let _ = write_mobile_json_response(&stream, "200 OK", &status, &[]);
+    } else if is_control_write {
+        handle_mobile_share_write(&stream, &request, &context, &session.port);
     }
 }
 
-fn read_mobile_share_request(
-    stream: &mut TcpStream,
-) -> io::Result<(String, String, HashMap<String, String>)> {
+fn read_mobile_share_request(stream: &mut TcpStream) -> io::Result<MobileShareRequest> {
     stream.set_read_timeout(Some(MOBILE_SHARE_WRITE_TIMEOUT))?;
     read_mobile_share_request_from_reader(stream)
 }
 
-fn read_mobile_share_request_from_reader(
-    reader: &mut impl Read,
-) -> io::Result<(String, String, HashMap<String, String>)> {
+fn read_mobile_share_request_from_reader(reader: &mut impl Read) -> io::Result<MobileShareRequest> {
     let mut bytes = Vec::with_capacity(1024);
     let mut buffer = [0_u8; 1024];
     let header_end = loop {
@@ -1455,13 +1574,70 @@ fn read_mobile_share_request_from_reader(
             break end;
         }
     };
-    if header_end + 4 != bytes.len() {
+
+    let header_length = header_end + 4;
+    let (method, path, headers) = parse_mobile_share_request_bytes(&bytes[..header_end])?;
+    if headers.contains_key("transfer-encoding") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "chunked request bodies are not supported",
+        ));
+    }
+    let content_length = headers
+        .get("content-length")
+        .map(|value| parse_mobile_content_length(value))
+        .transpose()?;
+    let content_length = content_length.unwrap_or(0);
+    if header_length.saturating_add(content_length) > MOBILE_SHARE_REQUEST_BYTE_LIMIT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "request exceeds the size limit",
+        ));
+    }
+    if method == "GET" && content_length > 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "request body is not allowed",
         ));
     }
-    parse_mobile_share_request_bytes(&bytes[..header_end])
+
+    let mut body = bytes[header_length..].to_vec();
+    if body.len() > content_length {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "request contains bytes beyond its declared body",
+        ));
+    }
+    while body.len() < content_length {
+        let remaining = content_length - body.len();
+        let read_limit = remaining.min(buffer.len());
+        let count = reader.read(&mut buffer[..read_limit])?;
+        if count == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "request body ended",
+            ));
+        }
+        body.extend_from_slice(&buffer[..count]);
+    }
+    Ok(MobileShareRequest {
+        method,
+        path,
+        headers,
+        body,
+    })
+}
+
+fn parse_mobile_content_length(value: &str) -> io::Result<usize> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid Content-Length",
+        ));
+    }
+    value
+        .parse::<usize>()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid Content-Length"))
 }
 
 fn parse_mobile_share_request_bytes(
@@ -1523,6 +1699,295 @@ fn is_http_token_byte(byte: u8) -> bool {
 
 fn is_invalid_http_header_value_byte(byte: u8) -> bool {
     matches!(byte, 0x00..=0x08 | 0x0a..=0x1f | 0x7f)
+}
+
+fn mobile_share_bearer_matches(headers: &HashMap<String, String>, token: &str) -> bool {
+    let Some(value) = headers.get("authorization") else {
+        return false;
+    };
+    let Some((scheme, credential)) = value.split_once(' ') else {
+        return false;
+    };
+    scheme.eq_ignore_ascii_case("Bearer")
+        && !credential.is_empty()
+        && !credential.bytes().any(|byte| byte.is_ascii_whitespace())
+        && constant_time_eq(credential.as_bytes(), token.as_bytes())
+}
+
+fn parse_mobile_write_payload(body: &[u8]) -> Result<MobileWritePayload, MobileWritePayloadError> {
+    let request: MobileWriteRequest = serde_json::from_slice(body).map_err(|_| {
+        MobileWritePayloadError::Invalid("Write payload must be JSON with mode text or hex.".into())
+    })?;
+    match request.mode.as_str() {
+        "text" => {
+            if request.hex.is_some() {
+                return Err(MobileWritePayloadError::Invalid(
+                    "Text writes accept only the text field.".into(),
+                ));
+            }
+            let Some(text) = request.text else {
+                return Err(MobileWritePayloadError::Invalid(
+                    "Text writes require a text field.".into(),
+                ));
+            };
+            if text.is_empty() {
+                return Err(MobileWritePayloadError::Invalid(
+                    "Text payload must not be empty.".into(),
+                ));
+            }
+            if text.len() > MOBILE_SHARE_WRITE_BYTE_LIMIT {
+                return Err(MobileWritePayloadError::TooLarge(format!(
+                    "Mobile writes are limited to {MOBILE_SHARE_WRITE_BYTE_LIMIT} UTF-8 bytes."
+                )));
+            }
+            Ok(MobileWritePayload {
+                mode: "text",
+                bytes: text.into_bytes(),
+            })
+        }
+        "hex" => {
+            if request.text.is_some() {
+                return Err(MobileWritePayloadError::Invalid(
+                    "Hex writes accept only the hex field.".into(),
+                ));
+            }
+            let Some(hex) = request.hex else {
+                return Err(MobileWritePayloadError::Invalid(
+                    "Hex writes require a hex field.".into(),
+                ));
+            };
+            let bytes = parse_mobile_hex_bytes(&hex)?;
+            Ok(MobileWritePayload { mode: "hex", bytes })
+        }
+        _ => Err(MobileWritePayloadError::Invalid(
+            "Mode must be text or hex.".into(),
+        )),
+    }
+}
+
+fn parse_mobile_hex_bytes(input: &str) -> Result<Vec<u8>, MobileWritePayloadError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(MobileWritePayloadError::Invalid(
+            "Hex payload must contain at least one byte.".into(),
+        ));
+    }
+    let mut tokens = Vec::new();
+    for comma_segment in trimmed.split(',') {
+        let segment = comma_segment.trim();
+        if segment.is_empty() {
+            return Err(MobileWritePayloadError::Invalid(
+                "Use one comma or whitespace separator between each byte.".into(),
+            ));
+        }
+        tokens.extend(segment.split_whitespace());
+    }
+    if tokens.is_empty() {
+        return Err(MobileWritePayloadError::Invalid(
+            "Hex payload must contain at least one byte.".into(),
+        ));
+    }
+    if tokens.len() > MOBILE_SHARE_WRITE_BYTE_LIMIT {
+        return Err(MobileWritePayloadError::TooLarge(format!(
+            "Mobile writes are limited to {MOBILE_SHARE_WRITE_BYTE_LIMIT} bytes."
+        )));
+    }
+    let mut bytes = Vec::with_capacity(tokens.len());
+    for token in tokens {
+        let digits = token
+            .strip_prefix("0x")
+            .or_else(|| token.strip_prefix("0X"))
+            .unwrap_or(token);
+        if digits.len() != 2 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(MobileWritePayloadError::Invalid(format!(
+                "{token:?} is not a byte. Use two hex digits such as 7E or 0x7E."
+            )));
+        }
+        let byte = u8::from_str_radix(digits, 16).map_err(|_| {
+            MobileWritePayloadError::Invalid(format!(
+                "{token:?} is not a byte. Use two hex digits such as 7E or 0x7E."
+            ))
+        })?;
+        bytes.push(byte);
+    }
+    Ok(bytes)
+}
+
+fn check_mobile_write_rate(
+    limiter: &Mutex<MobileWriteRateState>,
+    byte_count: usize,
+) -> CommandResult<()> {
+    let mut state = limiter.lock().map_err(lock_error)?;
+    check_mobile_write_rate_at(&mut state, Instant::now(), byte_count)
+}
+
+fn check_mobile_write_rate_at(
+    state: &mut MobileWriteRateState,
+    now: Instant,
+    byte_count: usize,
+) -> CommandResult<()> {
+    if byte_count > MOBILE_SHARE_WRITE_RATE_BYTE_LIMIT {
+        return Err(format!(
+            "Remote control is limited to {MOBILE_SHARE_WRITE_RATE_BYTE_LIMIT} bytes per second."
+        ));
+    }
+    let window_expired = match state.window_started {
+        None => true,
+        Some(started) => now
+            .checked_duration_since(started)
+            .is_some_and(|elapsed| elapsed >= MOBILE_SHARE_WRITE_RATE_WINDOW),
+    };
+    if window_expired {
+        state.window_started = Some(now);
+        state.request_count = 0;
+        state.byte_count = 0;
+    }
+    if state.request_count >= MOBILE_SHARE_WRITE_REQUEST_LIMIT
+        || state.byte_count.saturating_add(byte_count) > MOBILE_SHARE_WRITE_RATE_BYTE_LIMIT
+    {
+        return Err(format!(
+            "Remote control is limited to {MOBILE_SHARE_WRITE_REQUEST_LIMIT} writes and {MOBILE_SHARE_WRITE_RATE_BYTE_LIMIT} bytes per second."
+        ));
+    }
+    state.request_count += 1;
+    state.byte_count += byte_count;
+    Ok(())
+}
+
+fn is_json_content_type(headers: &HashMap<String, String>) -> bool {
+    headers
+        .get("content-type")
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
+}
+
+fn write_mobile_json_response<T: Serialize>(
+    stream: &TcpStream,
+    status: &str,
+    payload: &T,
+    headers: &[(&str, &str)],
+) -> io::Result<()> {
+    let body = serde_json::to_vec(payload)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let mut response_headers = vec![
+        ("Cache-Control", "no-store"),
+        ("X-Content-Type-Options", "nosniff"),
+    ];
+    response_headers.extend_from_slice(headers);
+    write_http_response(
+        stream,
+        status,
+        "application/json; charset=utf-8",
+        &body,
+        &response_headers,
+    )
+}
+
+fn write_mobile_error_response(
+    stream: &TcpStream,
+    status: &str,
+    error: &str,
+    headers: &[(&str, &str)],
+) {
+    let payload = MobileErrorResponse {
+        ok: false,
+        error: error.into(),
+    };
+    let _ = write_mobile_json_response(stream, status, &payload, headers);
+}
+
+fn handle_mobile_share_write(
+    stream: &TcpStream,
+    request: &MobileShareRequest,
+    context: &MobileShareServerContext,
+    port: &str,
+) {
+    if !mobile_share_bearer_matches(&request.headers, &context.token) {
+        write_mobile_error_response(
+            stream,
+            "401 Unauthorized",
+            "A valid mobile share capability is required.",
+            &[("WWW-Authenticate", "Bearer")],
+        );
+        return;
+    }
+    if !context.control_enabled.load(Ordering::Acquire) {
+        write_mobile_error_response(
+            stream,
+            "403 Forbidden",
+            "Remote control is disabled on the desktop. Enable it in the Mobile companion panel first.",
+            &[],
+        );
+        return;
+    }
+    if context.stop.load(Ordering::Acquire) || context.session_stop.load(Ordering::Acquire) {
+        write_mobile_error_response(
+            stream,
+            "503 Service Unavailable",
+            "This mobile link or serial session is no longer active.",
+            &[],
+        );
+        return;
+    }
+    if !is_json_content_type(&request.headers) {
+        write_mobile_error_response(
+            stream,
+            "415 Unsupported Media Type",
+            "Write requests must use Content-Type: application/json.",
+            &[],
+        );
+        return;
+    }
+    let payload = match parse_mobile_write_payload(&request.body) {
+        Ok(payload) => payload,
+        Err(MobileWritePayloadError::Invalid(error)) => {
+            write_mobile_error_response(stream, "400 Bad Request", &error, &[]);
+            return;
+        }
+        Err(MobileWritePayloadError::TooLarge(error)) => {
+            write_mobile_error_response(stream, "413 Payload Too Large", &error, &[]);
+            return;
+        }
+    };
+    if let Err(error) = check_mobile_write_rate(&context.write_rate_limiter, payload.bytes.len()) {
+        write_mobile_error_response(
+            stream,
+            "429 Too Many Requests",
+            &error,
+            &[("Retry-After", "1")],
+        );
+        return;
+    }
+    let result = write_serial_bytes_authorized(
+        context.writer.as_ref(),
+        context.session_stop.as_ref(),
+        port,
+        &payload.bytes,
+        || context.control_enabled.load(Ordering::Acquire) && !context.stop.load(Ordering::Acquire),
+    );
+    match result {
+        Ok(written_bytes) => {
+            let response = MobileWriteSuccessResponse {
+                ok: true,
+                mode: payload.mode,
+                written_bytes,
+                message: "Bytes written to the selected serial session.",
+            };
+            let _ = write_mobile_json_response(stream, "200 OK", &response, &[]);
+        }
+        Err(error) => {
+            let status = if !context.control_enabled.load(Ordering::Acquire) {
+                "403 Forbidden"
+            } else if context.stop.load(Ordering::Acquire)
+                || context.session_stop.load(Ordering::Acquire)
+            {
+                "503 Service Unavailable"
+            } else {
+                "500 Internal Server Error"
+            };
+            write_mobile_error_response(stream, status, &error, &[]);
+        }
+    }
 }
 
 fn write_http_response(
@@ -1891,7 +2356,55 @@ fn base64_encode(bytes: &[u8]) -> String {
     output
 }
 
-const MOBILE_SHARE_PAGE: &str = r##"<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#111827"><title>BaudTide live log</title><style>body{margin:0;background:#111827;color:#e5e7eb;font:16px system-ui,sans-serif}main{max-width:900px;margin:auto;padding:16px}header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}h1{font-size:1.2rem;margin:0}#state{color:#93c5fd}a{color:#bfdbfe}pre{box-sizing:border-box;min-height:70vh;max-height:70vh;overflow:auto;white-space:pre-wrap;word-break:break-word;padding:14px;border:1px solid #374151;border-radius:8px;background:#030712;line-height:1.45}button{border:1px solid #4b5563;border-radius:6px;color:#e5e7eb;background:#1f2937;padding:8px 10px}</style><main><header><div><h1>BaudTide · live serial log</h1><span id="state">Connecting…</span></div><div><button id="pause">Pause</button> <a id="download" download>Download capture</a></div></header><pre id="log" aria-live="polite"></pre></main><script>(()=>{const log=document.querySelector('#log'),state=document.querySelector('#state'),pause=document.querySelector('#pause'),download=document.querySelector('#download');const base=location.pathname.replace(/\/$/,'');download.href=base+'/download';let paused=false;pause.onclick=()=>{paused=!paused;pause.textContent=paused?'Resume':'Pause'};const ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+base+'/events');ws.onopen=()=>state.textContent='Live · read-only';ws.onclose=()=>state.textContent='Disconnected · sharing ended';ws.onerror=()=>state.textContent='Connection error';ws.onmessage=e=>{if(paused)return;try{const item=JSON.parse(e.data);log.textContent+=item.text??'';if(log.textContent.length>500000)log.textContent=log.textContent.slice(-400000);log.scrollTop=log.scrollHeight}catch{}}})();</script>"##;
+const MOBILE_SHARE_PAGE: &str = r##"<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#111827">
+<title>BaudTide live log</title>
+<style>
+  :root{color-scheme:dark}body{margin:0;background:#111827;color:#e5e7eb;font:16px system-ui,sans-serif}
+  main{max-width:900px;margin:auto;padding:16px}header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+  h1{font-size:1.2rem;margin:0}h2{font-size:1rem;margin:0 0 5px}#state,#control-state{color:#93c5fd}
+  a{color:#bfdbfe}button,select,textarea{font:inherit}button{border:1px solid #4b5563;border-radius:6px;color:#e5e7eb;background:#1f2937;padding:8px 10px;cursor:pointer}
+  button:disabled,textarea:disabled,select:disabled{opacity:.55;cursor:not-allowed}.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .control{margin:18px 0;padding:14px;border:1px solid #4b5563;border-radius:8px;background:#172033}.control p{margin:0 0 10px;color:#cbd5e1;font-size:.9rem;line-height:1.45}
+  .control-status{display:flex;align-items:center;gap:8px;margin:0 0 10px;font-weight:700}.control-status.disabled{color:#fbbf24}.control-status.enabled{color:#86efac}
+  .control-form{display:grid;gap:8px}.control-form-row{display:flex;gap:8px;align-items:center}.control-form-row select{border:1px solid #4b5563;border-radius:6px;color:#e5e7eb;background:#1f2937;padding:8px}
+  textarea{box-sizing:border-box;width:100%;min-height:72px;resize:vertical;border:1px solid #4b5563;border-radius:6px;background:#030712;color:#f9fafb;padding:9px;line-height:1.4}
+  .control-hint,.control-message{margin:0;color:#94a3b8;font-size:.82rem}.control-message{min-height:1.2em;color:#a7f3d0}
+  pre{box-sizing:border-box;min-height:60vh;max-height:70vh;overflow:auto;white-space:pre-wrap;word-break:break-word;padding:14px;border:1px solid #374151;border-radius:8px;background:#030712;line-height:1.45}
+  @media(max-width:560px){main{padding:12px}.control-form-row{align-items:stretch;flex-direction:column}.control-form-row button,.control-form-row select{width:100%}}
+</style>
+<main>
+  <header><div><h1>BaudTide · live serial log</h1><span id="state">Connecting…</span></div><div class="toolbar"><button id="pause" type="button">Pause</button> <a id="download" download>Download capture</a></div></header>
+  <section class="control" aria-labelledby="control-heading">
+    <h2 id="control-heading">Send to serial device</h2>
+    <p>Read-only is the default. The desktop operator must explicitly enable remote control for this paired link. Text is sent as UTF-8 exactly as entered; hex sends exact bytes with no line ending.</p>
+    <div id="control-state" class="control-status disabled" role="status" aria-live="polite">Checking desktop permission…</div>
+    <form id="control-form" class="control-form">
+      <div class="control-form-row"><select id="control-mode" aria-label="Send mode"><option value="text">Text</option><option value="hex">Exact hex bytes</option></select><button id="control-send" type="submit" disabled>Send to serial device</button></div>
+      <textarea id="control-input" maxlength="16384" placeholder="Enable remote control on the desktop first" disabled></textarea>
+      <p id="control-hint" class="control-hint">Text: UTF-8 bytes. Hex: two-digit bytes separated by spaces or commas, such as 7E 00 FF.</p>
+      <p id="control-message" class="control-message" role="status" aria-live="polite"></p>
+    </form>
+  </section>
+  <pre id="log" aria-live="polite"></pre>
+</main>
+<script>
+(()=>{
+  const log=document.querySelector('#log'),state=document.querySelector('#state'),pause=document.querySelector('#pause'),download=document.querySelector('#download');
+  const controlState=document.querySelector('#control-state'),controlForm=document.querySelector('#control-form'),controlMode=document.querySelector('#control-mode'),controlInput=document.querySelector('#control-input'),controlSend=document.querySelector('#control-send'),controlMessage=document.querySelector('#control-message');
+  const base=location.pathname.replace(/\/$/,''),token=base.split('/').pop();download.href=base+'/download';let paused=false,controlEnabled=false;
+  const setControlState=(enabled)=>{controlEnabled=enabled;controlState.textContent=enabled?'Remote control enabled by desktop':'Read-only · desktop permission required';controlState.className='control-status '+(enabled?'enabled':'disabled');controlInput.disabled=!enabled;controlMode.disabled=!enabled;controlSend.disabled=!enabled;controlInput.placeholder=enabled?'Type text or hex bytes…':'Enable remote control on the desktop first'};
+  const controlRequest=async(path,options={})=>{const response=await fetch(path,{...options,headers:{Authorization:'Bearer '+token,...(options.headers||{})}});let payload={};try{payload=await response.json()}catch{}if(!response.ok)throw new Error(payload.error||'Request failed ('+response.status+')');return payload};
+  const refreshControl=async()=>{try{const status=await controlRequest(base+'/control/status');setControlState(Boolean(status.controlEnabled))}catch{setControlState(false);controlState.textContent='Read-only · desktop permission unavailable'}};
+  controlMode.onchange=()=>{controlInput.placeholder=controlMode.value==='hex'?'7E 00 FF or 0x7E, 0x00…':'Type text; UTF-8 bytes are sent exactly as entered'};
+  controlForm.onsubmit=async(event)=>{event.preventDefault();if(!controlEnabled||!controlInput.value) return;controlSend.disabled=true;controlMessage.textContent='Sending…';const mode=controlMode.value;const payload=mode==='hex'?{mode:'hex',hex:controlInput.value}:{mode:'text',text:controlInput.value};try{const result=await controlRequest(base+'/control/write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});controlMessage.textContent='Success · '+result.writtenBytes+' byte'+(result.writtenBytes===1?'':'s')+' written';controlInput.value=''}catch(error){controlMessage.textContent='Send failed · '+(error instanceof Error?error.message:'Unknown error');await refreshControl()}finally{controlSend.disabled=!controlEnabled}};
+  let controlRefreshTimer=window.setInterval(refreshControl,3000);void controlRefresh();pause.onclick=()=>{paused=!paused;pause.textContent=paused?'Resume':'Pause'};
+  const ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+base+'/events');ws.onopen=()=>state.textContent='Live · read-only view';ws.onclose=()=>{state.textContent='Disconnected · sharing ended';window.clearInterval(controlRefreshTimer)};ws.onerror=()=>state.textContent='Connection error';ws.onmessage=e=>{if(paused)return;try{const item=JSON.parse(e.data);log.textContent+=item.text??'';if(log.textContent.length>500000)log.textContent=log.textContent.slice(-400000);log.scrollTop=log.scrollHeight}catch{}};
+})();
+</script>"##;
 
 #[tauri::command]
 fn start_serial_session(
@@ -2060,6 +2573,16 @@ fn write_serial_bytes<W: Write>(
     port: &str,
     bytes: &[u8],
 ) -> CommandResult<usize> {
+    write_serial_bytes_authorized(writer, stop, port, bytes, || true)
+}
+
+fn write_serial_bytes_authorized<W: Write, F: Fn() -> bool>(
+    writer: &Mutex<Option<W>>,
+    stop: &AtomicBool,
+    port: &str,
+    bytes: &[u8],
+    is_authorized: F,
+) -> CommandResult<usize> {
     if bytes.len() > SERIAL_WRITE_BYTE_LIMIT {
         return Err(format!(
             "Serial writes are limited to {SERIAL_WRITE_BYTE_LIMIT} bytes."
@@ -2068,6 +2591,9 @@ fn write_serial_bytes<W: Write>(
     let mut writer = writer.lock().map_err(lock_error)?;
     if stop.load(Ordering::Acquire) {
         return Err("This serial session is no longer active.".into());
+    }
+    if !is_authorized() {
+        return Err("Remote control is disabled on the desktop.".into());
     }
     let writer = writer
         .as_mut()
@@ -2415,16 +2941,18 @@ mod tests {
         SerialDataEvent, SerialEventDelivery,
     };
     use super::{
-        base64_decode, begin_saved_log_search, data_bits, disconnect_status_message,
-        ensure_search_not_cancelled, generated_log_path, index_records_by_path, is_usable_lan_ipv4,
-        mark_log_closing, normalize_application_settings, read_mobile_share_request_from_reader,
-        rebuild_log_text_index_in_directory, register_mobile_share_for_session,
-        release_capture_quota, remove_log_text_indexes_for_path_in_directory,
-        saved_log_text_index_path, search_fresh_log_text_index_in_directory, search_raw_log,
-        stable_saved_log_content_search, stop_mobile_share_for_session,
-        validate_preference_log_directory, validated_websocket_key, websocket_accept_key,
-        ActiveMobileShare, ActiveSession, ApplicationSettings, CaptureQuota, FlowControlSetting,
-        LogIndexRecord, ParitySetting, SavedLogFingerprint, SavedLogTextIndexHeader,
+        base64_decode, begin_saved_log_search, check_mobile_write_rate_at, data_bits,
+        disconnect_status_message, ensure_search_not_cancelled, generated_log_path,
+        index_records_by_path, is_usable_lan_ipv4, mark_log_closing, mobile_share_bearer_matches,
+        normalize_application_settings, parse_mobile_write_payload,
+        read_mobile_share_request_from_reader, rebuild_log_text_index_in_directory,
+        register_mobile_share_for_session, release_capture_quota,
+        remove_log_text_indexes_for_path_in_directory, saved_log_text_index_path,
+        search_fresh_log_text_index_in_directory, search_raw_log, stable_saved_log_content_search,
+        stop_mobile_share_for_session, validate_preference_log_directory, validated_websocket_key,
+        websocket_accept_key, ActiveMobileShare, ActiveSession, ApplicationSettings, CaptureQuota,
+        FlowControlSetting, LogIndexRecord, MobileShareRequest, MobileWritePayloadError,
+        MobileWriteRateState, ParitySetting, SavedLogFingerprint, SavedLogTextIndexHeader,
         SerialSettings, SerialState, SessionInfo, StartSessionRequest, StopBitsSetting,
         CAPTURE_DURABILITY_SYNC_INTERVAL, GIBIBYTE, SEARCH_CANCELLED_MESSAGE, SEARCH_INDEX_MAGIC,
         SEARCH_INDEX_SCHEMA_VERSION, SEARCH_PER_LOG_BYTE_LIMIT, SEARCH_READ_BUFFER_SIZE,
@@ -2440,7 +2968,7 @@ mod tests {
             mpsc, Arc, Mutex,
         },
         thread,
-        time::Duration,
+        time::{Duration, Instant},
     };
     use uuid::Uuid;
 
@@ -2450,9 +2978,7 @@ mod tests {
         port: String,
     }
 
-    fn send_mobile_share_request(
-        bytes: &[u8],
-    ) -> io::Result<(String, String, HashMap<String, String>)> {
+    fn send_mobile_share_request(bytes: &[u8]) -> io::Result<MobileShareRequest> {
         read_mobile_share_request_from_reader(&mut Cursor::new(bytes))
     }
 
@@ -3168,6 +3694,95 @@ mod tests {
     }
 
     #[test]
+    fn mobile_share_request_parser_reads_only_declared_bounded_bodies() {
+        let body = br#"{"mode":"hex","hex":"00 FF"}"#;
+        let request = format!(
+            "POST /share/token/control/write HTTP/1.1\r\nHost: phone\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            std::str::from_utf8(body).unwrap()
+        );
+        let request = send_mobile_share_request(request.as_bytes()).unwrap();
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/share/token/control/write");
+        assert_eq!(
+            request.headers.get("content-length"),
+            Some(&body.len().to_string())
+        );
+        assert_eq!(request.body, body);
+
+        let oversized = format!(
+            "POST /share/token/control/write HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            super::MOBILE_SHARE_REQUEST_BYTE_LIMIT
+        );
+        let error = send_mobile_share_request(oversized.as_bytes()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("size limit"));
+    }
+
+    #[test]
+    fn mobile_share_control_requires_the_exact_bearer_capability() {
+        let no_auth = HashMap::new();
+        assert!(!mobile_share_bearer_matches(&no_auth, "secret"));
+        assert!(!mobile_share_bearer_matches(
+            &HashMap::from([("authorization".into(), "Bearer wrong".into())]),
+            "secret"
+        ));
+        assert!(!mobile_share_bearer_matches(
+            &HashMap::from([("authorization".into(), "Bearer secret extra".into())]),
+            "secret"
+        ));
+        assert!(mobile_share_bearer_matches(
+            &HashMap::from([("authorization".into(), "bearer secret".into())]),
+            "secret"
+        ));
+    }
+
+    #[test]
+    fn mobile_write_payload_parser_validates_text_hex_and_decoded_limits() {
+        let text = parse_mobile_write_payload(br#"{"mode":"text","text":"hello"}"#).unwrap();
+        assert_eq!(text.mode, "text");
+        assert_eq!(text.bytes, b"hello");
+
+        let hex = parse_mobile_write_payload(br#"{"mode":"hex","hex":"0x00, FF 7e"}"#).unwrap();
+        assert_eq!(hex.mode, "hex");
+        assert_eq!(hex.bytes, [0x00, 0xff, 0x7e]);
+
+        let invalid = parse_mobile_write_payload(br#"{"mode":"hex","hex":"0G"}"#).unwrap_err();
+        assert!(matches!(invalid, MobileWritePayloadError::Invalid(_)));
+
+        let oversized_text = format!(
+            "{{\"mode\":\"text\",\"text\":\"{}\"}}",
+            "x".repeat(super::MOBILE_SHARE_WRITE_BYTE_LIMIT + 1)
+        );
+        let oversized = parse_mobile_write_payload(oversized_text.as_bytes()).unwrap_err();
+        assert!(matches!(oversized, MobileWritePayloadError::TooLarge(_)));
+
+        let oversized_hex = format!(
+            "{{\"mode\":\"hex\",\"hex\":\"{}\"}}",
+            "00 ".repeat(super::MOBILE_SHARE_WRITE_BYTE_LIMIT + 1)
+        );
+        let oversized = parse_mobile_write_payload(oversized_hex.as_bytes()).unwrap_err();
+        assert!(matches!(oversized, MobileWritePayloadError::TooLarge(_)));
+    }
+
+    #[test]
+    fn mobile_write_rate_limiter_denies_bursts_and_resets_after_one_second() {
+        let mut state = MobileWriteRateState::default();
+        let start = Instant::now();
+        for _ in 0..super::MOBILE_SHARE_WRITE_REQUEST_LIMIT {
+            check_mobile_write_rate_at(&mut state, start, 1).unwrap();
+        }
+        let error = check_mobile_write_rate_at(&mut state, start, 1).unwrap_err();
+        assert!(error.contains("writes"));
+        check_mobile_write_rate_at(
+            &mut state,
+            start + super::MOBILE_SHARE_WRITE_RATE_WINDOW,
+            super::MOBILE_SHARE_WRITE_RATE_BYTE_LIMIT,
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn websocket_validation_requires_rfc_6455_version_and_key_shape() {
         let valid = HashMap::from([
             ("upgrade".into(), "websocket".into()),
@@ -3256,6 +3871,7 @@ mod tests {
                 port: 4321,
                 stop,
                 clients: Arc::new(Mutex::new(HashMap::new())),
+                control_enabled: Arc::new(AtomicBool::new(false)),
                 server_thread,
             })
         })
@@ -3267,6 +3883,7 @@ mod tests {
         assert_eq!(info.port, 4321);
         assert_eq!(info.client_count, 0);
         assert!(info.enabled);
+        assert!(!info.control_enabled);
         remover.join().unwrap();
         assert!(shares.lock().unwrap().is_empty());
         assert!(server_exited.load(Ordering::Acquire));
@@ -4471,6 +5088,7 @@ fn main() {
             save_saved_log,
             start_mobile_share,
             get_mobile_share_status,
+            set_mobile_share_control,
             stop_mobile_share,
             start_serial_session,
             send_serial_text,

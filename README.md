@@ -44,14 +44,25 @@ npm run tauri dev
 ## View a live capture on a phone
 
 BaudTide can share one live terminal with a phone on the same local network.
-Open the terminal's **Mobile sharing** panel, choose **Start sharing**, and scan
-the displayed QR code from the phone. The phone view is read-only: it shows the
-live output and lets the paired device download the active raw capture. It
-cannot send data to the serial device.
+Open the terminal's **Mobile sharing** panel, choose **Create mobile link**, and
+scan the displayed QR code from the phone. The paired phone can view the live
+output and download the active raw capture. Every link starts **read-only**.
 
-Each share gets a new unguessable pairing URL. Stop sharing to immediately
-revoke it; sharing also stops automatically when its serial session disconnects
-or BaudTide exits. Only use the feature on a network you trust.
+The desktop operator may deliberately choose **Enable remote control** for an
+active link. While that permission is enabled, the phone can send either UTF-8
+text or exact hexadecimal bytes to that selected serial session. Mobile writes
+are authenticated with the current pairing capability, limited to 4 KiB per
+write, and rate-limited to 10 writes / 16 KiB per second. Text is sent exactly
+as entered; no line ending is added. Disable control to return the link to
+read-only, or revoke the link to invalidate the pairing capability entirely.
+
+The companion remains an IPv4 local-network HTTP/WebSocket service protected by
+an unguessable bearer token in the pairing URL. It is not encrypted, so anyone
+who can observe or obtain the URL can use the capability while it is valid;
+only use it on a trusted LAN and do not treat it as an internet-facing service.
+The control permission applies to every write request, but an in-flight write
+may finish if it races with a disable/revoke action. The feature exposes no
+arbitrary file, shell, or system actions.
 
 ## Native serial backend
 
