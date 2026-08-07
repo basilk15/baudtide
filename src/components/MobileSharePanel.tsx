@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Check, Copy, LoaderCircle, QrCode, ShieldCheck, Smartphone, Users, Wifi } from 'lucide-react';
-import { getMobileShareStatus, startMobileShare, stopMobileShare, type MobileShareInfo } from '../lib/serial';
+import { getMobileShareStatus, getMobileWorkspaceShareStatus, startMobileShare, startMobileWorkspaceShare, stopMobileShare, stopMobileWorkspaceShare, type MobileShareInfo, type MobileWorkspaceShareInfo } from '../lib/serial';
 import './mobile-share-panel.css';
 
 type MobileSharePanelProps = {
@@ -246,6 +246,113 @@ export function MobileSharePanel({ sessionId, nativeSession, sessionConnected }:
       </div>}
 
       <div className="sd-mobile-share-safety"><ShieldCheck size={15} /><span><strong>Read-only · local network only.</strong> Revoke this link at any time. It ends automatically when the serial session disconnects.</span></div>
+      {message && <p className="sd-mobile-share-message" role="status">{message}</p>}
+    </aside>
+  );
+}
+
+type WorkspaceMobileSharePanelProps = {
+  nativeEnabled: boolean;
+  activeSessionCount: number;
+};
+
+/** One workspace-scoped link for all native sessions active when sharing starts. */
+export function WorkspaceMobileSharePanel({ nativeEnabled, activeSessionCount }: WorkspaceMobileSharePanelProps) {
+  const [share, setShare] = useState<MobileWorkspaceShareInfo | null>(null);
+  const [isWorking, setWorking] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const canShare = nativeEnabled && activeSessionCount > 0;
+
+  useEffect(() => {
+    if (!nativeEnabled) return undefined;
+    let disposed = false;
+    const refresh = async (quiet = true) => {
+      try {
+        const status = await getMobileWorkspaceShareStatus();
+        if (!disposed) setShare(status.enabled ? status : null);
+      } catch (error) {
+        if (!disposed && !quiet) setMessage(errorMessage(error));
+      }
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), STATUS_REFRESH_MS);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, [nativeEnabled]);
+
+  const enable = async () => {
+    if (!canShare || isWorking) return;
+    setWorking(true);
+    setMessage(null);
+    try {
+      const next = await startMobileWorkspaceShare();
+      setShare(next.enabled ? next : null);
+      if (!next.enabled) setMessage('No active serial sessions were available for the workspace link.');
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const revoke = async () => {
+    if (isWorking) return;
+    setWorking(true);
+    setMessage(null);
+    try {
+      await stopMobileWorkspaceShare();
+      setShare(null);
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const copyLink = async () => {
+    if (!share?.url) return;
+    try {
+      await navigator.clipboard.writeText(share.url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1_800);
+    } catch {
+      setMessage('Could not copy the link. Select and copy it manually.');
+    }
+  };
+
+  return (
+    <aside className="sd-mobile-workspace-share" aria-label="Mobile workspace dashboard sharing">
+      <div className="sd-mobile-workspace-heading">
+        <div className="sd-mobile-share-icon"><Smartphone size={18} /></div>
+        <div><p>Mobile workspace</p><h2>Share all active terminals</h2></div>
+        {share && <span className="sd-mobile-share-live"><i /> Live</span>}
+      </div>
+
+      {!nativeEnabled && <div className="sd-mobile-share-preview"><QrCode size={17} /><span>Available in the BaudTide desktop app with native serial sessions.</span></div>}
+
+      {nativeEnabled && !share && !activeSessionCount && <div className="sd-mobile-share-preview"><Wifi size={17} /><span>Open at least one serial terminal before creating a workspace link.</span></div>}
+
+      {canShare && !share && <div className="sd-mobile-workspace-start">
+        <p>One read-only link lets a phone switch between the {activeSessionCount} active terminal stream{activeSessionCount === 1 ? '' : 's'}. New terminals are not added to an existing link.</p>
+        <button className="sd-primary-button" type="button" onClick={() => void enable()} disabled={isWorking}>
+          {isWorking ? <LoaderCircle className="sd-spin" size={16} /> : <QrCode size={16} />} Create workspace link
+        </button>
+      </div>}
+
+      {share && <div className="sd-mobile-workspace-active">
+        <div className="sd-mobile-share-qr"><PairingQr value={share.url} /></div>
+        <div className="sd-mobile-share-details">
+          <p className="sd-mobile-share-instruction">Scan once to open the dashboard. The link includes {share.sessionCount} terminal{share.sessionCount === 1 ? '' : 's'} from when it was created.</p>
+          <div className="sd-mobile-share-link"><code title={share.url}>{share.url}</code><button type="button" onClick={() => void copyLink()} title="Copy workspace mobile link" aria-label="Copy workspace mobile link">{copied ? <Check size={15} /> : <Copy size={15} />}</button></div>
+          <div className="sd-mobile-share-metrics"><span><Users size={14} /> {share.clientCount} {share.clientCount === 1 ? 'phone connected' : 'phones connected'}</span><span><Wifi size={14} /> {share.host}:{share.port}</span></div>
+          <button className="sd-mobile-share-revoke" type="button" onClick={() => void revoke()} disabled={isWorking}>{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : null} Revoke workspace link</button>
+        </div>
+      </div>}
+
+      <div className="sd-mobile-share-safety"><ShieldCheck size={15} /><span><strong>Read-only · local network only.</strong> The phone can view only the sessions included in this link; no serial commands or arbitrary files are exposed.</span></div>
       {message && <p className="sd-mobile-share-message" role="status">{message}</p>}
     </aside>
   );

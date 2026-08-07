@@ -48,6 +48,15 @@ export type MobileShareInfo = {
   enabled: boolean;
 };
 
+export type MobileWorkspaceShareInfo = {
+  url: string;
+  host: string;
+  port: number;
+  clientCount: number;
+  sessionCount: number;
+  enabled: boolean;
+};
+
 export type SerialDataEvent = {
   sessionId: string;
   port: string;
@@ -194,6 +203,21 @@ export async function getMobileShareStatus(sessionId: string) {
 export async function stopMobileShare(sessionId: string) {
   ensureNativeRuntime();
   return invoke<MobileShareInfo>('stop_mobile_share', { sessionId });
+}
+
+export async function startMobileWorkspaceShare() {
+  ensureNativeRuntime();
+  return invoke<MobileWorkspaceShareInfo>('start_mobile_workspace_share');
+}
+
+export async function getMobileWorkspaceShareStatus() {
+  ensureNativeRuntime();
+  return invoke<MobileWorkspaceShareInfo>('get_mobile_workspace_share_status');
+}
+
+export async function stopMobileWorkspaceShare() {
+  ensureNativeRuntime();
+  return invoke<MobileWorkspaceShareInfo>('stop_mobile_workspace_share');
 }
 
 export async function listNativeSavedLogs() {
