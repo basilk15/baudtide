@@ -74,6 +74,11 @@ const MOBILE_SHARE_HEARTBEAT: Duration = Duration::from_secs(20);
 /// sessions while still being useful after a phone is paired late.
 const MOBILE_SHARE_REPLAY_BYTE_LIMIT: usize = 512 * 1024;
 const MOBILE_SHARE_REPLAY_EVENT_LIMIT: usize = 96;
+/// Workspace viewers share a single cursor across every included terminal, so
+/// they can resume one ordered feed after a Wi-Fi handoff. Keep the retained
+/// wire payload bounded independently from the per-session raw captures.
+const MOBILE_WORKSPACE_REPLAY_BYTE_LIMIT: usize = 512 * 1024;
+const MOBILE_WORKSPACE_REPLAY_EVENT_LIMIT: usize = 96;
 /// One replay notice plus the bounded event tail must fit before live traffic
 /// can compete for a slow client's queue.
 const MOBILE_SHARE_QUEUE_LIMIT: usize = 128;
@@ -418,6 +423,110 @@ impl MobileReplayBuffer {
     }
 }
 
+/// A workspace feed interleaves data and lifecycle updates from multiple
+/// native sessions. Its cursor must therefore be allocated by the workspace,
+/// rather than reusing a serial reader's per-session sequence number.
+struct MobileWorkspaceReplayBuffer {
+    events: Vec<MobileWorkspaceReplayEvent>,
+    byte_count: usize,
+    dropped_event_count: u64,
+    event_limit: usize,
+    byte_limit: usize,
+    next_sequence: u64,
+}
+
+#[derive(Clone)]
+struct MobileWorkspaceReplayEvent {
+    sequence: u64,
+    payload: String,
+}
+
+struct MobileWorkspaceReplaySnapshot {
+    events: Vec<MobileWorkspaceReplayEvent>,
+    first_sequence: Option<u64>,
+    next_sequence: u64,
+    replay_truncated: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MobileWorkspaceReplayNotice {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    first_sequence: Option<u64>,
+    next_sequence: u64,
+    replay_truncated: bool,
+}
+
+impl Default for MobileWorkspaceReplayBuffer {
+    fn default() -> Self {
+        Self::with_limits(
+            MOBILE_WORKSPACE_REPLAY_EVENT_LIMIT,
+            MOBILE_WORKSPACE_REPLAY_BYTE_LIMIT,
+        )
+    }
+}
+
+impl MobileWorkspaceReplayBuffer {
+    fn with_limits(event_limit: usize, byte_limit: usize) -> Self {
+        Self {
+            events: Vec::new(),
+            byte_count: 0,
+            dropped_event_count: 0,
+            event_limit,
+            byte_limit,
+            next_sequence: 1,
+        }
+    }
+
+    fn push(&mut self, event: MobileWorkspaceReplayEventKind) -> Option<String> {
+        let sequence = self.next_sequence;
+        let message = event.into_message(sequence);
+        let payload = serde_json::to_string(&message).ok()?;
+        self.next_sequence = self.next_sequence.saturating_add(1);
+
+        let payload_bytes = payload.len();
+        if payload_bytes > self.byte_limit {
+            // Keep live delivery working even for one unusually large serial
+            // chunk, but make the gap explicit to any reconnecting viewer.
+            self.events.clear();
+            self.byte_count = 0;
+            self.dropped_event_count = self.dropped_event_count.saturating_add(1);
+            return Some(payload);
+        }
+
+        self.byte_count = self.byte_count.saturating_add(payload_bytes);
+        self.events.push(MobileWorkspaceReplayEvent {
+            sequence,
+            payload: payload.clone(),
+        });
+        while self.events.len() > self.event_limit || self.byte_count > self.byte_limit {
+            let removed = self.events.remove(0);
+            self.byte_count = self.byte_count.saturating_sub(removed.payload.len());
+            self.dropped_event_count = self.dropped_event_count.saturating_add(1);
+        }
+        Some(payload)
+    }
+
+    fn snapshot_after(&self, after_sequence: Option<u64>) -> MobileWorkspaceReplaySnapshot {
+        let first_sequence = self.events.first().map(|event| event.sequence);
+        let requested_replay_has_gap = after_sequence
+            .zip(first_sequence)
+            .is_some_and(|(after, first)| first > after.saturating_add(1));
+        MobileWorkspaceReplaySnapshot {
+            events: self
+                .events
+                .iter()
+                .filter(|event| after_sequence.map_or(true, |after| event.sequence > after))
+                .cloned()
+                .collect(),
+            first_sequence,
+            next_sequence: self.next_sequence,
+            replay_truncated: self.dropped_event_count > 0 || requested_replay_has_gap,
+        }
+    }
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SerialStatusEvent {
@@ -634,6 +743,17 @@ struct MobileShareServerContext {
     session_stop: Arc<AtomicBool>,
 }
 
+#[derive(Clone)]
+struct MobileWorkspaceShareServerContext {
+    token: String,
+    stop: Arc<AtomicBool>,
+    sessions: Arc<Mutex<BTreeMap<String, MobileWorkspaceSession>>>,
+    replay: Arc<Mutex<MobileWorkspaceReplayBuffer>>,
+    clients: Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
+    next_client_id: Arc<AtomicU64>,
+    connection_slots: Arc<AtomicUsize>,
+}
+
 #[derive(Debug)]
 struct MobileShareRequest {
     method: String,
@@ -715,6 +835,21 @@ enum MobileWorkspaceMessage {
         sessions: Vec<MobileWorkspaceSession>,
     },
     Data {
+        sequence: u64,
+        event: SerialDataEvent,
+    },
+    Status {
+        sequence: u64,
+        session_id: String,
+        port: String,
+        status: String,
+        message: String,
+    },
+}
+
+#[derive(Clone)]
+enum MobileWorkspaceReplayEventKind {
+    Data {
         event: SerialDataEvent,
     },
     Status {
@@ -725,12 +860,33 @@ enum MobileWorkspaceMessage {
     },
 }
 
+impl MobileWorkspaceReplayEventKind {
+    fn into_message(self, sequence: u64) -> MobileWorkspaceMessage {
+        match self {
+            Self::Data { event } => MobileWorkspaceMessage::Data { sequence, event },
+            Self::Status {
+                session_id,
+                port,
+                status,
+                message,
+            } => MobileWorkspaceMessage::Status {
+                sequence,
+                session_id,
+                port,
+                status,
+                message,
+            },
+        }
+    }
+}
+
 struct ActiveMobileWorkspaceShare {
     token: String,
     host: String,
     port: u16,
     stop: Arc<AtomicBool>,
     sessions: Arc<Mutex<BTreeMap<String, MobileWorkspaceSession>>>,
+    replay: Arc<Mutex<MobileWorkspaceReplayBuffer>>,
     clients: Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
     server_thread: JoinHandle<()>,
 }
@@ -1479,28 +1635,22 @@ fn start_mobile_workspace_share(
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let stop = Arc::new(AtomicBool::new(false));
     let sessions = Arc::new(Mutex::new(session_scope));
+    let replay = Arc::new(Mutex::new(MobileWorkspaceReplayBuffer::default()));
     let clients = Arc::new(Mutex::new(HashMap::new()));
     let connection_slots = Arc::new(AtomicUsize::new(0));
     let next_client_id = Arc::new(AtomicU64::new(1));
-    let server_stop = Arc::clone(&stop);
-    let server_sessions = Arc::clone(&sessions);
-    let server_clients = Arc::clone(&clients);
-    let server_connection_slots = Arc::clone(&connection_slots);
-    let server_client_ids = Arc::clone(&next_client_id);
-    let server_token = token.clone();
+    let server_context = MobileWorkspaceShareServerContext {
+        token: token.clone(),
+        stop: Arc::clone(&stop),
+        sessions: Arc::clone(&sessions),
+        replay: Arc::clone(&replay),
+        clients: Arc::clone(&clients),
+        next_client_id: Arc::clone(&next_client_id),
+        connection_slots: Arc::clone(&connection_slots),
+    };
     let server_thread = thread::Builder::new()
         .name("mobile-workspace-share".into())
-        .spawn(move || {
-            run_mobile_workspace_share_server(
-                listener,
-                server_token,
-                server_stop,
-                server_sessions,
-                server_clients,
-                server_connection_slots,
-                server_client_ids,
-            )
-        })
+        .spawn(move || run_mobile_workspace_share_server(listener, server_context))
         .map_err(|error| format!("Could not start local mobile workspace sharing: {error}"))?;
     let share = ActiveMobileWorkspaceShare {
         token,
@@ -1508,6 +1658,7 @@ fn start_mobile_workspace_share(
         port,
         stop,
         sessions,
+        replay,
         clients,
         server_thread,
     };
@@ -1965,14 +2116,9 @@ fn handle_mobile_share_connection(
 
 fn run_mobile_workspace_share_server(
     listener: TcpListener,
-    token: String,
-    stop: Arc<AtomicBool>,
-    sessions: Arc<Mutex<BTreeMap<String, MobileWorkspaceSession>>>,
-    clients: Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
-    connection_slots: Arc<AtomicUsize>,
-    next_client_id: Arc<AtomicU64>,
+    context: MobileWorkspaceShareServerContext,
 ) {
-    while !stop.load(Ordering::Acquire) {
+    while !context.stop.load(Ordering::Acquire) {
         match listener.accept() {
             Ok((stream, address)) => {
                 if !is_local_network_peer(address) {
@@ -1986,7 +2132,7 @@ fn run_mobile_workspace_share_server(
                     let _ = stream.shutdown(Shutdown::Both);
                     continue;
                 }
-                if !try_reserve_mobile_connection(&connection_slots) {
+                if !try_reserve_mobile_connection(&context.connection_slots) {
                     let _ = write_http_response(
                         &stream,
                         "503 Service Unavailable",
@@ -1997,28 +2143,15 @@ fn run_mobile_workspace_share_server(
                     let _ = stream.shutdown(Shutdown::Both);
                     continue;
                 }
-                let request_token = token.clone();
-                let request_stop = Arc::clone(&stop);
-                let request_sessions = Arc::clone(&sessions);
-                let request_clients = Arc::clone(&clients);
-                let request_connection_slots = Arc::clone(&connection_slots);
-                let request_client_ids = Arc::clone(&next_client_id);
+                let request_context = context.clone();
                 if thread::Builder::new()
                     .name("mobile-workspace-client".into())
                     .spawn(move || {
-                        handle_mobile_workspace_share_connection(
-                            stream,
-                            request_token,
-                            request_stop,
-                            request_sessions,
-                            request_clients,
-                            request_connection_slots,
-                            request_client_ids,
-                        )
+                        handle_mobile_workspace_share_connection(stream, request_context)
                     })
                     .is_err()
                 {
-                    connection_slots.fetch_sub(1, Ordering::AcqRel);
+                    context.connection_slots.fetch_sub(1, Ordering::AcqRel);
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -2031,14 +2164,9 @@ fn run_mobile_workspace_share_server(
 
 fn handle_mobile_workspace_share_connection(
     mut stream: TcpStream,
-    token: String,
-    stop: Arc<AtomicBool>,
-    sessions: Arc<Mutex<BTreeMap<String, MobileWorkspaceSession>>>,
-    clients: Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
-    connection_slots: Arc<AtomicUsize>,
-    next_client_id: Arc<AtomicU64>,
+    context: MobileWorkspaceShareServerContext,
 ) {
-    let _connection_slot = MobileConnectionSlot(connection_slots);
+    let _connection_slot = MobileConnectionSlot(Arc::clone(&context.connection_slots));
     let request = match read_mobile_share_request(&mut stream) {
         Ok(request) => request,
         Err(_) => {
@@ -2058,10 +2186,14 @@ fn handle_mobile_workspace_share_connection(
         headers,
         ..
     } = request;
-    let Some(route) = (method == "GET")
-        .then(|| authorized_mobile_share_route(&path, "workspace", &token, false))
-        .flatten()
-    else {
+    let page_path = format!("/workspace/{}", context.token);
+    let events_path = format!("{page_path}/events");
+    let events_after = parse_mobile_share_events_path(&path, &events_path);
+    let is_page = matches!(
+        authorized_mobile_share_route(&path, "workspace", &context.token, false),
+        Some(MobileShareRoute::Page)
+    );
+    if method != "GET" || !(is_page || events_after.is_some()) {
         let _ = write_http_response(
             &stream,
             "404 Not Found",
@@ -2070,14 +2202,13 @@ fn handle_mobile_workspace_share_connection(
             &[],
         );
         return;
-    };
-    match route {
-        MobileShareRoute::Page => {
-            let _ = write_http_response(
+    }
+    if is_page {
+        let _ = write_http_response(
                 &stream,
                 "200 OK",
                 "text/html; charset=utf-8",
-                MOBILE_WORKSPACE_SHARE_PAGE.as_bytes(),
+                mobile_workspace_share_page().as_bytes(),
                 &[
                     ("Cache-Control", "no-store"),
                     ("Referrer-Policy", "no-referrer"),
@@ -2088,16 +2219,13 @@ fn handle_mobile_workspace_share_connection(
                     ),
                 ],
             );
-        }
-        MobileShareRoute::Events => serve_mobile_workspace_websocket(
+    } else {
+        serve_mobile_workspace_websocket(
             &mut stream,
             &headers,
-            stop,
-            sessions,
-            clients,
-            next_client_id,
-        ),
-        MobileShareRoute::Download => unreachable!("workspace routes do not expose downloads"),
+            &context,
+            events_after.expect("validated mobile workspace events path"),
+        );
     }
 }
 
@@ -2771,10 +2899,8 @@ fn register_mobile_share_client(
 fn serve_mobile_workspace_websocket(
     stream: &mut TcpStream,
     headers: &HashMap<String, String>,
-    stop: Arc<AtomicBool>,
-    sessions: Arc<Mutex<BTreeMap<String, MobileWorkspaceSession>>>,
-    clients: Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
-    next_client_id: Arc<AtomicU64>,
+    context: &MobileWorkspaceShareServerContext,
+    after_sequence: Option<u64>,
 ) {
     let Some(key) = validated_websocket_key(headers) else {
         let _ = write_http_response(
@@ -2793,26 +2919,21 @@ fn serve_mobile_workspace_websocket(
     if stream.write_all(response.as_bytes()).is_err() || stream.flush().is_err() {
         return;
     }
-    let client_id = next_client_id.fetch_add(1, Ordering::Relaxed);
+    let client_id = context.next_client_id.fetch_add(1, Ordering::Relaxed);
     let (sender, receiver) = std::sync::mpsc::sync_channel(MOBILE_SHARE_EVENT_QUEUE_LIMIT);
-    let inserted = clients
-        .lock()
-        .ok()
-        .and_then(|mut clients| register_mobile_client(&mut clients, client_id, sender));
-    if inserted.is_none() {
+    let Some(snapshot) = register_mobile_workspace_client(
+        client_id,
+        after_sequence,
+        &context.sessions,
+        &context.replay,
+        &context.clients,
+        sender,
+    ) else {
         let _ = write_websocket_close(stream, 1013, "Too many viewers");
-        return;
-    }
-
-    let Some(snapshot) = mobile_workspace_snapshot_payload(&sessions) else {
-        if let Ok(mut clients) = clients.lock() {
-            clients.remove(&client_id);
-        }
-        let _ = write_websocket_close(stream, 1011, "Workspace unavailable");
         return;
     };
     if write_websocket_text(stream, &snapshot).is_err() {
-        if let Ok(mut clients) = clients.lock() {
+        if let Ok(mut clients) = context.clients.lock() {
             clients.remove(&client_id);
         }
         return;
@@ -2820,7 +2941,7 @@ fn serve_mobile_workspace_websocket(
 
     let _ = stream.set_write_timeout(Some(MOBILE_SHARE_WRITE_TIMEOUT));
     let mut last_heartbeat = Instant::now();
-    while !stop.load(Ordering::Acquire) {
+    while !context.stop.load(Ordering::Acquire) {
         match receiver.recv_timeout(Duration::from_millis(250)) {
             Ok(message) if write_websocket_text(stream, &message).is_err() => break,
             Ok(_) => {}
@@ -2836,10 +2957,51 @@ fn serve_mobile_workspace_websocket(
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
         }
     }
-    if let Ok(mut clients) = clients.lock() {
+    if let Ok(mut clients) = context.clients.lock() {
         clients.remove(&client_id);
     }
-    let _ = write_websocket_close(stream, 1000, "Sharing ended");
+    let (close_code, close_reason) =
+        mobile_share_close_status(context.stop.load(Ordering::Acquire));
+    let _ = write_websocket_close(stream, close_code, close_reason);
+}
+
+/// Registration follows the same replay-then-client lock order as live
+/// publishing. A workspace event is therefore either queued from the replay
+/// tail or queued as live traffic, never both and never neither.
+fn register_mobile_workspace_client(
+    client_id: u64,
+    after_sequence: Option<u64>,
+    sessions: &Arc<Mutex<BTreeMap<String, MobileWorkspaceSession>>>,
+    replay: &Arc<Mutex<MobileWorkspaceReplayBuffer>>,
+    clients: &Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
+    sender: std::sync::mpsc::SyncSender<String>,
+) -> Option<String> {
+    let replay = replay.lock().ok()?;
+    let snapshot = replay.snapshot_after(after_sequence);
+    let replay_capacity = MOBILE_SHARE_EVENT_QUEUE_LIMIT.saturating_sub(1);
+    let first_replay_index = snapshot.events.len().saturating_sub(replay_capacity);
+    let notice = serde_json::to_string(&MobileWorkspaceReplayNotice {
+        kind: "replay",
+        first_sequence: snapshot.first_sequence,
+        next_sequence: snapshot.next_sequence,
+        replay_truncated: snapshot.replay_truncated || first_replay_index > 0,
+    })
+    .ok()?;
+    let workspace_snapshot = mobile_workspace_snapshot_payload(sessions)?;
+    let mut clients = clients.lock().ok()?;
+    let delivery_sender = sender.clone();
+    register_mobile_client(&mut clients, client_id, sender)?;
+    if delivery_sender.try_send(notice).is_err() {
+        clients.remove(&client_id);
+        return None;
+    }
+    for event in snapshot.events.iter().skip(first_replay_index) {
+        if delivery_sender.try_send(event.payload.clone()).is_err() {
+            clients.remove(&client_id);
+            return None;
+        }
+    }
+    Some(workspace_snapshot)
 }
 
 fn mobile_workspace_snapshot_payload(
@@ -2911,16 +3073,17 @@ fn broadcast_mobile_workspace_serial_data(
     share_state: &Arc<Mutex<Option<ActiveMobileWorkspaceShare>>>,
     event: &SerialDataEvent,
 ) {
-    let (sessions, clients) = match share_state.lock() {
-        Ok(share) => share.as_ref().map_or((None, None), |share| {
+    let (sessions, replay, clients) = match share_state.lock() {
+        Ok(share) => share.as_ref().map_or((None, None, None), |share| {
             (
                 Some(Arc::clone(&share.sessions)),
+                Some(Arc::clone(&share.replay)),
                 Some(Arc::clone(&share.clients)),
             )
         }),
-        Err(_) => (None, None),
+        Err(_) => (None, None, None),
     };
-    let (Some(sessions), Some(clients)) = (sessions, clients) else {
+    let (Some(sessions), Some(replay), Some(clients)) = (sessions, replay, clients) else {
         return;
     };
     if !sessions
@@ -2930,9 +3093,10 @@ fn broadcast_mobile_workspace_serial_data(
     {
         return;
     }
-    broadcast_mobile_workspace_message(
+    publish_mobile_workspace_event(
+        &replay,
         &clients,
-        MobileWorkspaceMessage::Data {
+        MobileWorkspaceReplayEventKind::Data {
             event: event.clone(),
         },
     );
@@ -2944,16 +3108,17 @@ fn broadcast_mobile_workspace_status(
     status: &str,
     message: &str,
 ) {
-    let (sessions, clients) = match share_state.lock() {
-        Ok(share) => share.as_ref().map_or((None, None), |share| {
+    let (sessions, replay, clients) = match share_state.lock() {
+        Ok(share) => share.as_ref().map_or((None, None, None), |share| {
             (
                 Some(Arc::clone(&share.sessions)),
+                Some(Arc::clone(&share.replay)),
                 Some(Arc::clone(&share.clients)),
             )
         }),
-        Err(_) => (None, None),
+        Err(_) => (None, None, None),
     };
-    let (Some(sessions), Some(clients)) = (sessions, clients) else {
+    let (Some(sessions), Some(replay), Some(clients)) = (sessions, replay, clients) else {
         return;
     };
     let bounded_message = bound_mobile_workspace_message(message);
@@ -2966,9 +3131,10 @@ fn broadcast_mobile_workspace_status(
     if included.is_none() {
         return;
     }
-    broadcast_mobile_workspace_message(
+    publish_mobile_workspace_event(
+        &replay,
         &clients,
-        MobileWorkspaceMessage::Status {
+        MobileWorkspaceReplayEventKind::Status {
             session_id: info.id.clone(),
             port: info.port.clone(),
             status: status.into(),
@@ -2977,13 +3143,16 @@ fn broadcast_mobile_workspace_status(
     );
 }
 
-fn broadcast_mobile_workspace_message(
+fn publish_mobile_workspace_event(
+    replay: &Arc<Mutex<MobileWorkspaceReplayBuffer>>,
     clients: &Arc<Mutex<HashMap<u64, std::sync::mpsc::SyncSender<String>>>>,
-    message: MobileWorkspaceMessage,
+    event: MobileWorkspaceReplayEventKind,
 ) {
-    let payload = match serde_json::to_string(&message) {
-        Ok(payload) => payload,
-        Err(_) => return,
+    let Ok(mut replay) = replay.lock() else {
+        return;
+    };
+    let Some(payload) = replay.push(event) else {
+        return;
     };
     if let Ok(mut clients) = clients.lock() {
         clients.retain(|_, sender| sender.try_send(payload.clone()).is_ok());
@@ -3204,6 +3373,7 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
     button.active{border-color:#4adeba;background:#173d38;color:#baf5e3}
     button:focus-visible,input:focus-visible{outline:2px solid #75dfc0;outline-offset:2px}
     .download{margin-left:auto;padding:8px 2px;font-size:.8rem}
+    .excerpt-row{align-items:center}.excerpt-label{color:#9caec0;font-size:.72rem}.excerpt-status{min-height:1.1em;color:#a7f3d0;font-size:.72rem}
     .search{display:flex;align-items:center;gap:7px;color:#b6c5d5;font-size:.78rem}
     .search input{width:100%;min-width:0;border:1px solid #4b5563;border-radius:7px;padding:8px 9px;background:#0b1220;color:#f3f4f6;font:inherit;font-size:.82rem}
     .filter-label{color:#9caec0;font-size:.72rem}
@@ -3221,7 +3391,7 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
     .control-form-row select{border:1px solid #4b5563;border-radius:6px;color:#e5e7eb;background:#1f2937;padding:8px;font:inherit;font-size:.8rem}
     textarea{box-sizing:border-box;width:100%;min-height:68px;resize:vertical;border:1px solid #4b5563;border-radius:6px;background:#030712;color:#f9fafb;padding:9px;font:inherit;line-height:1.4}
     button:disabled,textarea:disabled,select:disabled{opacity:.55;cursor:not-allowed}.control-hint,.control-message{color:#94a3b8;font-size:.72rem}.control-message{min-height:1.1em;color:#a7f3d0}
-    @media(max-width:520px){main{padding:10px}.download{margin-left:0}.entry{grid-template-columns:72px minmax(0,1fr);gap:6px}.entry-time{font-size:10px}.entry-text{font-size:11px}#log{min-height:320px;height:64vh}.control-form-row{align-items:stretch;flex-direction:column}.control-form-row button,.control-form-row select{width:100%}}
+    @media(max-width:520px){main{padding:10px}.download{margin-left:0}.entry{grid-template-columns:72px minmax(0,1fr);gap:6px}.entry-time{font-size:10px}.entry-text{font-size:11px}#log{min-height:320px;height:64vh}.control-form-row{align-items:stretch;flex-direction:column}.control-form-row button,.control-form-row select{width:100%}.excerpt-status{width:100%}}
   </style>
 </head>
 <body>
@@ -3242,6 +3412,12 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
         <button type="button" data-filter="all" class="active">All</button>
         <button type="button" data-filter="errors">Errors</button>
         <button type="button" data-filter="wifi">Wi-Fi</button>
+      </div>
+      <div class="control-row excerpt-row" aria-label="Visible log excerpt">
+        <span class="excerpt-label">Visible log</span>
+        <button id="copy-visible" type="button">Copy visible</button>
+        <button id="download-visible" type="button">Download visible</button>
+        <span id="excerpt-status" class="excerpt-status" role="status" aria-live="polite"></span>
       </div>
     </section>
     <section class="control" aria-labelledby="control-heading">
@@ -3270,6 +3446,9 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
     const latestButton=document.querySelector('#latest');
     const searchInput=document.querySelector('#search');
     const download=document.querySelector('#download');
+    const copyVisibleButton=document.querySelector('#copy-visible');
+    const downloadVisibleButton=document.querySelector('#download-visible');
+    const excerptStatus=document.querySelector('#excerpt-status');
     const controlState=document.querySelector('#control-state');
     const controlForm=document.querySelector('#control-form');
     const controlMode=document.querySelector('#control-mode');
@@ -3348,9 +3527,57 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
       if(filter==='wifi'&&!WIFI_PATTERN.test(entry.text)) return false;
       return true;
     }
+    function visibleEntries(){return entries.filter(matches)}
+    function excerptText(){
+      const visible=visibleEntries();
+      if(!visible.length) return {visible,text:''};
+      const filters=[];
+      if(filter!=='all') filters.push(filter==='wifi'?'Wi-Fi':'Errors');
+      if(query.trim()) filters.push(`Search: ${query.trim()}`);
+      const context=filters.length?filters.join(' · '):'All retained events';
+      const generated=new Date().toLocaleString();
+      const lines=[
+        'BaudTide · visible serial log excerpt',
+        `Generated: ${generated}`,
+        `View: ${context}`,
+        `Events: ${visible.length} of ${entries.length} retained`,
+        ''
+      ];
+      visible.forEach(entry=>lines.push(`[${timestamp(entry.timestamp)}] ${entry.text}`));
+      return {visible,text:lines.join('\n')};
+    }
+    function setExcerptStatus(message){excerptStatus.textContent=message||''}
+    async function copyExcerpt(text){
+      if(navigator.clipboard&&window.isSecureContext){
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const fallback=document.createElement('textarea');
+      fallback.value=text;
+      fallback.setAttribute('readonly','');
+      fallback.style.position='fixed';
+      fallback.style.opacity='0';
+      document.body.append(fallback);
+      fallback.select();
+      const copied=document.execCommand&&document.execCommand('copy');
+      fallback.remove();
+      if(!copied) throw new Error('Clipboard is unavailable');
+    }
+    function downloadExcerpt(text){
+      const file=new Blob([text+'\n'],{type:'text/plain;charset=utf-8'});
+      const link=document.createElement('a');
+      const stamp=new Date().toISOString().replace(/[:.]/g,'-');
+      link.href=URL.createObjectURL(file);
+      link.download=`baudtide-visible-log-${stamp}.txt`;
+      link.hidden=true;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(()=>URL.revokeObjectURL(link.href),0);
+    }
     function render(){
       renderPending=false;
-      const visible=entries.filter(matches);
+      const visible=visibleEntries();
       log.replaceChildren();
       if(!visible.length){
         const empty=document.createElement('div');
@@ -3456,6 +3683,21 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
       if(nearBottom!==follow){follow=nearBottom;updateFollowButton()}
     });
     searchInput.addEventListener('input',()=>{query=searchInput.value.slice(0,128);render()});
+    copyVisibleButton.onclick=async()=>{
+      const excerpt=excerptText();
+      if(!excerpt.visible.length){setExcerptStatus('Nothing matches this view yet.');return}
+      copyVisibleButton.disabled=true;
+      setExcerptStatus('Copying visible log…');
+      try{await copyExcerpt(excerpt.text);setExcerptStatus(`Copied ${excerpt.visible.length} visible event${excerpt.visible.length===1?'':'s'}.`)}
+      catch{setExcerptStatus('Could not copy this excerpt. Download it instead.')}
+      finally{copyVisibleButton.disabled=false}
+    };
+    downloadVisibleButton.onclick=()=>{
+      const excerpt=excerptText();
+      if(!excerpt.visible.length){setExcerptStatus('Nothing matches this view yet.');return}
+      try{downloadExcerpt(excerpt.text);setExcerptStatus(`Downloading ${excerpt.visible.length} visible event${excerpt.visible.length===1?'':'s'}.`)}
+      catch{setExcerptStatus('Could not prepare the download. Try again.')}
+    };
     controlMode.onchange=()=>{controlInput.placeholder=controlMode.value==='hex'?'7E 00 FF or 0x7E, 0x00…':'Type text; UTF-8 bytes are sent exactly as entered'};
     controlForm.onsubmit=async(event)=>{
       event.preventDefault();
@@ -3488,7 +3730,105 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
 </body>
 </html>"###;
 
-const MOBILE_WORKSPACE_SHARE_PAGE: &str = r##"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b1720"><title>BaudTide mobile dashboard</title><style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0b1720;color:#e5f1ee;font:15px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{width:min(100%,980px);margin:auto;padding:16px}header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:14px}h1,h2,p{margin:0}h1{font-size:1.25rem;letter-spacing:-.02em}header p{margin-top:5px;color:#9bb2bd;font-size:.82rem}#feed-state{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border:1px solid #2b5660;border-radius:999px;color:#a9ead8;font-size:.78rem;font-weight:700}#feed-state i{width:7px;height:7px;border-radius:50%;background:#79dfbd;box-shadow:0 0 0 4px #79dfbd22}.layout{display:grid;grid-template-columns:minmax(190px,260px) minmax(0,1fr);gap:13px}.panel{border:1px solid #29414d;border-radius:12px;background:#10232d;box-shadow:0 12px 35px #02070b44}.panel-head{padding:13px 14px;border-bottom:1px solid #29414d}.panel-head h2{font-size:.88rem}.panel-head p{margin-top:4px;color:#8fa8b2;font-size:.72rem;line-height:1.4}.sessions{padding:8px}.session{display:block;width:100%;margin:0 0 7px;padding:11px;border:1px solid transparent;border-radius:9px;background:#142b36;color:#e5f1ee;text-align:left;cursor:pointer}.session:last-child{margin-bottom:0}.session:hover{border-color:#3b7275}.session.active{border-color:#6cc7ac;background:#173b3d}.session-title{display:flex;align-items:center;gap:7px;font-weight:750;font-size:.83rem}.session-title i{width:8px;height:8px;flex:0 0 auto;border-radius:50%;background:#79dfbd}.session-title i.error{background:#f3a6a6}.session-title i.disconnected{background:#8da1ac}.session-title i.storage-limit{background:#f2c477}.session-title i.reconnecting{background:#8fcbf4}.session-meta{display:block;margin:5px 0 0 15px;color:#a5bbc2;font: .7rem ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-state{display:block;margin:7px 0 0 15px;color:#86d5be;font-size:.67rem;font-weight:700}.stream-panel{min-width:0}.stream-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:13px 14px;border-bottom:1px solid #29414d}.stream-head h2{font-size:.92rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.stream-head p{margin-top:5px;color:#9bb2bd;font-size:.72rem}.stream-head strong{color:#b9e9d7}.stream-state{color:#9bb2bd;font-size:.7rem;text-align:right}.stream-state.error,.stream-state.storage-limit{color:#ffb9b9}.stream-state.disconnected{color:#c4ced3}#stream{min-height:58vh;max-height:65vh;margin:0;padding:14px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:#061018;color:#d5e6e4;font: .78rem/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}#detail{min-height:22px;padding:9px 14px;border-top:1px solid #29414d;color:#a5bbc2;font-size:.72rem;line-height:1.4}.notice{margin-top:13px;padding:10px 12px;border:1px solid #38545c;border-radius:9px;background:#122933;color:#9eb7bf;font-size:.72rem;line-height:1.45}.notice strong{color:#c7e7dc}@media(max-width:680px){main{padding:11px}.layout{grid-template-columns:1fr}.sessions{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:7px}.session,.session:last-child{margin:0}.stream-head{align-items:flex-start}#stream{min-height:52vh;max-height:62vh}}</style></head><body><main><header><div><h1>BaudTide · mobile dashboard</h1><p>Read-only live streams from the shared terminal workspace.</p></div><span id="feed-state"><i></i><span>Connecting…</span></span></header><div class="layout"><section class="panel"><div class="panel-head"><h2>Shared terminals</h2><p id="scope">Waiting for the shared session list…</p></div><div id="sessions" class="sessions"></div></section><section class="panel stream-panel"><div class="stream-head"><div><h2 id="stream-title">Choose a terminal</h2><p id="stream-meta">No stream selected</p></div><span id="stream-state" class="stream-state">Waiting</span></div><pre id="stream" aria-live="polite">The dashboard will show live output after it connects.</pre><div id="detail">Only sessions included when this link was created can appear here.</div></section></div><div class="notice"><strong>Local and read-only.</strong> This link works only on the same local network. Output keeps the newest 240,000 characters per shared stream in this phone view; raw capture files stay on the desktop.</div></main><script>(()=>{const sessionsEl=document.querySelector('#sessions'),scopeEl=document.querySelector('#scope'),feedEl=document.querySelector('#feed-state span'),streamTitle=document.querySelector('#stream-title'),streamMeta=document.querySelector('#stream-meta'),streamState=document.querySelector('#stream-state'),streamEl=document.querySelector('#stream'),detailEl=document.querySelector('#detail');const sessions=new Map(),logs=new Map();const MAX_LOG_CHARS=240000;let selectedId='';const stateLabel=(state)=>state==='storage-limit'?'Storage limit':state==='disconnected'?'Disconnected':state==='error'?'Error':state==='reconnecting'?'Reconnecting':state==='connected'?'Connected':state||'Unknown';const select=(id)=>{if(!sessions.has(id))return;selectedId=id;render()};const render=()=>{sessionsEl.replaceChildren();for(const item of sessions.values()){const button=document.createElement('button');button.className='session'+(item.sessionId===selectedId?' active':'');button.type='button';button.onclick=()=>select(item.sessionId);const title=document.createElement('span');title.className='session-title';const dot=document.createElement('i');dot.className=item.state||'';title.append(dot,document.createTextNode(item.sessionName));const meta=document.createElement('span');meta.className='session-meta';meta.textContent=item.port;const state=document.createElement('span');state.className='session-state';state.textContent=stateLabel(item.state);button.append(title,meta,state);sessionsEl.append(button)}const current=sessions.get(selectedId);if(!current){streamTitle.textContent='Choose a terminal';streamMeta.textContent='No stream selected';streamState.textContent='Waiting';streamState.className='stream-state';streamEl.textContent='The dashboard will show live output after it connects.';detailEl.textContent='Only sessions included when this link was created can appear here.';return}streamTitle.textContent=current.sessionName;streamMeta.textContent=current.port;streamState.textContent=stateLabel(current.state);streamState.className='stream-state '+(current.state||'');streamEl.textContent=logs.get(selectedId)||'No output received for this stream yet.';detailEl.textContent=current.message||'Live output is read-only.';streamEl.scrollTop=streamEl.scrollHeight};const applySnapshot=(items)=>{sessions.clear();for(const item of items||[]){if(!item||typeof item.sessionId!=='string'||typeof item.sessionName!=='string'||typeof item.port!=='string')continue;sessions.set(item.sessionId,{...item})}if(!sessions.has(selectedId))selectedId=sessions.keys().next().value||'';scopeEl.textContent=sessions.size+' terminal'+(sessions.size===1?'':'s')+' included in this link';render()};const applyStatus=(item)=>{const current=sessions.get(item.sessionId);if(!current)return;current.state=typeof item.status==='string'?item.status:'error';current.message=typeof item.message==='string'?item.message:'The desktop reported a session state change.';render()};const appendData=(event)=>{if(!event||typeof event.sessionId!=='string'||!sessions.has(event.sessionId))return;const next=((logs.get(event.sessionId)||'')+(typeof event.text==='string'?event.text:''));logs.set(event.sessionId,next.length>MAX_LOG_CHARS?next.slice(-MAX_LOG_CHARS):next);if(event.sessionId===selectedId){streamEl.textContent=logs.get(event.sessionId)||'';streamEl.scrollTop=streamEl.scrollHeight}};const ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+location.pathname.replace(/\/$/,'')+'/events');ws.onopen=()=>{feedEl.textContent='Connected · read-only'};ws.onclose=()=>{feedEl.textContent='Disconnected · sharing ended';detailEl.textContent='The desktop ended this mobile share or the viewer connection was lost.'};ws.onerror=()=>{feedEl.textContent='Connection error · reload to retry'};ws.onmessage=(message)=>{try{const item=JSON.parse(message.data);if(item.type==='snapshot')applySnapshot(item.sessions);else if(item.type==='data')appendData(item.event);else if(item.type==='status')applyStatus(item)}catch{feedEl.textContent='Invalid feed · reload to retry'}}})();</script></body></html>"##;
+fn mobile_workspace_share_page() -> &'static str {
+    r##"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0b1720">
+  <title>BaudTide mobile dashboard</title>
+  <style>
+    :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0b1720;color:#e5f1ee;font:15px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{width:min(100%,980px);margin:auto;padding:16px}header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:14px}h1,h2,p{margin:0}h1{font-size:1.25rem;letter-spacing:-.02em}header p{margin-top:5px;color:#9bb2bd;font-size:.82rem}#feed-state{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border:1px solid #2b5660;border-radius:999px;color:#a9ead8;font-size:.78rem;font-weight:700}#feed-state i{width:7px;height:7px;border-radius:50%;background:#79dfbd;box-shadow:0 0 0 4px #79dfbd22}#feed-state[data-state="reconnecting"]{border-color:#8fcbf4;color:#b8dcf5}#feed-state[data-state="reconnecting"] i{background:#8fcbf4;box-shadow:0 0 0 4px #8fcbf422}#feed-state[data-state="stopped"]{border-color:#657780;color:#c4ced3}#feed-state[data-state="stopped"] i{background:#8da1ac;box-shadow:none}.layout{display:grid;grid-template-columns:minmax(190px,260px) minmax(0,1fr);gap:13px}.panel{border:1px solid #29414d;border-radius:12px;background:#10232d;box-shadow:0 12px 35px #02070b44}.panel-head{padding:13px 14px;border-bottom:1px solid #29414d}.panel-head h2{font-size:.88rem}.panel-head p{margin-top:4px;color:#8fa8b2;font-size:.72rem;line-height:1.4}.sessions{padding:8px}.session{display:block;width:100%;margin:0 0 7px;padding:11px;border:1px solid transparent;border-radius:9px;background:#142b36;color:#e5f1ee;text-align:left;cursor:pointer}.session:last-child{margin-bottom:0}.session:hover{border-color:#3b7275}.session.active{border-color:#6cc7ac;background:#173b3d}.session-title{display:flex;align-items:center;gap:7px;font-weight:750;font-size:.83rem}.session-title i{width:8px;height:8px;flex:0 0 auto;border-radius:50%;background:#79dfbd}.session-title i.error{background:#f3a6a6}.session-title i.disconnected{background:#8da1ac}.session-title i.storage-limit{background:#f2c477}.session-title i.reconnecting{background:#8fcbf4}.session-meta{display:block;margin:5px 0 0 15px;color:#a5bbc2;font:.7rem ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-state{display:block;margin:7px 0 0 15px;color:#86d5be;font-size:.67rem;font-weight:700}.stream-panel{min-width:0}.stream-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:13px 14px;border-bottom:1px solid #29414d}.stream-head h2{font-size:.92rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.stream-head p{margin-top:5px;color:#9bb2bd;font-size:.72rem}.stream-state{color:#9bb2bd;font-size:.7rem;text-align:right}.stream-state.error,.stream-state.storage-limit{color:#ffb9b9}.stream-state.disconnected{color:#c4ced3}#stream{min-height:58vh;max-height:65vh;margin:0;padding:14px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:#061018;color:#d5e6e4;font:.78rem/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}#detail{min-height:22px;padding:9px 14px;border-top:1px solid #29414d;color:#a5bbc2;font-size:.72rem;line-height:1.4}.notice{margin-top:13px;padding:10px 12px;border:1px solid #38545c;border-radius:9px;background:#122933;color:#9eb7bf;font-size:.72rem;line-height:1.45}.notice strong{color:#c7e7dc}.notice[hidden]{display:none}@media(max-width:680px){main{padding:11px}.layout{grid-template-columns:1fr}.sessions{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:7px}.session,.session:last-child{margin:0}.stream-head{align-items:flex-start}#stream{min-height:52vh;max-height:62vh}}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><h1>BaudTide · mobile dashboard</h1><p>Read-only live streams from the shared terminal workspace.</p></div>
+      <span id="feed-state" data-state="reconnecting"><i></i><span>Connecting…</span></span>
+    </header>
+    <div class="layout">
+      <section class="panel"><div class="panel-head"><h2>Shared terminals</h2><p id="scope">Waiting for the shared session list…</p></div><div id="sessions" class="sessions"></div></section>
+      <section class="panel stream-panel"><div class="stream-head"><div><h2 id="stream-title">Choose a terminal</h2><p id="stream-meta">No stream selected</p></div><span id="stream-state" class="stream-state">Waiting</span></div><pre id="stream" aria-live="polite">The dashboard will show live output after it connects.</pre><div id="detail">Only sessions included when this link was created can appear here.</div></section>
+    </div>
+    <div id="recovery-notice" class="notice" role="status" hidden></div>
+    <div class="notice"><strong>Local and read-only.</strong> This link works only on the same local network. The phone automatically reconnects after a Wi-Fi handoff and asks for the bounded recent workspace tail. Output keeps the newest 240,000 characters per shared stream in this phone view; raw capture files stay on the desktop.</div>
+  </main>
+  <script>
+  (()=>{
+    const sessionsEl=document.querySelector('#sessions'),scopeEl=document.querySelector('#scope'),feedRoot=document.querySelector('#feed-state'),feedEl=document.querySelector('#feed-state span'),streamTitle=document.querySelector('#stream-title'),streamMeta=document.querySelector('#stream-meta'),streamState=document.querySelector('#stream-state'),streamEl=document.querySelector('#stream'),detailEl=document.querySelector('#detail'),noticeEl=document.querySelector('#recovery-notice');
+    const sessions=new Map(),logs=new Map();
+    const MAX_LOG_CHARS=240000,MAX_RECONNECT_DELAY=8000;
+    const base=location.pathname.replace(/\/$/,'');
+    let selectedId='',lastSequence=0,socket=null,reconnectTimer=null,reconnectAttempt=0,connectedOnce=false,stopped=false;
+    const stateLabel=(state)=>state==='storage-limit'?'Storage limit':state==='disconnected'?'Disconnected':state==='error'?'Error':state==='reconnecting'?'Reconnecting':state==='connected'?'Connected':state||'Unknown';
+    const setFeed=(label,state)=>{feedEl.textContent=label;feedRoot.dataset.state=state||'live'};
+    const setNotice=(message)=>{noticeEl.textContent=message||'';noticeEl.hidden=!message};
+    const select=(id)=>{if(!sessions.has(id))return;selectedId=id;render()};
+    const render=()=>{
+      sessionsEl.replaceChildren();
+      for(const item of sessions.values()){
+        const button=document.createElement('button');button.className='session'+(item.sessionId===selectedId?' active':'');button.type='button';button.onclick=()=>select(item.sessionId);
+        const title=document.createElement('span');title.className='session-title';const dot=document.createElement('i');dot.className=item.state||'';title.append(dot,document.createTextNode(item.sessionName));
+        const meta=document.createElement('span');meta.className='session-meta';meta.textContent=item.port;
+        const state=document.createElement('span');state.className='session-state';state.textContent=stateLabel(item.state);button.append(title,meta,state);sessionsEl.append(button);
+      }
+      const current=sessions.get(selectedId);
+      if(!current){streamTitle.textContent='Choose a terminal';streamMeta.textContent='No stream selected';streamState.textContent='Waiting';streamState.className='stream-state';streamEl.textContent='The dashboard will show live output after it connects.';detailEl.textContent='Only sessions included when this link was created can appear here.';return}
+      streamTitle.textContent=current.sessionName;streamMeta.textContent=current.port;streamState.textContent=stateLabel(current.state);streamState.className='stream-state '+(current.state||'');streamEl.textContent=logs.get(selectedId)||'No output received for this stream yet.';detailEl.textContent=current.message||'Live output is read-only.';streamEl.scrollTop=streamEl.scrollHeight;
+    };
+    const applySnapshot=(items)=>{
+      sessions.clear();for(const item of items||[]){if(!item||typeof item.sessionId!=='string'||typeof item.sessionName!=='string'||typeof item.port!=='string')continue;sessions.set(item.sessionId,{...item})}
+      if(!sessions.has(selectedId))selectedId=sessions.keys().next().value||'';
+      scopeEl.textContent=sessions.size+' terminal'+(sessions.size===1?'':'s')+' included in this link';render();
+    };
+    const acceptSequence=(item)=>{
+      if(!Number.isSafeInteger(item&&item.sequence)||item.sequence<1||item.sequence<=lastSequence)return false;
+      if(lastSequence&&item.sequence>lastSequence+1)setNotice(`Some workspace updates were missed; showing the available tail from sequence ${item.sequence}.`);
+      lastSequence=item.sequence;return true;
+    };
+    const applyStatus=(item)=>{
+      if(!acceptSequence(item))return;const current=sessions.get(item.sessionId);if(!current)return;
+      current.state=typeof item.status==='string'?item.status:'error';current.message=typeof item.message==='string'?item.message:'The desktop reported a session state change.';render();
+    };
+    const appendData=(item)=>{
+      if(!acceptSequence(item))return;const event=item.event;
+      if(!event||typeof event.sessionId!=='string'||!sessions.has(event.sessionId))return;
+      const next=(logs.get(event.sessionId)||'')+(typeof event.text==='string'?event.text:'');logs.set(event.sessionId,next.length>MAX_LOG_CHARS?next.slice(-MAX_LOG_CHARS):next);
+      if(event.sessionId===selectedId){streamEl.textContent=logs.get(event.sessionId)||'';streamEl.scrollTop=streamEl.scrollHeight}
+    };
+    const handleReplay=(item)=>{
+      if(item.replayTruncated){const first=Number.isSafeInteger(item.firstSequence)?` from sequence ${item.firstSequence}`:'';setNotice(`Showing the bounded recent workspace tail${first}; older output was not retained on the desktop.`)}
+    };
+    const handleMessage=(raw)=>{try{const item=JSON.parse(raw);if(item.type==='snapshot')applySnapshot(item.sessions);else if(item.type==='replay')handleReplay(item);else if(item.type==='data')appendData(item);else if(item.type==='status')applyStatus(item)}catch{setFeed('Invalid feed · retrying…','reconnecting')}};
+    const scheduleReconnect=()=>{
+      if(stopped||reconnectTimer)return;
+      const delay=Math.min(1000*2**Math.min(reconnectAttempt,3),MAX_RECONNECT_DELAY);reconnectAttempt+=1;
+      setFeed(`Reconnecting in ${Math.ceil(delay/1000)}s…`,'reconnecting');detailEl.textContent='Keeping your place and requesting missed workspace output when the connection returns.';
+      reconnectTimer=window.setTimeout(()=>{reconnectTimer=null;connect()},delay);
+    };
+    const connect=()=>{
+      if(stopped||socket)return;
+      const suffix=lastSequence?`?after=${encodeURIComponent(lastSequence)}`:'';
+      setFeed(reconnectAttempt?'Reconnecting…':'Connecting…','reconnecting');
+      try{socket=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+base+'/events'+suffix)}catch{socket=null;scheduleReconnect();return}
+      socket.onopen=()=>{const reconnected=connectedOnce;connectedOnce=true;reconnectAttempt=0;setFeed(reconnected?'Reconnected · read-only':'Connected · read-only','live');if(reconnected)detailEl.textContent='Connection restored. Applying any retained workspace output now.'};
+      socket.onmessage=(event)=>handleMessage(event.data);
+      socket.onerror=()=>setFeed('Connection error · retrying…','reconnecting');
+      socket.onclose=(event)=>{
+        socket=null;if(stopped)return;
+        if(event.code===1000&&event.reason==='Sharing ended'){stopped=true;setFeed('Disconnected · sharing ended','stopped');detailEl.textContent='The desktop ended this mobile share.';return}
+        setFeed('Disconnected · retrying…','reconnecting');scheduleReconnect();
+      };
+    };
+    window.addEventListener('beforeunload',()=>{stopped=true;if(reconnectTimer)window.clearTimeout(reconnectTimer);if(socket)socket.close()});
+    render();connect();
+  })();
+  </script>
+</body>
+</html>"##
+}
 
 #[tauri::command]
 fn start_serial_session(
@@ -4049,9 +4389,10 @@ mod tests {
         activate_serial_event_delivery, authorized_mobile_share_route,
         broadcast_mobile_workspace_serial_data, broadcast_mobile_workspace_status,
         capture_durability_sync_is_due, mobile_workspace_session_scope, register_mobile_client,
-        remove_session_by_identity, stop_mobile_workspace_share_for_state,
-        try_reserve_mobile_connection, MobileShareRoute, MobileWorkspaceSession, SerialDataEvent,
-        SerialEventDelivery,
+        register_mobile_workspace_client, remove_session_by_identity,
+        stop_mobile_workspace_share_for_state, try_reserve_mobile_connection, MobileShareRoute,
+        MobileWorkspaceReplayBuffer, MobileWorkspaceReplayEventKind, MobileWorkspaceSession,
+        SerialDataEvent, SerialEventDelivery,
     };
     use super::{
         base64_decode, begin_saved_log_search, broadcast_mobile_serial_data,
@@ -4162,6 +4503,7 @@ mod tests {
                     .map(|session| (session.session_id.clone(), session))
                     .collect::<BTreeMap<_, _>>(),
             )),
+            replay: Arc::new(Mutex::new(MobileWorkspaceReplayBuffer::default())),
             clients,
             server_thread: thread::spawn(|| {}),
         };
@@ -5253,6 +5595,141 @@ mod tests {
             authorized_mobile_share_route("/share/token/download", "share", "token", true),
             Some(MobileShareRoute::Download)
         ));
+        assert_eq!(
+            parse_mobile_share_events_path(
+                "/workspace/token/events?after=42",
+                "/workspace/token/events"
+            ),
+            Some(Some(42))
+        );
+        assert!(parse_mobile_share_events_path(
+            "/workspace/token/events?after=42&extra=1",
+            "/workspace/token/events"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn workspace_replay_uses_one_ordered_cursor_across_terminal_streams() {
+        let mut replay = MobileWorkspaceReplayBuffer::with_limits(3, 64 * 1024);
+        for (index, session_id) in [
+            "session-1",
+            "session-2",
+            "session-1",
+            "session-2",
+            "session-1",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let event = SerialDataEvent {
+                session_id: session_id.into(),
+                port: "/dev/ttyUSB0".into(),
+                sequence: 1,
+                timestamp: "2026-08-09T10:00:00.000Z".into(),
+                text: format!("event-{index}"),
+                bytes: vec![index as u8],
+            };
+            assert!(replay
+                .push(MobileWorkspaceReplayEventKind::Data { event })
+                .is_some());
+        }
+
+        let snapshot = replay.snapshot_after(Some(1));
+        assert_eq!(snapshot.first_sequence, Some(3));
+        assert_eq!(snapshot.next_sequence, 6);
+        assert!(snapshot.replay_truncated);
+        assert_eq!(
+            snapshot
+                .events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![3, 4, 5]
+        );
+        let terminal_ids = snapshot
+            .events
+            .iter()
+            .map(|event| {
+                let payload: serde_json::Value = serde_json::from_str(&event.payload).unwrap();
+                payload["event"]["sessionId"].as_str().unwrap().to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(terminal_ids, ["session-1", "session-2", "session-1"]);
+    }
+
+    #[test]
+    fn workspace_replay_registration_resumes_after_the_cursor_without_duplicates() {
+        let sessions = Arc::new(Mutex::new(BTreeMap::from([(
+            "session-1".into(),
+            test_workspace_session("session-1", "Bench", "/dev/ttyUSB0"),
+        )])));
+        let replay = Arc::new(Mutex::new(MobileWorkspaceReplayBuffer::with_limits(
+            8,
+            64 * 1024,
+        )));
+        for sequence in 1..=3 {
+            let event = SerialDataEvent {
+                session_id: "session-1".into(),
+                port: "/dev/ttyUSB0".into(),
+                sequence,
+                timestamp: "2026-08-09T10:00:00.000Z".into(),
+                text: format!("event-{sequence}"),
+                bytes: vec![sequence as u8],
+            };
+            replay
+                .lock()
+                .unwrap()
+                .push(MobileWorkspaceReplayEventKind::Data { event })
+                .unwrap();
+        }
+        let clients = Arc::new(Mutex::new(HashMap::new()));
+        let (sender, receiver) = mpsc::sync_channel(8);
+
+        let snapshot =
+            register_mobile_workspace_client(7, Some(1), &sessions, &replay, &clients, sender)
+                .unwrap();
+        let snapshot: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+        assert_eq!(snapshot["type"], "snapshot");
+
+        let notice: serde_json::Value = serde_json::from_str(&receiver.recv().unwrap()).unwrap();
+        assert_eq!(notice["type"], "replay");
+        assert_eq!(notice["nextSequence"], 4);
+        let resumed = [receiver.recv().unwrap(), receiver.recv().unwrap()]
+            .into_iter()
+            .map(|payload| {
+                serde_json::from_str::<serde_json::Value>(&payload).unwrap()["sequence"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(resumed, [2, 3]);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn workspace_replay_marks_a_live_only_oversized_event_as_unavailable_after_reconnect() {
+        let mut replay = MobileWorkspaceReplayBuffer::with_limits(8, 80);
+        let payload = replay
+            .push(MobileWorkspaceReplayEventKind::Data {
+                event: SerialDataEvent {
+                    session_id: "session-1".into(),
+                    port: "/dev/ttyUSB0".into(),
+                    sequence: 1,
+                    timestamp: "2026-08-09T10:00:00.000Z".into(),
+                    text: "x".repeat(256),
+                    bytes: vec![0; 256],
+                },
+            })
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload["type"], "data");
+        assert_eq!(payload["sequence"], 1);
+
+        let snapshot = replay.snapshot_after(None);
+        assert!(snapshot.events.is_empty());
+        assert_eq!(snapshot.next_sequence, 2);
+        assert!(snapshot.replay_truncated);
     }
 
     #[test]
@@ -5321,6 +5798,7 @@ mod tests {
             port: 4321,
             stop: Arc::clone(&server_stop),
             sessions: Arc::new(Mutex::new(BTreeMap::new())),
+            replay: Arc::new(Mutex::new(MobileWorkspaceReplayBuffer::default())),
             clients: Arc::new(Mutex::new(HashMap::new())),
             server_thread: thread::spawn(move || {
                 while !stop_for_thread.load(Ordering::Acquire) {

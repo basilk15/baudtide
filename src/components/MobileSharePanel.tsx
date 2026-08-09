@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Check, Copy, LoaderCircle, QrCode, ShieldCheck, Smartphone, Users, Wifi } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Check, Copy, LoaderCircle, QrCode, RefreshCw, ShieldCheck, Smartphone, Users, Wifi } from 'lucide-react';
 import { getMobileShareStatus, getMobileWorkspaceShareStatus, setMobileShareControl, startMobileShare, startMobileWorkspaceShare, stopMobileShare, stopMobileWorkspaceShare, type MobileShareInfo, type MobileWorkspaceShareInfo } from '../lib/serial';
 import './mobile-share-panel.css';
 
@@ -143,12 +143,30 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Mobile sharing could not be updated.';
 }
 
+type ShareNotice = {
+  kind: 'error' | 'success';
+  text: string;
+};
+
 export function MobileSharePanel({ sessionId, nativeSession, sessionConnected }: MobileSharePanelProps) {
   const [share, setShare] = useState<MobileShareInfo | null>(null);
   const [isWorking, setWorking] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<ShareNotice | null>(null);
   const [copied, setCopied] = useState(false);
+  const workingRef = useRef(false);
   const canShare = Boolean(nativeSession && sessionId && sessionConnected);
+
+  const startWorking = () => {
+    if (workingRef.current) return false;
+    workingRef.current = true;
+    setWorking(true);
+    return true;
+  };
+
+  const finishWorking = () => {
+    workingRef.current = false;
+    setWorking(false);
+  };
 
   useEffect(() => {
     if (!nativeSession || !sessionId) return undefined;
@@ -156,9 +174,9 @@ export function MobileSharePanel({ sessionId, nativeSession, sessionConnected }:
     const refresh = async (quiet = true) => {
       try {
         const status = await getMobileShareStatus(sessionId);
-        if (!disposed) setShare(status.enabled ? status : null);
+        if (!disposed && !workingRef.current) setShare(status.enabled ? status : null);
       } catch (error) {
-        if (!disposed && !quiet) setMessage(errorMessage(error));
+        if (!disposed && !quiet) setMessage({ kind: 'error', text: errorMessage(error) });
       }
     };
     void refresh();
@@ -175,45 +193,69 @@ export function MobileSharePanel({ sessionId, nativeSession, sessionConnected }:
   }, [sessionConnected]);
 
   const enable = async () => {
-    if (!sessionId || !canShare || isWorking) return;
-    setWorking(true);
+    if (!sessionId || !canShare || !startWorking()) return;
     setMessage(null);
     try {
       const next = await startMobileShare(sessionId);
       setShare(next.enabled ? next : null);
-      if (!next.enabled) setMessage('Mobile sharing was not enabled for this session.');
+      if (!next.enabled) setMessage({ kind: 'error', text: 'Mobile sharing was not enabled for this session.' });
     } catch (error) {
-      setMessage(errorMessage(error));
+      setMessage({ kind: 'error', text: errorMessage(error) });
     } finally {
-      setWorking(false);
+      finishWorking();
     }
   };
 
   const revoke = async () => {
-    if (!sessionId || isWorking) return;
-    setWorking(true);
+    if (!sessionId || !startWorking()) return;
     setMessage(null);
+    setCopied(false);
     try {
       await stopMobileShare(sessionId);
       setShare(null);
     } catch (error) {
-      setMessage(errorMessage(error));
+      setMessage({ kind: 'error', text: errorMessage(error) });
     } finally {
-      setWorking(false);
+      finishWorking();
+    }
+  };
+
+  const rotate = async () => {
+    if (!sessionId || !share || !startWorking()) return;
+    setMessage(null);
+    setCopied(false);
+    let previousLinkRevoked = false;
+    try {
+      // Stopping first invalidates the old bearer URL before the new QR code
+      // is shown. `startMobileShare` creates a fresh, read-only share.
+      await stopMobileShare(sessionId);
+      previousLinkRevoked = true;
+      setShare(null);
+      const next = await startMobileShare(sessionId);
+      if (!next.enabled) {
+        setMessage({ kind: 'error', text: 'The previous link was revoked, but a replacement link could not be created.' });
+        return;
+      }
+      setShare(next);
+      setMessage({ kind: 'success', text: 'New mobile link created. The previous link no longer works; remote control is read-only by default.' });
+    } catch (error) {
+      if (previousLinkRevoked) setShare(null);
+      setMessage({ kind: 'error', text: errorMessage(error) });
+    } finally {
+      finishWorking();
     }
   };
 
   const toggleControl = async () => {
-    if (!sessionId || !share || isWorking) return;
-    setWorking(true);
+    if (!sessionId || !share || !startWorking()) return;
     setMessage(null);
     try {
       const next = await setMobileShareControl(sessionId, !share.controlEnabled);
       setShare(next.enabled ? next : null);
     } catch (error) {
-      setMessage(errorMessage(error));
+      setMessage({ kind: 'error', text: errorMessage(error) });
     } finally {
-      setWorking(false);
+      finishWorking();
     }
   };
 
@@ -224,7 +266,7 @@ export function MobileSharePanel({ sessionId, nativeSession, sessionConnected }:
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1_800);
     } catch {
-      setMessage('Could not copy the link. Select and copy it manually.');
+      setMessage({ kind: 'error', text: 'Could not copy the link. Select and copy it manually.' });
     }
   };
 
@@ -254,19 +296,22 @@ export function MobileSharePanel({ sessionId, nativeSession, sessionConnected }:
         </div>
         <div className="sd-mobile-share-details">
           <p className="sd-mobile-share-instruction">Scan the QR code with your phone camera, or open the link below on the same Wi-Fi. The viewer reconnects and resumes from its last sequence when the network blips.</p>
-          <div className="sd-mobile-share-link"><code title={share.url}>{share.url}</code><button type="button" onClick={() => void copyLink()} title="Copy mobile link" aria-label="Copy mobile link">{copied ? <Check size={15} /> : <Copy size={15} />}</button></div>
+          <div className="sd-mobile-share-link"><code title={share.url}>{share.url}</code><button type="button" onClick={() => void copyLink()} title="Copy mobile link" aria-label="Copy mobile link" disabled={isWorking}>{copied ? <Check size={15} /> : <Copy size={15} />}</button></div>
           <div className="sd-mobile-share-metrics"><span><Users size={14} /> {share.clientCount} {share.clientCount === 1 ? 'phone connected' : 'phones connected'}</span><span><Wifi size={14} /> {share.host}:{share.port}</span></div>
           <div className={`sd-mobile-share-control ${share.controlEnabled ? 'enabled' : 'readonly'}`}>
             <ShieldCheck size={15} />
             <div><strong>{share.controlEnabled ? 'Remote control is enabled' : 'Read-only by default'}</strong><span>{share.controlEnabled ? 'Anyone holding this current pairing link can send up to 4 KiB writes to this serial session.' : 'The phone can view and download the log, but cannot write to the serial session.'}</span></div>
             <button type="button" onClick={() => void toggleControl()} disabled={isWorking} aria-pressed={share.controlEnabled}>{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : null}{share.controlEnabled ? 'Disable control' : 'Enable remote control'}</button>
           </div>
-          <button className="sd-mobile-share-revoke" type="button" onClick={() => void revoke()} disabled={isWorking}>{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : null} Revoke mobile link</button>
+          <div className="sd-mobile-share-actions">
+            <button className="sd-mobile-share-rotate" type="button" onClick={() => void rotate()} disabled={isWorking} title="Create a new read-only link and invalidate the current one">{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : <RefreshCw size={14} />} {isWorking ? 'Rotating link…' : 'Rotate link'}</button>
+            <button className="sd-mobile-share-revoke" type="button" onClick={() => void revoke()} disabled={isWorking}>{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : null} {isWorking ? 'Revoking…' : 'Revoke mobile link'}</button>
+          </div>
         </div>
       </div>}
 
       <div className="sd-mobile-share-safety"><ShieldCheck size={15} /><span><strong>{share?.controlEnabled ? 'Remote control enabled · local network only.' : 'Read-only by default · local network only.'}</strong> Revoke the link or disable control at any time. It ends automatically when the serial session disconnects.</span></div>
-      {message && <p className="sd-mobile-share-message" role="status">{message}</p>}
+      {message && <p className={`sd-mobile-share-message ${message.kind}`} role="status">{message.text}</p>}
     </aside>
   );
 }
@@ -280,9 +325,22 @@ type WorkspaceMobileSharePanelProps = {
 export function WorkspaceMobileSharePanel({ nativeEnabled, activeSessionCount }: WorkspaceMobileSharePanelProps) {
   const [share, setShare] = useState<MobileWorkspaceShareInfo | null>(null);
   const [isWorking, setWorking] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<ShareNotice | null>(null);
   const [copied, setCopied] = useState(false);
+  const workingRef = useRef(false);
   const canShare = nativeEnabled && activeSessionCount > 0;
+
+  const startWorking = () => {
+    if (workingRef.current) return false;
+    workingRef.current = true;
+    setWorking(true);
+    return true;
+  };
+
+  const finishWorking = () => {
+    workingRef.current = false;
+    setWorking(false);
+  };
 
   useEffect(() => {
     if (!nativeEnabled) return undefined;
@@ -290,9 +348,9 @@ export function WorkspaceMobileSharePanel({ nativeEnabled, activeSessionCount }:
     const refresh = async (quiet = true) => {
       try {
         const status = await getMobileWorkspaceShareStatus();
-        if (!disposed) setShare(status.enabled ? status : null);
+        if (!disposed && !workingRef.current) setShare(status.enabled ? status : null);
       } catch (error) {
-        if (!disposed && !quiet) setMessage(errorMessage(error));
+        if (!disposed && !quiet) setMessage({ kind: 'error', text: errorMessage(error) });
       }
     };
     void refresh();
@@ -304,31 +362,56 @@ export function WorkspaceMobileSharePanel({ nativeEnabled, activeSessionCount }:
   }, [nativeEnabled]);
 
   const enable = async () => {
-    if (!canShare || isWorking) return;
-    setWorking(true);
+    if (!canShare || !startWorking()) return;
     setMessage(null);
     try {
       const next = await startMobileWorkspaceShare();
       setShare(next.enabled ? next : null);
-      if (!next.enabled) setMessage('No active serial sessions were available for the workspace link.');
+      if (!next.enabled) setMessage({ kind: 'error', text: 'No active serial sessions were available for the workspace link.' });
     } catch (error) {
-      setMessage(errorMessage(error));
+      setMessage({ kind: 'error', text: errorMessage(error) });
     } finally {
-      setWorking(false);
+      finishWorking();
     }
   };
 
   const revoke = async () => {
-    if (isWorking) return;
-    setWorking(true);
+    if (!startWorking()) return;
     setMessage(null);
+    setCopied(false);
     try {
       await stopMobileWorkspaceShare();
       setShare(null);
     } catch (error) {
-      setMessage(errorMessage(error));
+      setMessage({ kind: 'error', text: errorMessage(error) });
     } finally {
-      setWorking(false);
+      finishWorking();
+    }
+  };
+
+  const rotate = async () => {
+    if (!share || !startWorking()) return;
+    setMessage(null);
+    setCopied(false);
+    let previousLinkRevoked = false;
+    try {
+      // The workspace server receives a new token when it is started again,
+      // so phones holding the old URL cannot reconnect.
+      await stopMobileWorkspaceShare();
+      previousLinkRevoked = true;
+      setShare(null);
+      const next = await startMobileWorkspaceShare();
+      if (!next.enabled) {
+        setMessage({ kind: 'error', text: 'The previous workspace link was revoked, but a replacement link could not be created.' });
+        return;
+      }
+      setShare(next);
+      setMessage({ kind: 'success', text: 'New workspace link created. The previous link no longer works.' });
+    } catch (error) {
+      if (previousLinkRevoked) setShare(null);
+      setMessage({ kind: 'error', text: errorMessage(error) });
+    } finally {
+      finishWorking();
     }
   };
 
@@ -339,7 +422,7 @@ export function WorkspaceMobileSharePanel({ nativeEnabled, activeSessionCount }:
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1_800);
     } catch {
-      setMessage('Could not copy the link. Select and copy it manually.');
+      setMessage({ kind: 'error', text: 'Could not copy the link. Select and copy it manually.' });
     }
   };
 
@@ -366,14 +449,17 @@ export function WorkspaceMobileSharePanel({ nativeEnabled, activeSessionCount }:
         <div className="sd-mobile-share-qr"><PairingQr value={share.url} /></div>
         <div className="sd-mobile-share-details">
           <p className="sd-mobile-share-instruction">Scan once to open the dashboard. The link includes {share.sessionCount} terminal{share.sessionCount === 1 ? '' : 's'} from when it was created.</p>
-          <div className="sd-mobile-share-link"><code title={share.url}>{share.url}</code><button type="button" onClick={() => void copyLink()} title="Copy workspace mobile link" aria-label="Copy workspace mobile link">{copied ? <Check size={15} /> : <Copy size={15} />}</button></div>
+          <div className="sd-mobile-share-link"><code title={share.url}>{share.url}</code><button type="button" onClick={() => void copyLink()} title="Copy workspace mobile link" aria-label="Copy workspace mobile link" disabled={isWorking}>{copied ? <Check size={15} /> : <Copy size={15} />}</button></div>
           <div className="sd-mobile-share-metrics"><span><Users size={14} /> {share.clientCount} {share.clientCount === 1 ? 'phone connected' : 'phones connected'}</span><span><Wifi size={14} /> {share.host}:{share.port}</span></div>
-          <button className="sd-mobile-share-revoke" type="button" onClick={() => void revoke()} disabled={isWorking}>{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : null} Revoke workspace link</button>
+          <div className="sd-mobile-share-actions">
+            <button className="sd-mobile-share-rotate" type="button" onClick={() => void rotate()} disabled={isWorking} title="Create a new workspace link and invalidate the current one">{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : <RefreshCw size={14} />} {isWorking ? 'Rotating link…' : 'Rotate link'}</button>
+            <button className="sd-mobile-share-revoke" type="button" onClick={() => void revoke()} disabled={isWorking}>{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : null} {isWorking ? 'Revoking…' : 'Revoke workspace link'}</button>
+          </div>
         </div>
       </div>}
 
       <div className="sd-mobile-share-safety"><ShieldCheck size={15} /><span><strong>Read-only · local network only.</strong> The phone can view only the sessions included in this link; no serial commands or arbitrary files are exposed.</span></div>
-      {message && <p className="sd-mobile-share-message" role="status">{message}</p>}
+      {message && <p className={`sd-mobile-share-message ${message.kind}`} role="status">{message.text}</p>}
     </aside>
   );
 }
