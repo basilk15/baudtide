@@ -63,6 +63,8 @@ type AutoReconnectStatus = { attempt: number; nextRetryAt: number };
 type AutoReconnectTimer = { timer: number; attempts: number; nextRetryAt: number };
 const AUTO_RECONNECT_INITIAL_DELAY_MS = 2_000;
 const AUTO_RECONNECT_MAX_DELAY_MS = 60_000;
+const KEYBOARD_ZOOM_FACTOR = 1.04;
+const KEYBOARD_ZOOM_TRANSITION_MS = 140;
 
 const interactiveShortcutSelector = [
   'a[href]',
@@ -682,12 +684,19 @@ function App() {
   }, [publishNotification]);
 
   useEffect(() => {
-    const applyZoom = (next: number) => {
+    let zoomTransitionTimer: number | undefined;
+    const applyZoom = (next: number, animate = false) => {
       const clamped = Math.min(1.6, Math.max(0.8, Number(next.toFixed(3))));
       zoomRef.current = clamped;
       // Changing this one DOM style is synchronous. React can continue to
       // render serial output independently without delaying the visual zoom.
-      shellRef.current?.style.setProperty('zoom', String(clamped));
+      const shell = shellRef.current;
+      if (animate && shell) {
+        window.clearTimeout(zoomTransitionTimer);
+        shell.classList.add('is-zoom-animating');
+        zoomTransitionTimer = window.setTimeout(() => shell.classList.remove('is-zoom-animating'), KEYBOARD_ZOOM_TRANSITION_MS);
+      }
+      shell?.style.setProperty('zoom', String(clamped));
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (shouldIgnoreGlobalShortcut(event)) return;
@@ -696,13 +705,13 @@ function App() {
       const decrease = event.key === '-' || event.code === 'NumpadSubtract';
       if (increase) {
         event.preventDefault();
-        applyZoom(zoomRef.current + 0.1);
+        applyZoom(zoomRef.current * KEYBOARD_ZOOM_FACTOR, true);
       } else if (decrease) {
         event.preventDefault();
-        applyZoom(zoomRef.current - 0.1);
+        applyZoom(zoomRef.current / KEYBOARD_ZOOM_FACTOR, true);
       } else if (event.key === '0' || event.code === 'Numpad0') {
         event.preventDefault();
-        applyZoom(1);
+        applyZoom(1, true);
       }
     };
     const onWheel = (event: WheelEvent) => {
@@ -720,6 +729,7 @@ function App() {
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('wheel', onWheel, { passive: false });
     return () => {
+      window.clearTimeout(zoomTransitionTimer);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('wheel', onWheel);
     };
