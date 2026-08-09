@@ -8,6 +8,7 @@ import {
   type SavedSessionWorkspace,
   type TerminalLayout,
 } from '../lib/sessionWorkspaces';
+import { ThemedSelect } from './ThemedSelect';
 import './session-workspaces.css';
 
 type OpenTerminal = { id: string; identity: string };
@@ -147,10 +148,25 @@ export function SessionWorkspaceManager({ layout, sessions, selectedSessionId, o
     setStatus(`Deleted “${activeWorkspace.name}”. Open terminals were left unchanged.`);
   };
 
+  const workspaceOptions = [
+    { value: '', label: `Saved workspaces${workspaces.length ? ` (${workspaces.length})` : ''}` },
+    ...workspaces.map((workspace) => ({ value: workspace.id, label: workspace.name })),
+  ];
+
+  const handleWorkspaceChange = (value: string) => {
+    const workspace = workspaces.find((candidate) => candidate.id === value);
+    if (workspace) {
+      applyWorkspace(workspace);
+    } else {
+      setActiveWorkspaceId('');
+      if (value) setStatus('That saved workspace is no longer available.');
+    }
+  };
+
   return <div className="bt-workspace-manager" aria-label="Saved terminal workspaces">
     <div className="bt-workspace-manager-controls">
       <button className="bt-workspace-save" type="button" disabled={!sessions.length} onClick={() => { setSaving((current) => !current); setRenaming(false); setDraftName(''); }}><BookmarkPlus size={14} /> Save workspace</button>
-      <label className="bt-workspace-picker"><span className="sd-visually-hidden">Open saved workspace</span><select value={activeWorkspaceId} onChange={(event) => { const workspace = workspaces.find((candidate) => candidate.id === event.target.value); if (workspace) applyWorkspace(workspace); else { setActiveWorkspaceId(''); if (event.target.value) setStatus('That saved workspace is no longer available.'); } }}><option value="">Saved workspaces{workspaces.length ? ` (${workspaces.length})` : ''}</option>{workspaces.map((workspace) => <option value={workspace.id} key={workspace.id}>{workspace.name}</option>)}</select></label>
+      <div className="bt-workspace-picker"><ThemedSelect compact label="Open saved workspace" value={activeWorkspaceId} placeholder="Saved workspaces" options={workspaceOptions} onChange={handleWorkspaceChange} /></div>
       <button type="button" className="bt-workspace-icon" disabled={!activeWorkspace} onClick={() => { if (!activeWorkspace) return; setSaving(false); setRenaming(true); setDraftName(activeWorkspace.name); }} aria-label="Rename saved workspace" title="Rename saved workspace"><Pencil size={13} /></button>
       <button type="button" className="bt-workspace-icon bt-workspace-delete" disabled={!activeWorkspace} onClick={removeWorkspace} aria-label="Delete saved workspace" title="Delete saved workspace"><Trash2 size={13} /></button>
     </div>

@@ -13,10 +13,11 @@ type ThemedSelectProps = {
   placeholder: string;
   label: string;
   invalid?: boolean;
+  compact?: boolean;
   onChange: (value: string) => void;
 };
 
-export function ThemedSelect({ value, options, placeholder, label, invalid = false, onChange }: ThemedSelectProps) {
+export function ThemedSelect({ value, options, placeholder, label, invalid = false, compact = false, onChange }: ThemedSelectProps) {
   const [open, setOpen] = useState(false);
   const selectRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -111,7 +112,7 @@ export function ThemedSelect({ value, options, placeholder, label, invalid = fal
     }
   };
 
-  return <div className="sd-themed-select" ref={selectRef}>
+  return <div className={`sd-themed-select ${compact ? 'is-compact' : ''}`} ref={selectRef}>
     <button ref={triggerRef} className={`sd-themed-select-trigger ${invalid ? 'is-invalid' : ''}`} type="button" aria-label={label} aria-haspopup="listbox" aria-controls={open ? listboxId : undefined} aria-expanded={open} onClick={() => open ? closeMenu() : openMenu()} onKeyDown={handleTriggerKeyDown}>
       <span className={selected ? '' : 'is-placeholder'}>{selected?.label ?? placeholder}</span><ChevronDown size={18} />
     </button>

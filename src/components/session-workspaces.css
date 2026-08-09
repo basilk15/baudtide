@@ -1,1 +1,274 @@
-.bt-workspace-manager{display:grid;gap:7px;min-width:0}.bt-workspace-manager-controls{display:flex;align-items:center;gap:6px}.bt-workspace-save,.bt-workspace-icon,.bt-workspace-name-form button{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:30px;border:1px solid #365f58;border-radius:7px;padding:0 9px;background:#15332f;color:#aee8d6;font-size:10px;font-weight:700}.bt-workspace-save:hover:not(:disabled),.bt-workspace-name-form button:hover{border-color:#65a995;background:#1d453e;color:#d9fff2}.bt-workspace-save:disabled,.bt-workspace-icon:disabled{opacity:.48;cursor:not-allowed}.bt-workspace-picker{min-width:132px}.bt-workspace-picker select{width:100%;height:30px;border:1px solid #344454;border-radius:7px;padding:0 24px 0 8px;outline:0;background:#111a25;color:#aebdcb;font-size:10px}.bt-workspace-picker select:focus,.bt-workspace-name-form input:focus{border-color:#70d9ba;box-shadow:0 0 0 3px #70d9ba18}.bt-workspace-icon{width:30px;padding:0;border-color:#344454;background:#151f2b;color:#9cadbd}.bt-workspace-icon:hover:not(:disabled){border-color:#547085;background:#213141;color:#deebf3}.bt-workspace-icon.bt-workspace-delete:hover:not(:disabled){border-color:#8e515d;background:#3c222b;color:#ffc8d0}.bt-workspace-name-form{display:flex;align-items:center;gap:6px;padding:7px;border:1px solid #2e4050;border-radius:8px;background:#111a25}.bt-workspace-name-form label{color:#93a5b8;font-size:9px;font-weight:700;white-space:nowrap}.bt-workspace-name-form input{min-width:0;flex:1;height:29px;border:1px solid #344454;border-radius:6px;padding:0 8px;outline:0;background:#0d151e;color:#e1ebf3;font-size:10px}.bt-workspace-name-form button{min-height:29px;border-radius:6px}.bt-workspace-name-form .bt-workspace-cancel{width:29px;padding:0;border-color:#3a4c5e;background:transparent;color:#93a5b8}.bt-workspace-status{display:flex;align-items:flex-start;gap:5px;max-width:430px;margin:0;color:#95afa8;font-size:9px;line-height:1.4}.bt-workspace-status svg{flex:0 0 auto;margin-top:1px;color:#75d9bd}.theme-light .bt-workspace-save,.theme-light .bt-workspace-name-form button{border-color:#83b9aa;background:#e2f4ee;color:#236a59}.theme-light .bt-workspace-picker select,.theme-light .bt-workspace-icon,.theme-light .bt-workspace-name-form{border-color:#c4d3df;background:#f7fafc;color:#465d72}.theme-light .bt-workspace-name-form input{border-color:#c4d3df;background:#fff;color:#2a3e51}.theme-light .bt-workspace-status{color:#53756d}@media(max-width:560px){.bt-workspace-manager{width:100%}.bt-workspace-manager-controls{width:100%;flex-wrap:wrap}.bt-workspace-picker{flex:1}.bt-workspace-name-form{width:100%;box-sizing:border-box}.bt-workspace-name-form label{display:none}}
+.bt-workspace-manager {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.bt-workspace-manager-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bt-workspace-save,
+.bt-workspace-icon,
+.bt-workspace-name-form button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 30px;
+  border: 1px solid #365f58;
+  border-radius: 7px;
+  padding: 0 9px;
+  background: #15332f;
+  color: #aee8d6;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.bt-workspace-save:hover:not(:disabled),
+.bt-workspace-name-form button:hover {
+  border-color: #65a995;
+  background: #1d453e;
+  color: #d9fff2;
+}
+
+.bt-workspace-save:disabled,
+.bt-workspace-icon:disabled {
+  opacity: .48;
+  cursor: not-allowed;
+}
+
+.bt-workspace-picker {
+  min-width: 170px;
+}
+
+.bt-workspace-picker .sd-themed-select {
+  width: 100%;
+}
+
+.bt-workspace-picker .sd-themed-select-trigger {
+  height: 30px;
+  padding: 0 8px;
+  border-color: #344454;
+  border-radius: 7px;
+  background: #111a25;
+  color: #b7c5d4;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.bt-workspace-picker .sd-themed-select-trigger:hover {
+  border-color: #547085;
+  background: #182532;
+  color: #e3edf5;
+}
+
+.bt-workspace-picker .sd-themed-select-trigger:focus-visible {
+  border-color: #70d9ba;
+  box-shadow: 0 0 0 3px #70d9ba18;
+}
+
+.bt-workspace-picker .sd-themed-select-trigger svg {
+  width: 14px;
+  height: 14px;
+  color: #7e93a6;
+}
+
+.bt-workspace-picker .sd-themed-select-options {
+  top: calc(100% + 5px);
+  max-height: 220px;
+  padding: 4px;
+  border-color: #3a4a5d;
+  border-radius: 9px;
+  background: #141c27;
+  box-shadow: 0 18px 38px #000a;
+}
+
+.bt-workspace-picker .sd-themed-select-options button {
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: #c8d2df;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.bt-workspace-picker .sd-themed-select-options button:hover,
+.bt-workspace-picker .sd-themed-select-options button:focus-visible {
+  background: #20333a;
+  color: #e5fff6;
+}
+
+.bt-workspace-picker .sd-themed-select-options button.is-selected {
+  background: #1e4543;
+  color: #a9ead8;
+  font-weight: 700;
+}
+
+.bt-workspace-icon {
+  width: 30px;
+  padding: 0;
+  border-color: #344454;
+  background: #151f2b;
+  color: #9cadbd;
+}
+
+.bt-workspace-icon:hover:not(:disabled) {
+  border-color: #547085;
+  background: #213141;
+  color: #deebf3;
+}
+
+.bt-workspace-icon.bt-workspace-delete:hover:not(:disabled) {
+  border-color: #8e515d;
+  background: #3c222b;
+  color: #ffc8d0;
+}
+
+.bt-workspace-name-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid #2e4050;
+  border-radius: 8px;
+  background: #111a25;
+}
+
+.bt-workspace-name-form label {
+  color: #93a5b8;
+  font-size: 9px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.bt-workspace-name-form input {
+  min-width: 0;
+  flex: 1;
+  height: 29px;
+  border: 1px solid #344454;
+  border-radius: 6px;
+  padding: 0 8px;
+  outline: 0;
+  background: #0d151e;
+  color: #e1ebf3;
+  font-size: 10px;
+}
+
+.bt-workspace-name-form input:focus {
+  border-color: #70d9ba;
+  box-shadow: 0 0 0 3px #70d9ba18;
+}
+
+.bt-workspace-name-form button {
+  min-height: 29px;
+  border-radius: 6px;
+}
+
+.bt-workspace-name-form .bt-workspace-cancel {
+  width: 29px;
+  padding: 0;
+  border-color: #3a4c5e;
+  background: transparent;
+  color: #93a5b8;
+}
+
+.bt-workspace-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  max-width: 430px;
+  margin: 0;
+  color: #95afa8;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.bt-workspace-status svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: #75d9bd;
+}
+
+.theme-light .bt-workspace-save,
+.theme-light .bt-workspace-name-form button {
+  border-color: #83b9aa;
+  background: #e2f4ee;
+  color: #236a59;
+}
+
+.theme-light .bt-workspace-picker .sd-themed-select-trigger {
+  border-color: #c4d3df;
+  background: #f7fafc;
+  color: #465d72;
+}
+
+.theme-light .bt-workspace-picker .sd-themed-select-trigger:hover {
+  border-color: #9fb5c6;
+  background: #eef4f8;
+  color: #26394e;
+}
+
+.theme-light .bt-workspace-picker .sd-themed-select-options {
+  border-color: #c9d6e1;
+  background: #fff;
+  box-shadow: 0 18px 38px #36506d24;
+}
+
+.theme-light .bt-workspace-picker .sd-themed-select-options button {
+  color: #35495f;
+}
+
+.theme-light .bt-workspace-picker .sd-themed-select-options button:hover,
+.theme-light .bt-workspace-picker .sd-themed-select-options button:focus-visible {
+  background: #e7f3f0;
+  color: #174d47;
+}
+
+.theme-light .bt-workspace-picker .sd-themed-select-options button.is-selected {
+  background: #d8f0e9;
+  color: #176d5c;
+}
+
+.theme-light .bt-workspace-name-form,
+.theme-light .bt-workspace-icon {
+  border-color: #c4d3df;
+  background: #f7fafc;
+  color: #465d72;
+}
+
+.theme-light .bt-workspace-name-form input {
+  border-color: #c4d3df;
+  background: #fff;
+  color: #2a3e51;
+}
+
+.theme-light .bt-workspace-status {
+  color: #53756d;
+}
+
+@media(max-width:560px) {
+  .bt-workspace-manager {
+    width: 100%;
+  }
+
+  .bt-workspace-manager-controls {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .bt-workspace-picker {
+    flex: 1;
+  }
+
+  .bt-workspace-name-form {
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .bt-workspace-name-form label {
+    display: none;
+  }
+}
