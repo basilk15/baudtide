@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=BaudTide
+Comment=A focused, multi-port serial monitor for Linux
+Exec=baudtide
+Icon=baudtide
+StartupWMClass=com.basil.baudtide

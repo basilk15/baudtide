@@ -4,12 +4,13 @@
   "version": "0.1.0",
   "identifier": "com.basil.baudtide",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "node scripts/prepare-linux-dev-desktop-entry.mjs && npm run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
+    "enableGTKAppId": true,
     "windows": [
       {
         "title": "BaudTide",
@@ -33,6 +34,26 @@
       "icons/icon.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "desktopTemplate": "linux/legacy-desktop-entry.hbs",
+        "files": {
+          "/usr/share/applications/com.basil.baudtide.desktop": "linux/com.basil.baudtide.desktop"
+        }
+      },
+      "rpm": {
+        "desktopTemplate": "linux/legacy-desktop-entry.hbs",
+        "files": {
+          "/usr/share/applications/com.basil.baudtide.desktop": "linux/com.basil.baudtide.desktop"
+        }
+      },
+      "appimage": {
+        "files": {
+          "/com.basil.baudtide.desktop": "linux/com.basil.baudtide.desktop",
+          "/usr/share/applications/com.basil.baudtide.desktop": "linux/com.basil.baudtide.desktop"
+        }
+      }
+    }
   }
 }
