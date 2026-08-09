@@ -16,14 +16,16 @@
 
 BaudTide is an open-source serial terminal and monitor built for embedded development. Discover local ports, work with several devices at once, capture every received byte locally, and export logs when you need them.
 
-## Highlights
+## Current features
 
-- Discover `/dev/ttyUSB*`, `/dev/ttyACM*`, Bluetooth, and PCI serial ports with automatic rescans.
-- Monitor multiple devices in tabbed or tiled live terminals.
-- Send text or exact hexadecimal bytes, choose per-session serial settings, and filter or pause the display without stopping capture.
-- Save complete raw captures locally; browse, preview, export, and safely delete them later.
-- Restore active desktop terminals after a WebView reload.
-- Use the workspace in dark or light theme.
+- Find available serial ports automatically, or enter a port path yourself.
+- Open several devices at once in tabs or side-by-side terminal views.
+- Send text or hexadecimal data and keep connection settings separate for each device.
+- Pause or filter noisy output without losing the raw log.
+- Save named terminal layouts and return to them later.
+- Keep logs on your computer; browse, search, preview, export, or delete them when needed.
+- Share live output with a phone by scanning a QR code; remote control stays off unless you enable it.
+- Choose a dark or light workspace.
 
 ## Quick start
 

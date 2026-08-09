@@ -1,1 +1,147 @@
 .theme-light{background:#f4f7fb;color:#162334}.theme-light .signaldeck-main{background:radial-gradient(ellipse 70% 55% at 88% -8%,#d7edf0 0%,#edf5f7 36%,transparent 72%),radial-gradient(ellipse 55% 45% at 22% 108%,#e4edf8 0%,transparent 70%),#f7f9fc}.theme-light .signaldeck-main::before{opacity:.48;background-image:linear-gradient(#31596b0d 1px,transparent 1px),linear-gradient(90deg,#31596b0d 1px,transparent 1px)}.theme-light .signaldeck-main::after{border-color:#3a8a7b20;box-shadow:0 0 0 68px #3a8a7b0b,0 0 0 150px #3a8a7b08}.theme-light .sd-sidebar{background:#fff;border-color:#dce5ee;color:#334257}.theme-light .sd-sidebar-brand{color:#182536}.theme-light .sd-nav-label,.theme-light .sd-sidebar-status{color:#718095}.theme-light .sd-nav-item{color:#52647a}.theme-light .sd-nav-item:hover{background:#eef4f8;color:#162436}.theme-light .sd-nav-item.is-active{background:#e0f1ed;box-shadow:inset 2px 0 #28967f;color:#173e3a}.theme-light .sd-nav-divider{background:#e0e7ef}.theme-light .signaldeck-topbar{border-color:#dce5ee;background:#ffffffbd;backdrop-filter:blur(12px)}.theme-light .signaldeck-breadcrumb{color:#718095}.theme-light .signaldeck-breadcrumb strong{color:#26364a}.theme-light .signaldeck-preview-label{border-color:#94cbbd;background:#e6f5ef;color:#216b5d}.theme-light .sd-command-trigger,.theme-light .sd-profile-trigger:hover{border-color:#d6e0e9;background:#fff;color:#586b80}.theme-light .sd-command-trigger kbd{border-color:#d6e0e9;background:#f1f5f8;color:#687b90}.theme-light .sd-preferences,.theme-light .sd-help,.theme-light .sd-port-dashboard,.theme-light .sd-saved-logs,.theme-light .sd-monitor{color:#1d2b3d}.theme-light .sd-screen-heading h1,.theme-light .sd-port-dashboard-header h1,.theme-light .sd-saved-logs-header h1,.theme-light .sd-sessions-workspace-header h1{color:#182638}.theme-light .sd-screen-heading small,.theme-light .sd-port-dashboard-header>div>span,.theme-light .sd-saved-logs-header>div>p:last-child,.theme-light .sd-sessions-workspace-header>div>span{color:#63758a}.theme-light .sd-settings-card,.theme-light .sd-help-card,.theme-light .sd-feedback-card,.theme-light .sd-port-list,.theme-light .sd-saved-log-list,.theme-light .sd-sessions-empty-panel{border-color:#d8e2eb;background:#fff;box-shadow:0 12px 30px #3153680d}.theme-light .sd-settings-card legend,.theme-light .sd-help-card h2,.theme-light .sd-feedback-card h2{color:#243347}.theme-light .sd-settings-card label,.theme-light .sd-theme-setting strong,.theme-light .sd-toggle-row{color:#53657a}.theme-light .sd-settings-card input,.theme-light .sd-feedback-card textarea,.theme-light .sd-path-control input{border-color:#cfdbe6;background:#f9fbfd;color:#1d2b3d}.theme-light .sd-path-control button{border-color:#cfdbe6;background:#edf3f8;color:#426077}.theme-light .sd-field-hint,.theme-light .sd-theme-setting span{color:#718196}.theme-light .sd-theme-switcher{border-color:#d3dfe9;background:#f1f5f8}.theme-light .sd-theme-switcher button{color:#687a8d}.theme-light .sd-theme-switcher button.is-active{background:#d8f0e9;color:#176d5c;box-shadow:0 1px 3px #31536818}.theme-light .sd-secondary-button{border-color:#cbd8e4;background:#fff;color:#3d5269}.theme-light .sd-secondary-button:hover{border-color:#9db3c5;background:#eff4f8}.theme-light .sd-themed-select-trigger{border-color:#cbd8e4;background:#f9fbfd;color:#223246}.theme-light .sd-themed-select-trigger:hover{border-color:#9fb5c6;background:#f1f6f9}.theme-light .sd-themed-select-trigger svg{color:#60758a}.theme-light .sd-themed-select-options{border-color:#c9d6e1;background:#fff;box-shadow:0 18px 38px #36506d24;scrollbar-color:#a3b4c4 #fff}.theme-light .sd-themed-select-options button{color:#35495f}.theme-light .sd-themed-select-options button:hover,.theme-light .sd-themed-select-options button:focus-visible{background:#e7f3f0;color:#174d47}.theme-light .sd-themed-select-options button.is-selected{background:#d8f0e9;color:#176d5c}.theme-light .sd-port-dashboard-summary,.theme-light .sd-active-capture-summary{border-color:#a8d5c9;background:#eaf7f2}.theme-light .sd-port-dashboard-summary strong,.theme-light .sd-active-capture-summary strong{color:#17473f}.theme-light .sd-port-dashboard-summary p,.theme-light .sd-active-capture-summary p{color:#477a6f}.theme-light .sd-port-row,.theme-light .sd-saved-log-row{border-color:#e0e8ef}.theme-light .sd-port-row:hover,.theme-light .sd-saved-log-row:hover{background:#f3f8fa}.theme-light .sd-port-primary strong,.theme-light .sd-saved-log-name strong{color:#233449}.theme-light .sd-port-primary code,.theme-light .sd-saved-log-primary p{color:#54708a}.theme-light .sd-port-details{color:#566b81}.theme-light .sd-port-details small,.theme-light .sd-saved-log-primary small{color:#7b8ea1}.theme-light .sd-port-icon,.theme-light .sd-saved-log-icon{border-color:#cbd8e4;background:#edf3f8;color:#587087}.theme-light .sd-port-icon.usb,.theme-light .sd-saved-log-icon.capturing{border-color:#9acdbc;background:#dff2eb;color:#197461}.theme-light .sd-port-transport{border-color:#d0dce6;background:#f0f4f8;color:#63778c}.theme-light .sd-saved-log-name span{border-color:#9acdbc;background:#dff2eb;color:#197461}.theme-light .sd-saved-logs-search{border-color:#cbd8e4;background:#fff;color:#6f8296}.theme-light .sd-saved-logs-search input{color:#223246}.theme-light .sd-saved-logs-toolbar>span{color:#697d91}.theme-light .sd-port-dashboard-loading,.theme-light .sd-port-dashboard-empty,.theme-light .sd-saved-logs-loading,.theme-light .sd-saved-logs-empty{border-color:#ccd9e4;background:#fff;color:#62768b}.theme-light .sd-port-dashboard-empty h2,.theme-light .sd-saved-logs-empty h2,.theme-light .sd-sessions-empty-panel h2{color:#243448}.theme-light .sd-port-dashboard-empty>div,.theme-light .sd-saved-logs-empty>div,.theme-light .sd-sessions-empty-icon{background:#e3f2ee;color:#287c6a}.theme-light .sd-sessions-empty-panel p{color:#63768b}.theme-light .sd-monitor{background:radial-gradient(circle at 92% -20%,#e0eff3 0,transparent 31%),#f6f9fc;color:#1f2e40}.theme-light .sd-monitor h1,.theme-light .sd-terminal-title{color:#213147}.theme-light .sd-monitor-breadcrumb,.theme-light .sd-monitor-chip,.theme-light .sd-autoscroll-toggle{color:#667a90}.theme-light .sd-monitor-chip{border-color:#d0dce6;background:#f1f5f8}.theme-light .sd-terminal-card{border-color:#d4dfe9;background:#fff;box-shadow:0 15px 40px #31536812}.theme-light .sd-terminal-toolbar,.theme-light .sd-send-form{border-color:#dbe4ec;background:#f4f8fb}.theme-light .sd-terminal-logging{border-color:#aed8ca;background:#e7f5ef;color:#267461}.theme-light .sd-terminal-output{background:linear-gradient(90deg,#f8fafc,#f1f6fa 65%,#f8fafc);color:#203247}.theme-light .sd-terminal-line:hover{background:#e4f0f355}.theme-light .sd-terminal-line time{color:#788ca0}.theme-light .sd-terminal-line code{color:#26394e}.theme-light .sd-send-form input{border-color:#cbd8e4;background:#fff;color:#24364a}.theme-light .sd-monitor-secondary,.theme-light .sd-monitor-icon-button{border-color:#cbd8e4;background:#fff;color:#486078}.theme-light .sd-monitor-icon-button:hover,.theme-light .sd-monitor-secondary:hover{background:#edf4f8}.theme-light .sd-connection-dialog{border-color:#ccd8e3;background:#fff;color:#203044;box-shadow:0 30px 80px #2030472b}.theme-light .sd-dialog-subtitle,.theme-light .sd-form-field{color:#627489}.theme-light .sd-dialog-close{color:#60758a}.theme-light .sd-scan-notice.loading{border-color:#cbd8e4;background:#edf3f8;color:#50677e}.theme-light .sd-command-palette,.theme-light .sd-notification-panel,.theme-light .sd-workspace-popover{border-color:#cad7e3;background:#fff;box-shadow:0 20px 48px #24435b24;color:#24364a}.theme-light .sd-palette-search{border-color:#dce5ed;color:#27816f}.theme-light .sd-palette-note{background:#edf3f7;color:#5f7388}.theme-light .sd-palette-results>button{color:#2d4056}.theme-light .sd-palette-results>button:hover{background:#edf4f7}.theme-light .sd-log-preview{border-color:#cad7e3;background:#fff;box-shadow:0 28px 90px #20304838}.theme-light .sd-log-preview header,.theme-light .sd-log-preview footer{border-color:#dbe4ec;background:#f5f8fb}.theme-light .sd-log-preview header h2{color:#223246}.theme-light .sd-log-preview pre{border-color:#d4dfe9;background:#f8fafc;color:#26394e}.theme-light .sd-log-preview footer>code{color:#63768b}@media(max-width:560px){.theme-light .signaldeck-topbar{background:#ffffffdf}}
+
+/* The welcome surface has a deliberately dark visual language in the base
+   stylesheet. Give the light theme its own ink, surface, and accent values so
+   the content remains legible without flattening the terminal preview. */
+.theme-light .signaldeck-main {
+  background:
+    radial-gradient(ellipse 70% 55% at 88% -8%, #d4ebe9 0%, #e8f3f3 36%, transparent 72%),
+    radial-gradient(ellipse 55% 45% at 22% 108%, #e3ecf7 0%, transparent 70%),
+    #f3f7fa;
+}
+
+.theme-light .signaldeck-main::before {
+  opacity: .42;
+  background-image: linear-gradient(#31596b12 1px, transparent 1px), linear-gradient(90deg, #31596b12 1px, transparent 1px);
+}
+
+.theme-light .signaldeck-main::after {
+  border-color: #328f7e26;
+  box-shadow: 0 0 0 68px #328f7e0f, 0 0 0 150px #328f7e08;
+}
+
+.theme-light .sd-welcome {
+  color: #203246;
+}
+
+.theme-light .sd-welcome-brand {
+  color: #18314b;
+}
+
+.theme-light .sd-welcome-brand span span {
+  color: #2d9b83;
+}
+
+.theme-light .sd-welcome-eyebrow {
+  color: #277d70;
+}
+
+.theme-light .sd-welcome h1 {
+  color: #14273b;
+}
+
+.theme-light .sd-welcome-intro {
+  color: #506a7f;
+}
+
+.theme-light .sd-welcome-primary {
+  border-color: #49b998;
+  background: #63d5b2;
+  color: #12352f;
+  box-shadow: 0 13px 30px #2c987a30;
+}
+
+.theme-light .sd-welcome-primary:hover {
+  background: #79dfc0;
+  box-shadow: 0 17px 35px #2c987a3b;
+}
+
+.theme-light .sd-welcome-secondary {
+  color: #2f6375;
+}
+
+.theme-light .sd-welcome-secondary:hover {
+  color: #174d47;
+}
+
+.theme-light .sd-welcome-runtime {
+  color: #61798b;
+}
+
+.theme-light .sd-welcome-runtime span {
+  background: #8498a8;
+}
+
+.theme-light .sd-welcome-runtime span.is-ready {
+  background: #35a98a;
+  box-shadow: 0 0 0 4px #35a98a20;
+}
+
+.theme-light .sd-welcome-orbit {
+  border-color: #3a988b4d;
+}
+
+.theme-light .sd-welcome-orbit-one {
+  box-shadow: 0 0 0 48px #3aab9a16, 0 0 0 106px #3aab9a0b;
+}
+
+.theme-light .sd-welcome-orbit-two {
+  border-color: #669fa023;
+}
+
+.theme-light .sd-welcome-terminal {
+  border-color: #466b7a;
+  box-shadow: 0 30px 70px #2344543d, 0 0 0 7px #56b9a314;
+}
+
+.theme-light .sd-welcome-float {
+  border-color: #557b89;
+  box-shadow: 0 16px 35px #2344543d;
+}
+
+.theme-light .sd-welcome-features {
+  border-top-color: #c6d4df;
+}
+
+.theme-light .sd-welcome-features article > span {
+  border-color: #9bcbbf;
+  background: #e2f4ef;
+  color: #247b69;
+}
+
+.theme-light .sd-welcome-features strong {
+  color: #284559;
+}
+
+.theme-light .sd-welcome-features p {
+  color: #6b8396;
+}
+
+.theme-light .sd-icon-control {
+  color: #62788c;
+}
+
+.theme-light .sd-icon-control:hover {
+  background: #edf4f7;
+  color: #1e4155;
+}
+
+.theme-light .sd-profile-trigger {
+  color: #526b7e;
+}
+
+.theme-light .sd-profile-trigger strong {
+  color: #234258;
+}
+
+.theme-light .sd-profile-trigger small {
+  color: #6f8394;
+}
+
+.theme-light .sd-profile-trigger:hover {
+  background: #edf4f7;
+}
+
+.theme-light .sd-notification-trigger b {
+  border-color: #fff;
+}
