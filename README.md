@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="src-tauri/icons/icon.svg" width="128" alt="BaudTide logo" />
+  <img src="src/assets/signaldeck-mark.png" width="220" alt="BaudTide logo" />
 </p>
 
 <h1 align="center">BaudTide</h1>

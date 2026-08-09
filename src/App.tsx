@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AppStartupScreen } from './components/AppStartupScreen';
 import { CommandPalette, type CommandPaletteAction } from './components/CommandPalette';
 import { ConnectionDialog, type ConnectionDialogDefaults, type ConnectionRequest } from './components/ConnectionDialog';
 import { HelpFeedbackPanel } from './components/HelpFeedbackPanel';
@@ -105,6 +106,7 @@ function previewSessionId() {
 
 function App() {
   const [page, setPage] = useState<SignalDeckPage>('dashboard');
+  const [isStartupVisible, setStartupVisible] = useState(true);
   const [isWelcomeVisible, setWelcomeVisible] = useState(true);
   const [isConnectionDialogOpen, setConnectionDialogOpen] = useState(false);
   const [connectionDefaults, setConnectionDefaults] = useState<ConnectionDialogDefaults | null>(null);
@@ -763,6 +765,8 @@ function App() {
   }, [theme]);
 
   const activeLogPath = sessions.find((session) => session.native && session.connectionState === 'connected')?.logPath;
+  const closeStartup = useCallback(() => setStartupVisible(false), []);
+  if (isStartupVisible) return <AppStartupScreen onComplete={closeStartup} />;
   return <div ref={shellRef} className={`signaldeck-shell theme-${theme} zoom-${Math.round(zoomRef.current * 100)}`} style={{ zoom: zoomRef.current }}>
     <SidebarNavigation activePage={page} onNavigate={navigate} onPreferences={() => navigate('preferences')} onHelp={() => navigate('help')} />
     <section className="signaldeck-main">
