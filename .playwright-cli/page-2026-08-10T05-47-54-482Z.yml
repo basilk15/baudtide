@@ -1,7 +1,0 @@
-- main "Launching BaudTide" [ref=e2]:
-  - generic [ref=e4]:
-    - img "BaudTide" [ref=e7]
-    - generic [ref=e8]: baudtide
-    - paragraph [ref=e9]: SERIAL MONITORING, MADE CALM
-  - status [ref=e10]:
-    - generic [ref=e11]: Preparing your workspace
