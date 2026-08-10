@@ -3371,9 +3371,9 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
     button{min-height:34px;border:1px solid #4b5563;border-radius:7px;color:#e5e7eb;background:#1f2937;padding:7px 10px;font:inherit;font-size:.8rem;cursor:pointer}
     button:hover{border-color:#7dd3fc;background:#26364a}
     button.active{border-color:#4adeba;background:#173d38;color:#baf5e3}
-    button:focus-visible,input:focus-visible{outline:2px solid #75dfc0;outline-offset:2px}
+    button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #75dfc0;outline-offset:2px}
     .download{margin-left:auto;padding:8px 2px;font-size:.8rem}
-    .excerpt-row{align-items:center}.excerpt-label{color:#9caec0;font-size:.72rem}.excerpt-status{min-height:1.1em;color:#a7f3d0;font-size:.72rem}
+    .excerpt-row{align-items:center}.excerpt-label,.export-format{color:#9caec0;font-size:.72rem}.export-format{display:flex;align-items:center;gap:5px}.export-format select{min-height:34px;border:1px solid #4b5563;border-radius:7px;padding:7px 8px;color:#e5e7eb;background:#1f2937;font:inherit;font-size:.8rem}.excerpt-status{min-height:1.1em;color:#a7f3d0;font-size:.72rem}
     .search{display:flex;align-items:center;gap:7px;color:#b6c5d5;font-size:.78rem}
     .search input{width:100%;min-width:0;border:1px solid #4b5563;border-radius:7px;padding:8px 9px;background:#0b1220;color:#f3f4f6;font:inherit;font-size:.82rem}
     .filter-label{color:#9caec0;font-size:.72rem}
@@ -3391,14 +3391,14 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
     .control-form-row select{border:1px solid #4b5563;border-radius:6px;color:#e5e7eb;background:#1f2937;padding:8px;font:inherit;font-size:.8rem}
     textarea{box-sizing:border-box;width:100%;min-height:68px;resize:vertical;border:1px solid #4b5563;border-radius:6px;background:#030712;color:#f9fafb;padding:9px;font:inherit;line-height:1.4}
     button:disabled,textarea:disabled,select:disabled{opacity:.55;cursor:not-allowed}.control-hint,.control-message{color:#94a3b8;font-size:.72rem}.control-message{min-height:1.1em;color:#a7f3d0}
-    @media(max-width:520px){main{padding:10px}.download{margin-left:0}.entry{grid-template-columns:72px minmax(0,1fr);gap:6px}.entry-time{font-size:10px}.entry-text{font-size:11px}#log{min-height:320px;height:64vh}.control-form-row{align-items:stretch;flex-direction:column}.control-form-row button,.control-form-row select{width:100%}.excerpt-status{width:100%}}
+    @media(max-width:520px){main{padding:10px}.download{margin-left:0}.entry{grid-template-columns:72px minmax(0,1fr);gap:6px}.entry-time{font-size:10px}.entry-text{font-size:11px}#log{min-height:320px;height:64vh}.control-form-row{align-items:stretch;flex-direction:column}.control-form-row button,.control-form-row select{width:100%}.export-format{width:100%;justify-content:space-between}.excerpt-status{width:100%}}
   </style>
 </head>
 <body>
   <main>
     <header>
       <div><h1>BaudTide · live serial log</h1><span id="state" role="status">Connecting…</span><span id="summary">Waiting for a recent capture tail…</span></div>
-      <a id="download" class="download" download>Download raw capture</a>
+      <a id="download" class="download" download>Download raw (.log)</a>
     </header>
     <section class="controls" aria-label="Log viewer controls">
       <div class="control-row">
@@ -3414,7 +3414,13 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
         <button type="button" data-filter="wifi">Wi-Fi</button>
       </div>
       <div class="control-row excerpt-row" aria-label="Visible log excerpt">
-        <span class="excerpt-label">Visible log</span>
+        <span class="excerpt-label">Export visible</span>
+        <label class="export-format" for="export-format">Format
+          <select id="export-format">
+            <option value="txt">Text (.txt)</option>
+            <option value="json">JSON (.json)</option>
+          </select>
+        </label>
         <button id="copy-visible" type="button">Copy visible</button>
         <button id="download-visible" type="button">Download visible</button>
         <span id="excerpt-status" class="excerpt-status" role="status" aria-live="polite"></span>
@@ -3448,6 +3454,7 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
     const download=document.querySelector('#download');
     const copyVisibleButton=document.querySelector('#copy-visible');
     const downloadVisibleButton=document.querySelector('#download-visible');
+    const exportFormat=document.querySelector('#export-format');
     const excerptStatus=document.querySelector('#excerpt-status');
     const controlState=document.querySelector('#control-state');
     const controlForm=document.querySelector('#control-form');
@@ -3528,8 +3535,7 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
       return true;
     }
     function visibleEntries(){return entries.filter(matches)}
-    function excerptText(){
-      const visible=visibleEntries();
+    function excerptText(visible=visibleEntries()){
       if(!visible.length) return {visible,text:''};
       const filters=[];
       if(filter!=='all') filters.push(filter==='wifi'?'Wi-Fi':'Errors');
@@ -3545,6 +3551,30 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
       ];
       visible.forEach(entry=>lines.push(`[${timestamp(entry.timestamp)}] ${entry.text}`));
       return {visible,text:lines.join('\n')};
+    }
+    function exportJson(visible){
+      return JSON.stringify({
+        format:'baudtide.mobile-visible-log',
+        schemaVersion:1,
+        generatedAt:new Date().toISOString(),
+        view:{
+          filter,
+          search:query.trim()||null,
+          visibleEventCount:visible.length,
+          retainedEventCount:entries.length
+        },
+        events:visible.map(entry=>({
+          sequence:entry.sequence,
+          timestamp:typeof entry.timestamp==='string'?entry.timestamp:null,
+          text:entry.text,
+          byteLength:entry.byteLength
+        }))
+      },null,2);
+    }
+    function selectedExport(){
+      const visible=visibleEntries();
+      const format=exportFormat.value==='json'?'json':'txt';
+      return {visible,format,text:format==='json'?exportJson(visible):excerptText(visible).text};
     }
     function setExcerptStatus(message){excerptStatus.textContent=message||''}
     async function copyExcerpt(text){
@@ -3563,12 +3593,13 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
       fallback.remove();
       if(!copied) throw new Error('Clipboard is unavailable');
     }
-    function downloadExcerpt(text){
-      const file=new Blob([text+'\n'],{type:'text/plain;charset=utf-8'});
+    function downloadExport(text,format){
+      const isJson=format==='json';
+      const file=new Blob([text+(isJson?'':'\n')],{type:isJson?'application/json;charset=utf-8':'text/plain;charset=utf-8'});
       const link=document.createElement('a');
       const stamp=new Date().toISOString().replace(/[:.]/g,'-');
       link.href=URL.createObjectURL(file);
-      link.download=`baudtide-visible-log-${stamp}.txt`;
+      link.download=`baudtide-visible-log-${stamp}.${format}`;
       link.hidden=true;
       document.body.append(link);
       link.click();
@@ -3617,7 +3648,7 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
       const text=typeof item.text==='string'?item.text.slice(0,8192):'';
       const bytes=Array.isArray(item.bytes)?item.bytes.length:0;
       const size=text.length+bytes;
-      entries.push({sequence:item.sequence,timestamp:item.timestamp,text,size});
+      entries.push({sequence:item.sequence,timestamp:item.timestamp,text,byteLength:bytes,size});
       retainedBytes+=size;
       while(entries.length>MAX_RETAINED_EVENTS||retainedBytes>MAX_RETAINED_BYTES){
         const removed=entries.shift();
@@ -3693,9 +3724,9 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
       finally{copyVisibleButton.disabled=false}
     };
     downloadVisibleButton.onclick=()=>{
-      const excerpt=excerptText();
-      if(!excerpt.visible.length){setExcerptStatus('Nothing matches this view yet.');return}
-      try{downloadExcerpt(excerpt.text);setExcerptStatus(`Downloading ${excerpt.visible.length} visible event${excerpt.visible.length===1?'':'s'}.`)}
+      const exportData=selectedExport();
+      if(!exportData.visible.length){setExcerptStatus('Nothing matches this view yet.');return}
+      try{downloadExport(exportData.text,exportData.format);setExcerptStatus(`Downloading ${exportData.visible.length} visible event${exportData.visible.length===1?'':'s'} as ${exportData.format.toUpperCase()}.`)}
       catch{setExcerptStatus('Could not prepare the download. Try again.')}
     };
     controlMode.onchange=()=>{controlInput.placeholder=controlMode.value==='hex'?'7E 00 FF or 0x7E, 0x00…':'Type text; UTF-8 bytes are sent exactly as entered'};

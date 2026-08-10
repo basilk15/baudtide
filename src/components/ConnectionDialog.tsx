@@ -259,13 +259,14 @@ export function ConnectionDialog({
         onMouseDown={(event) => event.stopPropagation()}
       >
         <button className="sd-dialog-close" type="button" onClick={onClose} aria-label="Close connection dialog"><X size={18} /></button>
-        <div className="sd-dialog-icon"><Radio size={21} /></div>
-        <p className="sd-dialog-eyebrow">NEW LIVE TERMINAL</p>
-        <h2 id={titleId}>Connect a device</h2>
-        <p id={descriptionId} className="sd-dialog-subtitle">{nativeEnabled ? 'Choose a port and name the session. BaudTide will open it and start a raw local log immediately.' : 'Choose a port, name the session, and start monitoring. This browser preview does not open devices.'}</p>
-        {initialSetupNotice && <p className="sd-dialog-setup-notice" role="status">{initialSetupNotice}</p>}
+        <div className="sd-dialog-scroll">
+          <div className="sd-dialog-icon"><Radio size={21} /></div>
+          <p className="sd-dialog-eyebrow">NEW LIVE TERMINAL</p>
+          <h2 id={titleId}>Connect a device</h2>
+          <p id={descriptionId} className="sd-dialog-subtitle">{nativeEnabled ? 'Choose a port and name the session. BaudTide will open it and start a raw local log immediately.' : 'Choose a port, name the session, and start monitoring. This browser preview does not open devices.'}</p>
+          {initialSetupNotice && <p className="sd-dialog-setup-notice" role="status">{initialSetupNotice}</p>}
 
-        <form onSubmit={submit} noValidate>
+          <form onSubmit={submit} noValidate>
           <p className="sd-recent-status" role="status" aria-live="polite" aria-atomic="true">{recentStatus}</p>
           {recentConnections.length > 0 && <section className="sd-recent-connections" aria-labelledby="recent-connections-heading">
             <div className="sd-recent-connections-heading">
@@ -339,7 +340,8 @@ export function ConnectionDialog({
               {isSubmitting ? <LoaderCircle className="sd-spin" size={16} /> : <Radio size={16} />} {isSubmitting ? 'Starting…' : 'Start monitoring'}
             </button>
           </div>
-        </form>
+          </form>
+        </div>
       </section>
     </div>
   );

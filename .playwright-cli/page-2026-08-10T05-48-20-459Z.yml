@@ -1,0 +1,116 @@
+- generic [ref=e16]:
+  - complementary "BaudTide sidebar" [ref=e17]:
+    - generic [ref=e18]:
+      - img "BaudTide" [ref=e19]
+      - generic [ref=e20]: baudtide
+      - button "Collapse sidebar" [ref=e21] [cursor=pointer]
+    - navigation "Workspace navigation" [ref=e26]:
+      - paragraph [ref=e27]: Workspace
+      - button "Dashboard" [ref=e28] [cursor=pointer]
+      - button "Live terminal" [ref=e35] [cursor=pointer]
+      - button "Saved logs" [ref=e41] [cursor=pointer]
+      - button "Preferences" [ref=e50] [cursor=pointer]
+      - button "Help & feedback" [ref=e57] [cursor=pointer]
+    - paragraph [ref=e63]: Local workspace
+  - generic [ref=e64]:
+    - generic [ref=e65]:
+      - generic [ref=e66]:
+        - generic [ref=e67]: BaudTide
+        - generic [ref=e68]: /
+        - strong [ref=e69]: Overview
+      - generic [ref=e70]: Browser preview · no serial backend
+      - generic [ref=e71]:
+        - button "Search commands K" [ref=e72] [cursor=pointer]:
+          - generic [ref=e76]: Search commands
+          - generic [ref=e77]: K
+        - button "Switch to light theme" [ref=e80] [cursor=pointer]
+        - button "Notifications" [ref=e98] [cursor=pointer]
+        - button "Open preferences" [ref=e102] [cursor=pointer]:
+          - generic [ref=e108]:
+            - strong [ref=e109]: Preferences
+            - generic [ref=e110]: Application settings
+    - region [ref=e112]:
+      - generic [ref=e113]:
+        - generic [ref=e114]: baudtide
+        - paragraph [ref=e116]: SERIAL MONITORING, MADE CALM
+        - heading "A clear view of every byte in motion." [level=1] [ref=e122]
+        - paragraph [ref=e123]: Connect a board, open a terminal, and keep the signal in focus. BaudTide is ready when your device is.
+        - generic [ref=e124]:
+          - button "Connect a serial device" [ref=e125] [cursor=pointer]
+          - button "Explore device discovery" [ref=e135] [cursor=pointer]
+        - paragraph [ref=e136]: Preview mode — connect in the desktop app
+      - generic [ref=e138]:
+        - generic [ref=e141]:
+          - generic [ref=e142]:
+            - strong [ref=e147]: /dev/ttyUSB0
+            - emphasis [ref=e156]: 115200 baud
+          - generic [ref=e157]:
+            - paragraph [ref=e158]: "14:32:01.002 boot: BaudTide connected"
+            - paragraph [ref=e159]: "14:32:01.204 device: ESP32 DevKitC"
+            - paragraph [ref=e160]: "14:32:02.412 wifi: station connected"
+            - paragraph [ref=e161]: 14:32:03.001 ● listening for serial data
+          - generic [ref=e162]: LIVE CAPTURE
+        - generic [ref=e176]:
+          - generic [ref=e177]: CONNECTION
+          - strong [ref=e178]: Signal stable
+        - generic [ref=e183]:
+          - generic [ref=e184]: CAPTURE
+          - strong [ref=e185]: 00:14:32
+      - generic [ref=e186]:
+        - article [ref=e187]:
+          - generic [ref=e195]:
+            - strong [ref=e196]: Device-first setup
+            - paragraph [ref=e197]: Pick a detected port or enter one manually.
+        - article [ref=e198]:
+          - generic [ref=e208]:
+            - strong [ref=e209]: Focused live terminals
+            - paragraph [ref=e210]: Keep each device in its own monitor tab.
+        - article [ref=e211]:
+          - generic [ref=e216]:
+            - strong [ref=e217]: Local by design
+            - paragraph [ref=e218]: Your device traffic stays on this machine.
+  - dialog [ref=e219]:
+    - button "Close connection dialog" [ref=e220] [cursor=pointer]
+    - paragraph [ref=e231]: NEW LIVE TERMINAL
+    - heading "Connect a device" [level=2] [ref=e232]
+    - paragraph [ref=e233]: Choose a port, name the session, and start monitoring. This browser preview does not open devices.
+    - generic [ref=e234]:
+      - status [ref=e235]
+      - generic [ref=e236]:
+        - generic [ref=e237]: Available ports
+        - button "Scan again" [ref=e238] [cursor=pointer]
+      - generic [ref=e244]:
+        - generic [ref=e245]:
+          - text: Port
+          - button "Serial port" [ref=e247] [cursor=pointer]:
+            - generic [ref=e248]: Enter a port path manually…
+        - generic [ref=e251]:
+          - text: Baud rate
+          - button "Baud rate" [ref=e253] [cursor=pointer]:
+            - generic [ref=e254]: 115,200 baud
+        - generic [ref=e257]:
+          - text: Session name
+          - textbox "Session name" [active] [ref=e258]:
+            - /placeholder: e.g. Main controller
+        - group "Serial framing" [ref=e259]:
+          - paragraph [ref=e261]: Use your device's documented framing and flow-control settings. Defaults are 8N1 with no flow control.
+          - generic [ref=e262]:
+            - generic [ref=e263]:
+              - text: Data bits
+              - button "Data bits" [ref=e265] [cursor=pointer]:
+                - generic [ref=e266]: "8"
+            - generic [ref=e269]:
+              - text: Parity
+              - button "Parity" [ref=e271] [cursor=pointer]:
+                - generic [ref=e272]: None
+            - generic [ref=e275]:
+              - text: Stop bits
+              - button "Stop bits" [ref=e277] [cursor=pointer]:
+                - generic [ref=e278]: "1"
+            - generic [ref=e281]:
+              - text: Flow control
+              - button "Flow control" [ref=e283] [cursor=pointer]:
+                - generic [ref=e284]: None
+      - generic [ref=e287]:
+        - button "Cancel" [ref=e288] [cursor=pointer]
+        - button "Start monitoring" [ref=e289] [cursor=pointer]

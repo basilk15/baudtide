@@ -1,0 +1,75 @@
+- generic [ref=e16]:
+  - complementary "BaudTide sidebar" [ref=e17]:
+    - generic [ref=e18]:
+      - img "BaudTide" [ref=e19]
+      - generic [ref=e20]: baudtide
+      - button "Collapse sidebar" [ref=e21] [cursor=pointer]
+    - navigation "Workspace navigation" [ref=e26]:
+      - paragraph [ref=e27]: Workspace
+      - button "Dashboard" [ref=e28] [cursor=pointer]
+      - button "Live terminal" [ref=e35] [cursor=pointer]
+      - button "Saved logs" [ref=e41] [cursor=pointer]
+      - button "Mobile share" [ref=e49] [cursor=pointer]
+      - button "Preferences" [ref=e55] [cursor=pointer]
+      - button "Help & feedback" [ref=e62] [cursor=pointer]
+    - paragraph [ref=e68]: Local workspace
+  - generic [ref=e69]:
+    - generic [ref=e70]:
+      - generic [ref=e71]:
+        - generic [ref=e72]: BaudTide
+        - generic [ref=e73]: /
+        - strong [ref=e74]: Mobile share
+      - generic [ref=e75]: Browser preview · no serial backend
+      - generic [ref=e76]:
+        - button "Search commands K" [ref=e77] [cursor=pointer]:
+          - generic [ref=e81]: Search commands
+          - generic [ref=e82]: K
+        - button "Switch to dark theme" [active] [pressed] [ref=e646] [cursor=pointer]
+        - button "Notifications, 1 unread" [ref=e442] [cursor=pointer]:
+          - generic [ref=e443]: "1"
+        - button "Open preferences" [ref=e107] [cursor=pointer]:
+          - generic [ref=e113]:
+            - strong [ref=e114]: Preferences
+            - generic [ref=e115]: Application settings
+    - region "Mobile share workspace" [ref=e554]:
+      - generic [ref=e555]:
+        - generic [ref=e561]:
+          - paragraph [ref=e562]: MOBILE COMPANION
+          - heading "Mobile share" [level=1] [ref=e563]
+          - generic [ref=e564]: Give a phone a focused view of your serial data without crowding the live terminal workspace.
+        - generic [ref=e565]:
+          - generic [ref=e566]: 0 active
+          - generic [ref=e568]: Local network only
+      - generic [ref=e573]:
+        - strong [ref=e574]: Read-only by default
+        - text: Links work on the same local network. Remote control stays off until you explicitly enable it for a live terminal.
+      - region [ref=e575]:
+        - generic [ref=e576]:
+          - generic [ref=e577]:
+            - paragraph [ref=e578]: TERMINAL LINKS
+            - heading "Choose a terminal to share" [level=2] [ref=e579]
+          - generic [ref=e580]: 1 terminal open
+        - button "Preview monitor /dev/ttyUSB0 · Disconnected" [pressed] [ref=e582] [cursor=pointer]:
+          - generic [ref=e584]:
+            - strong [ref=e585]: Preview monitor
+            - generic [ref=e586]: /dev/ttyUSB0 · Disconnected
+      - generic [ref=e589]:
+        - complementary "Mobile workspace dashboard sharing" [ref=e590]:
+          - generic [ref=e596]:
+            - paragraph [ref=e597]: Mobile workspace
+            - heading "Share all active terminals" [level=2] [ref=e598]
+          - generic [ref=e599]: Available in the BaudTide desktop app with native serial sessions.
+          - generic [ref=e618]:
+            - strong [ref=e619]: Read-only · local network only.
+            - text: The phone can view only the sessions included in this link; no serial commands or arbitrary files are exposed.
+        - region [ref=e620]:
+          - generic [ref=e621]:
+            - generic [ref=e628]:
+              - paragraph [ref=e629]: SELECTED TERMINAL
+              - heading "Preview monitor" [level=2] [ref=e630]
+              - generic [ref=e631]: /dev/ttyUSB0 · Disconnected
+            - generic [ref=e632]: Disconnected
+          - group "Mobile companion sharing" [ref=e634]:
+            - generic [ref=e641] [cursor=pointer]:
+              - paragraph [ref=e642]: Mobile companion
+              - heading "Share this live log" [level=2] [ref=e643]

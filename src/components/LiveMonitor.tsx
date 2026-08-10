@@ -1,8 +1,8 @@
 import { forwardRef, useEffect, useId, useImperativeHandle, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
-import { AlertTriangle, Check, ChevronsDown, CirclePause, CirclePlay, Copy, Eraser, LoaderCircle, PlugZap, RotateCw, Search, Send, TerminalSquare, WifiOff, X } from 'lucide-react';
+import { AlertTriangle, Check, ChevronDown, ChevronsDown, CirclePause, CirclePlay, Copy, Eraser, LoaderCircle, PlugZap, RotateCw, Search, Send, SlidersHorizontal, TerminalSquare, WifiOff, X } from 'lucide-react';
 import { listenForSerialData, listenForSerialStatus, takePendingNativeSerialData, type SerialDataEvent } from '../lib/serial';
 import { lineEndingText, type DisplayEncoding, type LineEnding } from '../lib/preferences';
-import { MobileSharePanel } from './MobileSharePanel';
+import { ThemedSelect } from './ThemedSelect';
 import './live-monitor.css';
 import './live-monitor-preferences.css';
 
@@ -307,8 +307,6 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   const filterInputId = useId();
   const filterStatusId = useId();
   const sendInputId = useId();
-  const sendModeId = useId();
-  const sendEndingId = useId();
 
   useEffect(() => {
     if (!autoReconnectStatus) return undefined;
@@ -997,39 +995,42 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
         <div className="sd-monitor-chip"><span>{port}</span><i /> {baudRate.toLocaleString()} baud</div>
       </div>
 
-      {nativeSession && <section className={`sd-capture-health ${connectionState}`} aria-label="Raw capture status">
-        <div className="sd-capture-health-status">
-          <CaptureIcon className={connectionState === 'reconnecting' ? 'sd-spin' : ''} size={16} aria-hidden="true" />
-          <div><strong>{captureCopy.label}</strong><span>{captureCopy.detail}</span></div>
+      {nativeSession && <details className={`sd-session-details ${connectionState}`} aria-label="Session details">
+        <summary>
+          <span className="sd-session-details-title"><SlidersHorizontal size={15} aria-hidden="true" /> Session details</span>
+          <span className="sd-session-details-summary">
+            <span><CaptureIcon className={connectionState === 'reconnecting' ? 'sd-spin' : ''} size={13} aria-hidden="true" /> {captureCopy.label}</span>
+            <span><RotateCw size={13} aria-hidden="true" /> {autoReconnectEnabled ? 'Auto retry on' : 'Auto retry off'}</span>
+          </span>
+          <ChevronDown className="sd-session-details-chevron" size={16} aria-hidden="true" />
+        </summary>
+        <div className="sd-session-details-content">
+          <section className={`sd-session-detail sd-session-detail-capture ${connectionState}`}>
+            <div className="sd-session-detail-heading"><CaptureIcon className={connectionState === 'reconnecting' ? 'sd-spin' : ''} size={16} aria-hidden="true" /><div><strong>{captureCopy.label}</strong><span>{captureCopy.detail}</span></div></div>
+            {capturePath ? <div className="sd-capture-path">
+              <code title={capturePath}>{capturePath}</code>
+              <button className="sd-capture-copy" type="button" onClick={() => void copyCapturePath()} aria-label="Copy raw capture path" title="Copy raw capture path">
+                {capturePathCopyStatus === 'copied' ? <Check size={14} /> : <Copy size={14} />}
+                <span>{capturePathCopyStatus === 'copied' ? 'Copied' : capturePathCopyStatus === 'error' ? 'Copy failed' : 'Copy path'}</span>
+              </button>
+              <span className="sd-visually-hidden" role="status" aria-live="polite">{capturePathCopyStatus === 'copied' ? 'Raw capture path copied.' : capturePathCopyStatus === 'error' ? 'Could not copy the raw capture path.' : ''}</span>
+            </div> : <span className="sd-session-detail-note">The local capture path will appear when recording begins.</span>}
+          </section>
+          <section className={`sd-session-detail sd-session-detail-reconnect${autoReconnectBlockedReason ? ' is-unavailable' : ''}`}>
+            <div className="sd-session-detail-heading"><RotateCw size={16} aria-hidden="true" /><div><strong>{autoReconnectCopy.title}</strong><span>{autoReconnectCopy.detail}</span></div></div>
+            <button
+              type="button"
+              className="sd-monitor-secondary sd-session-retry-toggle"
+              onClick={() => onAutoReconnectChange?.(!autoReconnectEnabled)}
+              disabled={!onAutoReconnectChange || Boolean(autoReconnectBlockedReason)}
+              aria-pressed={autoReconnectEnabled}
+              title={autoReconnectBlockedReason ? 'Automatic reconnect is disabled while the storage limit is reached' : autoReconnectEnabled ? 'Pause automatic reconnect attempts for this terminal' : 'Resume automatic reconnect attempts for this terminal'}
+            >
+              <RotateCw size={14} aria-hidden="true" /> {autoReconnectEnabled ? 'Pause retries' : 'Resume retries'}
+            </button>
+          </section>
         </div>
-        {capturePath && <div className="sd-capture-path">
-          <code title={capturePath}>{capturePath}</code>
-          <button className="sd-capture-copy" type="button" onClick={() => void copyCapturePath()} aria-label="Copy raw capture path" title="Copy raw capture path">
-            {capturePathCopyStatus === 'copied' ? <Check size={14} /> : <Copy size={14} />}
-            <span>{capturePathCopyStatus === 'copied' ? 'Copied' : capturePathCopyStatus === 'error' ? 'Copy failed' : 'Copy path'}</span>
-          </button>
-          <span className="sd-visually-hidden" role="status" aria-live="polite">{capturePathCopyStatus === 'copied' ? 'Raw capture path copied.' : capturePathCopyStatus === 'error' ? 'Could not copy the raw capture path.' : ''}</span>
-        </div>}
-      </section>}
-
-      {nativeSession && <section className={`sd-auto-reconnect-control${autoReconnectBlockedReason ? ' is-unavailable' : ''}`} aria-labelledby={`auto-reconnect-${sessionId ?? 'session'}`}>
-        <div>
-          <strong id={`auto-reconnect-${sessionId ?? 'session'}`}>{autoReconnectCopy.title}</strong>
-          <span>{autoReconnectCopy.detail}</span>
-        </div>
-        <button
-          type="button"
-          className="sd-monitor-secondary"
-          onClick={() => onAutoReconnectChange?.(!autoReconnectEnabled)}
-          disabled={!onAutoReconnectChange || Boolean(autoReconnectBlockedReason)}
-          aria-pressed={autoReconnectEnabled}
-          title={autoReconnectBlockedReason ? 'Automatic reconnect is disabled while the storage limit is reached' : autoReconnectEnabled ? 'Pause automatic reconnect attempts for this terminal' : 'Resume automatic reconnect attempts for this terminal'}
-        >
-          <RotateCw size={14} aria-hidden="true" /> {autoReconnectEnabled ? 'Pause retries' : 'Resume retries'}
-        </button>
-      </section>}
-
-      <MobileSharePanel sessionId={sessionId} nativeSession={nativeSession} sessionConnected={connectionState === 'connected'} />
+      </details>}
 
       <article className="sd-terminal-card">
         <div className="sd-terminal-toolbar">
@@ -1131,8 +1132,8 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
                 : 'Reconnect to send a command'}
               disabled={connectionState !== 'connected' || isSending}
             />
-            <label className="sd-send-mode" htmlFor={sendModeId}><span>Mode</span><select id={sendModeId} value={sendMode} onChange={(event) => changeSendMode(event.target.value as SendMode)} aria-describedby={sendHintId} disabled={connectionState !== 'connected' || isSending}><option value="text">Text</option><option value="hex">Hex</option></select></label>
-            {sendMode === 'text' && <label className="sd-send-ending" htmlFor={sendEndingId}><span>Ending</span><select id={sendEndingId} value={sendLineEnding} onChange={(event) => setSendLineEnding(event.target.value as LineEnding)} aria-describedby={sendHintId} disabled={connectionState !== 'connected' || isSending}>{(['lf', 'crlf', 'cr', 'none'] as LineEnding[]).map((ending) => <option key={ending} value={ending}>{lineEndingLabel(ending)}</option>)}</select></label>}
+            <label className="sd-send-mode"><span>Mode</span><ThemedSelect compact label="Send mode" value={sendMode} placeholder="Choose mode" options={[{ value: 'text', label: 'Text' }, { value: 'hex', label: 'Hex' }]} onChange={(value) => changeSendMode(value as SendMode)} disabled={connectionState !== 'connected' || isSending} /></label>
+            {sendMode === 'text' && <label className="sd-send-ending"><span>Ending</span><ThemedSelect compact label="Line ending" value={sendLineEnding} placeholder="Choose ending" options={(['lf', 'crlf', 'cr', 'none'] as LineEnding[]).map((ending) => ({ value: ending, label: lineEndingLabel(ending) }))} onChange={(value) => setSendLineEnding(value as LineEnding)} disabled={connectionState !== 'connected' || isSending} /></label>}
             <button className="sd-primary-button" type="submit" disabled={!outgoing.trim() || isSending || connectionState !== 'connected'}>{isSending ? <LoaderCircle className="sd-spin" size={16} /> : <Send size={16} />} Send</button>
           </div>
           {sendError && <span className="sd-send-error" id={sendErrorId} role="alert">{sendError}</span>}

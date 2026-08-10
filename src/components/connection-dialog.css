@@ -10,13 +10,42 @@
 }
 .sd-connection-dialog {
   width: min(100%, 530px);
+  max-height: calc(100% - 40px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   position: relative;
-  padding: 30px;
+  padding: 0;
   background: #171e2a;
   border: 1px solid #344253;
   border-radius: 14px;
   box-shadow: 0 30px 80px #0009;
   color: #e7edf5;
+}
+.sd-dialog-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 30px;
+  scrollbar-gutter: stable;
+  scrollbar-color: #46606f transparent;
+  scrollbar-width: thin;
+}
+.sd-dialog-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.sd-dialog-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sd-dialog-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: #46606f;
+  background-clip: padding-box;
+}
+.sd-dialog-scroll::-webkit-scrollbar-thumb:hover {
+  background: #668696;
+  background-clip: padding-box;
 }
 .sd-dialog-close,
 .sd-monitor-icon-button {
@@ -34,6 +63,8 @@
   top: 15px;
   width: 32px;
   height: 32px;
+  z-index: 3;
+  background: #171e2a;
 }
 .sd-dialog-close:hover,
 .sd-monitor-icon-button:hover {
@@ -136,6 +167,27 @@
 .theme-light .sd-clear-recent-button:focus-visible,
 .theme-light .sd-remove-recent-button:hover,
 .theme-light .sd-remove-recent-button:focus-visible { border-color: #4b9d88; color: #1b624f; background: #dff2eb; }
+.theme-light .sd-dialog-scroll {
+  scrollbar-color: #8eafb1 #eef4f4;
+}
+.theme-light .sd-dialog-close {
+  background: #fff;
+}
+.theme-light .sd-dialog-close:hover {
+  background: #edf4f8;
+}
+.theme-light .sd-dialog-scroll::-webkit-scrollbar-track {
+  background: #eef4f4;
+}
+.theme-light .sd-dialog-scroll::-webkit-scrollbar-thumb {
+  border-color: #eef4f4;
+  background: #8eafb1;
+  background-clip: padding-box;
+}
+.theme-light .sd-dialog-scroll::-webkit-scrollbar-thumb:hover {
+  background: #6f989a;
+  background-clip: padding-box;
+}
 .sd-dialog-scan-row {
   display: flex;
   align-items: center;
@@ -301,7 +353,7 @@
   }
 }
 @media (max-width: 470px) {
-  .sd-connection-dialog {
+  .sd-dialog-scroll {
     padding: 25px 20px;
   }
   .sd-form-grid {

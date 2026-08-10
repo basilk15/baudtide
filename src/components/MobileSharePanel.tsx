@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Copy, LoaderCircle, QrCode, RefreshCw, ShieldCheck, Smartphone, Users, Wifi } from 'lucide-react';
+import { Check, ChevronDown, Copy, LoaderCircle, QrCode, RefreshCw, ShieldCheck, Smartphone, Users, Wifi } from 'lucide-react';
 import { getMobileShareStatus, getMobileWorkspaceShareStatus, setMobileShareControl, startMobileShare, startMobileWorkspaceShare, stopMobileShare, stopMobileWorkspaceShare, type MobileShareInfo, type MobileWorkspaceShareInfo } from '../lib/serial';
 import './mobile-share-panel.css';
 
@@ -271,13 +271,17 @@ export function MobileSharePanel({ sessionId, nativeSession, sessionConnected }:
   };
 
   return (
-    <aside className="sd-mobile-share" aria-label="Mobile companion sharing">
-      <div className="sd-mobile-share-heading">
+    <details className="sd-mobile-share" aria-label="Mobile companion sharing">
+      <summary className="sd-mobile-share-summary">
+        <div className="sd-mobile-share-heading">
         <div className="sd-mobile-share-icon"><Smartphone size={18} /></div>
         <div><p>Mobile companion</p><h2>Share this live log</h2></div>
         {share && <span className="sd-mobile-share-live"><i /> Live</span>}
         {share && <span className={`sd-mobile-share-permission ${share.controlEnabled ? 'enabled' : 'readonly'}`}>{share.controlEnabled ? 'Control enabled' : 'Read-only'}</span>}
-      </div>
+        </div>
+        <ChevronDown className="sd-mobile-share-chevron" size={17} aria-hidden="true" />
+      </summary>
+      <div className="sd-mobile-share-content">
 
       {!nativeSession && <div className="sd-mobile-share-preview"><QrCode size={17} /><span>Available in the BaudTide desktop app after a serial session is connected.</span></div>}
 
@@ -312,7 +316,8 @@ export function MobileSharePanel({ sessionId, nativeSession, sessionConnected }:
 
       <div className="sd-mobile-share-safety"><ShieldCheck size={15} /><span><strong>{share?.controlEnabled ? 'Remote control enabled · local network only.' : 'Read-only by default · local network only.'}</strong> Revoke the link or disable control at any time. It ends automatically when the serial session disconnects.</span></div>
       {message && <p className={`sd-mobile-share-message ${message.kind}`} role="status">{message.text}</p>}
-    </aside>
+      </div>
+    </details>
   );
 }
 

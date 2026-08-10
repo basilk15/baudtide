@@ -1,0 +1,105 @@
+- generic [ref=e16]:
+  - complementary "BaudTide sidebar" [ref=e17]:
+    - generic [ref=e18]:
+      - img "BaudTide" [ref=e19]
+      - generic [ref=e20]: baudtide
+      - button "Collapse sidebar" [ref=e21] [cursor=pointer]
+    - navigation "Workspace navigation" [ref=e26]:
+      - paragraph [ref=e27]: Workspace
+      - button "Dashboard" [ref=e28] [cursor=pointer]
+      - button "Live terminal" [ref=e35] [cursor=pointer]
+      - button "Saved logs" [ref=e41] [cursor=pointer]
+      - button "Mobile share" [ref=e49] [cursor=pointer]
+      - button "Preferences" [ref=e55] [cursor=pointer]
+      - button "Help & feedback" [ref=e62] [cursor=pointer]
+    - paragraph [ref=e68]: Local workspace
+  - generic [ref=e69]:
+    - generic [ref=e70]:
+      - generic [ref=e71]:
+        - generic [ref=e72]: BaudTide
+        - generic [ref=e73]: /
+        - strong [ref=e74]: Preview monitor
+      - generic [ref=e75]: Browser preview · no serial backend
+      - generic [ref=e76]:
+        - button "Search commands K" [ref=e77] [cursor=pointer]:
+          - generic [ref=e81]: Search commands
+          - generic [ref=e82]: K
+        - button "Switch to light theme" [ref=e85] [cursor=pointer]
+        - button "Notifications, 1 unread" [ref=e442] [cursor=pointer]:
+          - generic [ref=e443]: "1"
+        - button "Open preferences" [ref=e107] [cursor=pointer]:
+          - generic [ref=e113]:
+            - strong [ref=e114]: Preferences
+            - generic [ref=e115]: Application settings
+    - region "Live terminal workspace" [ref=e309]:
+      - generic [ref=e310]:
+        - generic [ref=e311]:
+          - paragraph [ref=e312]: LIVE TERMINAL WORKSPACE
+          - heading "Live terminal" [level=1] [ref=e313]
+          - generic [ref=e314]: Run independent serial monitors in separate terminal tabs.
+        - generic [ref=e315]:
+          - generic "Saved terminal workspaces" [ref=e316]:
+            - generic [ref=e317]:
+              - button "Save workspace" [ref=e318] [cursor=pointer]
+              - button "Open saved workspace" [ref=e325] [cursor=pointer]:
+                - generic [ref=e326]: Saved workspaces
+              - button "Rename saved workspace" [disabled] [ref=e329]
+              - button "Delete saved workspace" [disabled] [ref=e333]
+          - generic [ref=e340]: 0 active
+          - button "New terminal" [ref=e342] [cursor=pointer]
+      - tablist "Open serial terminals" [ref=e444]:
+        - generic [ref=e445]:
+          - tab "Preview monitor /dev/ttyUSB0 · disconnected" [selected] [ref=e446] [cursor=pointer]:
+            - generic [ref=e448]:
+              - strong [ref=e449]: Preview monitor
+              - generic [ref=e450]: /dev/ttyUSB0 · disconnected
+          - button "Close Preview monitor" [ref=e451] [cursor=pointer]
+      - tabpanel "Preview monitor /dev/ttyUSB0 · disconnected" [ref=e456]:
+        - region "Preview monitor live serial monitor" [ref=e457]:
+          - generic [ref=e458]:
+            - generic [ref=e465]:
+              - paragraph [ref=e466]: Live terminal / Monitor
+              - heading "Preview monitor" [level=1] [ref=e467]
+            - generic [ref=e468]:
+              - button "Reconnect" [ref=e469] [cursor=pointer]
+              - button "Disconnect" [disabled] [ref=e473]
+              - button "Close session" [ref=e480] [cursor=pointer]
+          - generic [ref=e484]:
+            - generic [ref=e485]:
+              - strong [ref=e494]: Disconnected
+              - generic [ref=e495]: Logging is stopped
+            - generic [ref=e496]:
+              - generic [ref=e497]: /dev/ttyUSB0
+              - text: 115,200 baud
+          - article [ref=e499]:
+            - generic [ref=e500]:
+              - generic [ref=e501]:
+                - text: Incoming data
+                - emphasis [ref=e503]: 0 lines in display
+              - generic [ref=e504]:
+                - generic [ref=e505] [cursor=pointer]:
+                  - checkbox "Auto-scroll" [checked] [ref=e506]
+                  - text: Auto-scroll
+                - button "Pause display" [ref=e507] [cursor=pointer]
+                - button "Open live output filters" [ref=e512] [cursor=pointer]
+                - button "Clear monitor display" [ref=e516] [cursor=pointer]
+            - generic [ref=e520]: Browser preview — no local capture
+            - log "Timestamped serial output" [ref=e523]:
+              - generic [ref=e524]:
+                - strong [ref=e529]: Display cleared
+                - generic [ref=e530]: New incoming bytes will appear here. The active log is still recording.
+            - generic [ref=e531]:
+              - generic [ref=e532]: Send text
+              - generic [ref=e533]:
+                - textbox "Send text" [disabled] [ref=e534]:
+                  - /placeholder: Reconnect to send a command
+                - generic [ref=e535]:
+                  - generic [ref=e536]: Mode
+                  - button "Send mode" [disabled] [ref=e538]:
+                    - generic [ref=e539]: Text
+                - generic [ref=e542]:
+                  - generic [ref=e543]: Ending
+                  - button "Line ending" [disabled] [ref=e545]:
+                    - generic [ref=e546]: LF (\n)
+                - button "Send" [disabled] [ref=e549]
+              - generic [ref=e553]: Browser preview only · LF (\n) selected for desktop sends · ↑/↓ recalls text commands

@@ -4,7 +4,7 @@ import { CommandPalette, type CommandPaletteAction } from './components/CommandP
 import { ConnectionDialog, type ConnectionDialogDefaults, type ConnectionRequest } from './components/ConnectionDialog';
 import { HelpFeedbackPanel } from './components/HelpFeedbackPanel';
 import { LiveMonitor, type LiveMonitorHandle, type MonitorConnectionState } from './components/LiveMonitor';
-import { WorkspaceMobileSharePanel } from './components/MobileSharePanel';
+import { MobileShareScreen, type MobileShareSession } from './components/MobileShareScreen';
 import { NotificationsPanel } from './components/NotificationsPanel';
 import { useNotifications } from './components/notifications';
 import { PreferencesScreen } from './components/PreferencesScreen';
@@ -34,7 +34,7 @@ import {
 } from './lib/serial';
 
 const pageNames: Record<SignalDeckPage, string> = {
-  dashboard: 'Overview', sessions: 'Live terminal', logs: 'Saved logs', preferences: 'Preferences', help: 'Help & feedback',
+  dashboard: 'Overview', sessions: 'Live terminal', logs: 'Saved logs', mobile: 'Mobile share', preferences: 'Preferences', help: 'Help & feedback',
 };
 
 type LiveSession = ConnectionRequest & {
@@ -199,6 +199,7 @@ function App() {
     { id: 'find-output', label: 'Find in output', description: selectedSession ? `Filter visible output in ${selectedSession.sessionName}` : 'Select a live terminal first', shortcut: '⌘/Ctrl F', icon: 'log', disabled: !selectedSession },
     { id: 'sessions', label: 'Open live terminal', description: 'View active serial terminals', icon: 'session' },
     { id: 'logs', label: 'Open saved logs', description: 'Browse captured serial logs', icon: 'log' },
+    { id: 'mobile', label: 'Open mobile share', description: 'Create local links for phones and tablets', icon: 'mobile' },
     { id: 'preferences', label: 'Open preferences', description: 'Configure application defaults', icon: 'preferences' },
   ], [nativeRecoveryPending, selectedSession]);
   const runCommand = (action: CommandPaletteAction) => {
@@ -208,6 +209,7 @@ function App() {
     if (action.id === 'find-output') { navigate('sessions'); selectedMonitor()?.focusFind(); }
     if (action.id === 'sessions') navigate('sessions');
     if (action.id === 'logs') navigate('logs');
+    if (action.id === 'mobile') navigate('mobile');
     if (action.id === 'preferences') navigate('preferences');
   };
 
@@ -790,6 +792,7 @@ function App() {
         {page !== 'sessions' && (page === 'preferences' ? <PreferencesScreen preferences={preferences} nativeEnabled={nativeRuntime} onSave={saveAppPreferences} onThemePreview={setTheme} onChooseLogDirectory={chooseLogDirectory} />
           : page === 'help' ? <HelpFeedbackPanel nativeEnabled={nativeRuntime} openSessionCount={sessions.length} activeSessionCount={sessions.filter((session) => session.native && session.connectionState === 'connected').length} />
             : page === 'logs' ? <SavedLogsScreen nativeEnabled={nativeRuntime} activeLogPath={activeLogPath} onRequestConnection={openConnectionDialog} onReconnectWithSettings={openReconnectSetup} />
+              : page === 'mobile' ? <MobileShareScreen nativeEnabled={nativeRuntime} sessions={sessions.map<MobileShareSession>((session) => ({ id: session.id, sessionName: session.sessionName, port: session.port, native: session.native, connectionState: session.connectionState }))} selectedSessionId={selectedSessionId} onSelectSession={setSelectedSessionId} />
               : isWelcomeVisible ? <WelcomeScreen nativeEnabled={nativeRuntime} onConnect={openConnectionDialog} onExplore={() => setWelcomeVisible(false)} />
                 : <PortDiscoveryDashboard nativeEnabled={nativeRuntime} onScan={listNativeSerialPorts} onConnect={openConnectionDialog} onRequestConnection={openConnectionDialog} />)}
       </div>
@@ -843,7 +846,6 @@ function SessionsWorkspace({ sessions, selectedSessionId, onSelect, onRequestCon
   };
   return <section ref={workspaceRef} className="sd-sessions-workspace" aria-label="Live terminal workspace">
     <header className="sd-sessions-workspace-header"><div><p>LIVE TERMINAL WORKSPACE</p><h1>Live terminal</h1><span>{activeView === 'tiled' ? 'Compare active serial monitors side by side.' : 'Run independent serial monitors in separate terminal tabs.'}</span></div><div className="sd-sessions-workspace-actions">{showViewControl && <div className="sd-session-view-switch" role="group" aria-label="Terminal layout"><button type="button" className={view === 'tabs' ? 'is-selected' : ''} aria-pressed={view === 'tabs'} onClick={() => setView('tabs')}>Tabs</button><button type="button" className={view === 'tiled' ? 'is-selected' : ''} aria-pressed={view === 'tiled'} onClick={() => setView('tiled')}>Tiled</button></div>}<SessionWorkspaceManager layout={view} sessions={sessions.map((session) => ({ id: session.id, identity: stableTerminalSessionIdentity(session) }))} selectedSessionId={selectedSessionId} onApply={applySavedWorkspace} /><span className="sd-session-count"><i className={activeCount ? 'is-active' : ''} /> {activeCount} active</span><button ref={newTerminalButtonRef} className="sd-primary-button" type="button" onClick={onRequestConnection}><Radio size={16} /> New terminal</button></div></header>
-    <WorkspaceMobileSharePanel nativeEnabled={nativeRuntime} activeSessionCount={activeCount} />
     {!sessions.length && <article className="sd-sessions-empty-panel"><div className="sd-sessions-empty-icon"><TerminalSquare size={21} /></div><div><h2>No terminal tabs are open.</h2><p>Use <strong>New terminal</strong> to add a live serial monitor to this workspace.</p></div></article>}
     {sessions.length > 0 && <>
       <div className="sd-session-tabs" role={activeView === 'tabs' ? 'tablist' : 'list'} aria-label={activeView === 'tabs' ? 'Open serial terminals' : 'Open serial terminals; select one for terminal actions'}>

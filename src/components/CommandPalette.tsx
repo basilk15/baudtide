@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Command, FileText, MonitorPlay, Plus, Search, Settings2, TerminalSquare, X } from 'lucide-react';
+import { Command, FileText, MonitorPlay, Plus, Search, Settings2, Smartphone, TerminalSquare, X } from 'lucide-react';
 import './phase3-controls.css';
 
-export type CommandPaletteAction = { id: string; label: string; description: string; shortcut?: string; icon?: 'new' | 'session' | 'log' | 'preferences'; disabled?: boolean; run?: () => void };
+export type CommandPaletteAction = { id: string; label: string; description: string; shortcut?: string; icon?: 'new' | 'session' | 'log' | 'mobile' | 'preferences'; disabled?: boolean; run?: () => void };
 
 const defaultActions: CommandPaletteAction[] = [
   { id: 'new-connection', label: 'New connection', description: 'Start a local connection setup preview', shortcut: 'N', icon: 'new' },
@@ -66,6 +66,6 @@ export function CommandPalette({ actions = defaultActions, onAction }: CommandPa
 }
 
 function PaletteIcon({ icon }: { icon?: CommandPaletteAction['icon'] }) {
-  const Icon = icon === 'new' ? Plus : icon === 'log' ? FileText : icon === 'preferences' ? Settings2 : TerminalSquare;
+  const Icon = icon === 'new' ? Plus : icon === 'log' ? FileText : icon === 'mobile' ? Smartphone : icon === 'preferences' ? Settings2 : TerminalSquare;
   return <i><Icon size={16} /></i>;
 }

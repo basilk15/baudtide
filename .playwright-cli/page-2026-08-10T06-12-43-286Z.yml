@@ -1,0 +1,55 @@
+- generic [ref=e16]:
+  - complementary "BaudTide sidebar" [ref=e17]:
+    - generic [ref=e18]:
+      - img "BaudTide" [ref=e19]
+      - generic [ref=e20]: baudtide
+      - button "Collapse sidebar" [ref=e21] [cursor=pointer]
+    - navigation "Workspace navigation" [ref=e26]:
+      - paragraph [ref=e27]: Workspace
+      - button "Dashboard" [ref=e28] [cursor=pointer]
+      - button "Live terminal" [active] [ref=e35] [cursor=pointer]
+      - button "Saved logs" [ref=e41] [cursor=pointer]
+      - button "Mobile share" [ref=e49] [cursor=pointer]
+      - button "Preferences" [ref=e55] [cursor=pointer]
+      - button "Help & feedback" [ref=e62] [cursor=pointer]
+    - paragraph [ref=e68]: Local workspace
+  - generic [ref=e69]:
+    - generic [ref=e70]:
+      - generic [ref=e71]:
+        - generic [ref=e72]: BaudTide
+        - generic [ref=e73]: /
+        - strong [ref=e74]: Live terminal
+      - generic [ref=e75]: Browser preview · no serial backend
+      - generic [ref=e76]:
+        - button "Search commands K" [ref=e77] [cursor=pointer]:
+          - generic [ref=e81]: Search commands
+          - generic [ref=e82]: K
+        - button "Switch to light theme" [ref=e85] [cursor=pointer]
+        - button "Notifications" [ref=e103] [cursor=pointer]
+        - button "Open preferences" [ref=e107] [cursor=pointer]:
+          - generic [ref=e113]:
+            - strong [ref=e114]: Preferences
+            - generic [ref=e115]: Application settings
+    - region "Live terminal workspace" [ref=e309]:
+      - generic [ref=e310]:
+        - generic [ref=e311]:
+          - paragraph [ref=e312]: LIVE TERMINAL WORKSPACE
+          - heading "Live terminal" [level=1] [ref=e313]
+          - generic [ref=e314]: Run independent serial monitors in separate terminal tabs.
+        - generic [ref=e315]:
+          - generic "Saved terminal workspaces" [ref=e316]:
+            - generic [ref=e317]:
+              - button "Save workspace" [disabled] [ref=e318]
+              - button "Open saved workspace" [ref=e325] [cursor=pointer]:
+                - generic [ref=e326]: Saved workspaces
+              - button "Rename saved workspace" [disabled] [ref=e329]
+              - button "Delete saved workspace" [disabled] [ref=e333]
+          - generic [ref=e340]: 0 active
+          - button "New terminal" [ref=e342] [cursor=pointer]
+      - article [ref=e349]:
+        - generic [ref=e355]:
+          - heading "No terminal tabs are open." [level=2] [ref=e356]
+          - paragraph [ref=e357]:
+            - text: Use
+            - strong [ref=e358]: New terminal
+            - text: to add a live serial monitor to this workspace.

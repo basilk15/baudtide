@@ -7,6 +7,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Settings2,
+  Smartphone,
   TerminalSquare,
   X,
 } from 'lucide-react';
@@ -19,6 +20,7 @@ const defaultItems: NavigationItem[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'sessions', label: 'Live terminal', icon: TerminalSquare },
   { id: 'logs', label: 'Saved logs', icon: FileText },
+  { id: 'mobile', label: 'Mobile share', icon: Smartphone },
 ];
 
 type SidebarNavigationProps = {

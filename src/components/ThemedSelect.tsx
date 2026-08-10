@@ -14,10 +14,11 @@ type ThemedSelectProps = {
   label: string;
   invalid?: boolean;
   compact?: boolean;
+  disabled?: boolean;
   onChange: (value: string) => void;
 };
 
-export function ThemedSelect({ value, options, placeholder, label, invalid = false, compact = false, onChange }: ThemedSelectProps) {
+export function ThemedSelect({ value, options, placeholder, label, invalid = false, compact = false, disabled = false, onChange }: ThemedSelectProps) {
   const [open, setOpen] = useState(false);
   const selectRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -33,7 +34,7 @@ export function ThemedSelect({ value, options, placeholder, label, invalid = fal
   };
 
   const openMenu = (index = selectedIndex >= 0 ? selectedIndex : 0) => {
-    if (options.length === 0) return;
+    if (disabled || options.length === 0) return;
     setActiveIndex(Math.max(0, Math.min(index, options.length - 1)));
     setOpen(true);
   };
@@ -113,7 +114,7 @@ export function ThemedSelect({ value, options, placeholder, label, invalid = fal
   };
 
   return <div className={`sd-themed-select ${compact ? 'is-compact' : ''}`} ref={selectRef}>
-    <button ref={triggerRef} className={`sd-themed-select-trigger ${invalid ? 'is-invalid' : ''}`} type="button" aria-label={label} aria-haspopup="listbox" aria-controls={open ? listboxId : undefined} aria-expanded={open} onClick={() => open ? closeMenu() : openMenu()} onKeyDown={handleTriggerKeyDown}>
+    <button ref={triggerRef} className={`sd-themed-select-trigger ${invalid ? 'is-invalid' : ''}`} type="button" aria-label={label} aria-haspopup="listbox" aria-controls={open ? listboxId : undefined} aria-expanded={open} disabled={disabled} onClick={() => open ? closeMenu() : openMenu()} onKeyDown={handleTriggerKeyDown}>
       <span className={selected ? '' : 'is-placeholder'}>{selected?.label ?? placeholder}</span><ChevronDown size={18} />
     </button>
     {open && <div className="sd-themed-select-options" id={listboxId} role="listbox" aria-label={label}>
