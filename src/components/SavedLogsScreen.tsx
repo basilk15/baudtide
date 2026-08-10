@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Check, Clock3, Copy, FileText, FolderOpen, HardDrive, LoaderCircle, Radio, RefreshCw, Save, Search, Trash2, X } from 'lucide-react';
 import { cancelNativeSavedLogSearch, deleteNativeSavedLog, listNativeSavedLogs, readNativeSavedLog, saveNativeSavedLog, searchNativeSavedLogs, type SavedLog, type SavedLogContent, type SavedLogSearchResponse } from '../lib/serial';
 import type { ConnectionDialogDefaults } from './ConnectionDialog';
+import { ThemedSelect, type ThemedSelectOption } from './ThemedSelect';
 import './saved-logs.css';
 
 type SavedLogsScreenProps = {
@@ -21,6 +22,13 @@ const logStateFilterLabels: Record<LogStateFilter, string> = {
   completed: 'Completed',
   attention: 'Needs attention',
 };
+
+const logSortOptions: ThemedSelectOption[] = [
+  { value: 'newest', label: 'Newest first' },
+  { value: 'oldest', label: 'Oldest first' },
+  { value: 'largest', label: 'Largest first' },
+  { value: 'name', label: 'Name A–Z' },
+];
 
 function timestampForSort(log: SavedLog) {
   const timestamp = Date.parse(log.startedAt ?? log.modifiedAt);
@@ -448,13 +456,8 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
         >{logStateFilterLabels[filter]} <span>{stateFilterCounts[filter]}</span></button>)}
       </div>
       <div className="sd-saved-log-sort-control">
-        <label htmlFor="saved-log-sort">Sort</label>
-        <select id="saved-log-sort" value={sort} onChange={(event) => setSort(event.target.value as LogSort)}>
-          <option value="newest">Newest first</option>
-          <option value="oldest">Oldest first</option>
-          <option value="largest">Largest first</option>
-          <option value="name">Name A–Z</option>
-        </select>
+        <span className="sd-saved-log-sort-label">Sort</span>
+        <ThemedSelect value={sort} options={logSortOptions} placeholder="Newest first" label="Sort saved logs" compact onChange={(value) => setSort(value as LogSort)} />
         {hasActiveOrganization && <button className="sd-saved-log-reset" type="button" onClick={resetOrganization}>Reset organization</button>}
       </div>
     </section>
