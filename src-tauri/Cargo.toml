@@ -1,6 +1,6 @@
 [package]
 name = "baudtide"
-version = "0.2.0"
+version = "0.3.0"
 description = "A focused, multi-port serial monitor for Linux"
 authors = ["Basil"]
 edition = "2021"
