@@ -1,6 +1,6 @@
 import type { LucideIcon } from 'lucide-react';
 
-export type SignalDeckPage = 'dashboard' | 'sessions' | 'logs' | 'mobile' | 'preferences' | 'help';
+export type SignalDeckPage = 'dashboard' | 'sessions' | 'visualize' | 'logs' | 'mobile' | 'preferences' | 'help';
 
 export type NavigationItem = {
   id: SignalDeckPage;

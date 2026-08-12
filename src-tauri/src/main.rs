@@ -4468,12 +4468,13 @@ mod tests {
         register_mobile_share_client, register_mobile_share_for_session, release_capture_quota,
         remove_log_text_indexes_for_path_in_directory, saved_log_text_index_path,
         search_fresh_log_text_index_in_directory, search_raw_log, stable_saved_log_content_search,
-        stop_mobile_share_for_session, validate_preference_log_directory, validated_websocket_key,
-        websocket_accept_key, ActiveMobileShare, ActiveMobileWorkspaceShare, ActiveSession,
-        ApplicationSettings, CaptureQuota, FlowControlSetting, LogIndexRecord, MobileReplayBuffer,
-        MobileShareRequest, MobileWritePayloadError, MobileWriteRateState, ParitySetting,
-        SavedLogFingerprint, SavedLogTextIndexHeader, SerialSettings, SerialState, SessionInfo,
-        StartSessionRequest, StopBitsSetting, CAPTURE_DURABILITY_SYNC_INTERVAL, GIBIBYTE,
+        stop_mobile_share_for_session, valid_serial_port, validate_preference_log_directory,
+        validated_websocket_key, websocket_accept_key, ActiveMobileShare,
+        ActiveMobileWorkspaceShare, ActiveSession, ApplicationSettings, CaptureQuota,
+        FlowControlSetting, LogIndexRecord, MobileReplayBuffer, MobileShareRequest,
+        MobileWritePayloadError, MobileWriteRateState, ParitySetting, SavedLogFingerprint,
+        SavedLogTextIndexHeader, SerialSettings, SerialState, SessionInfo, StartSessionRequest,
+        StopBitsSetting, CAPTURE_DURABILITY_SYNC_INTERVAL, GIBIBYTE,
         MOBILE_SHARE_EVENT_QUEUE_LIMIT, SEARCH_CANCELLED_MESSAGE, SEARCH_INDEX_MAGIC,
         SEARCH_INDEX_SCHEMA_VERSION, SEARCH_PER_LOG_BYTE_LIMIT, SEARCH_READ_BUFFER_SIZE,
     };
@@ -4491,6 +4492,14 @@ mod tests {
         time::{Duration, Instant},
     };
     use uuid::Uuid;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn serial_path_validation_accepts_numeric_linux_pty_slaves_without_traversal() {
+        assert!(valid_serial_port("/dev/pts/2"));
+        assert!(!valid_serial_port("/dev/pts/console"));
+        assert!(!valid_serial_port("/dev/pts/2/../ttyUSB0"));
+    }
 
     #[derive(Debug, PartialEq)]
     struct TestSession {
@@ -5966,17 +5975,24 @@ fn valid_serial_port(port: &str) -> bool {
     }
     #[cfg(target_os = "linux")]
     {
-        return [
+        let has_parent = Path::new(port)
+            .components()
+            .any(|component| component == std::path::Component::ParentDir);
+        if has_parent {
+            return false;
+        }
+        let accepted_device_prefix = [
             "/dev/tty",
             "/dev/rfcomm",
             "/dev/serial/by-id/",
             "/dev/serial/by-path/",
         ]
         .iter()
-        .any(|prefix| port.starts_with(prefix))
-            && !Path::new(port)
-                .components()
-                .any(|component| component == std::path::Component::ParentDir);
+        .any(|prefix| port.starts_with(prefix));
+        let accepted_pty = port
+            .strip_prefix("/dev/pts/")
+            .is_some_and(|name| !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_digit()));
+        return accepted_device_prefix || accepted_pty;
     }
     #[cfg(target_os = "macos")]
     {

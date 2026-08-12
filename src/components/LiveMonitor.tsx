@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useId, useImperativeHandle, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { AlertTriangle, Check, ChevronDown, ChevronsDown, CirclePause, CirclePlay, Copy, Eraser, LoaderCircle, PlugZap, RotateCw, Search, Send, SlidersHorizontal, TerminalSquare, WifiOff, X } from 'lucide-react';
 import { listenForSerialData, listenForSerialStatus, takePendingNativeSerialData, type SerialDataEvent } from '../lib/serial';
+import { liveTelemetryStore } from '../lib/telemetry';
 import { lineEndingText, type DisplayEncoding, type LineEnding } from '../lib/preferences';
 import { ThemedSelect } from './ThemedSelect';
 import './live-monitor.css';
@@ -213,6 +214,8 @@ export type LiveMonitorProps = {
   /** Called when the WebView cannot finish its listener/startup handoff. */
   onNativeSessionStartupFailure?: () => void | Promise<void>;
   sessionId?: string;
+  /** Stable App-owned identity; unlike sessionId, it survives a native reconnect. */
+  telemetrySessionKey?: string;
   nativeSession?: boolean;
   /** Absolute local path returned for a desktop session's raw capture. */
   capturePath?: string;
@@ -275,6 +278,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   onNativeStorageLimit,
   onNativeSessionStartupFailure,
   sessionId,
+  telemetrySessionKey,
   nativeSession = false,
   capturePath,
 }: LiveMonitorProps, ref) {
@@ -576,6 +580,19 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
       // Native reads can arrive between registering the listener and receiving
       // the buffered startup replay. Sequence numbers make both paths one
       // ordered stream, avoiding a missing prefix or duplicate render.
+      const processOrderedSerialEvent = (event: SerialDataEvent) => {
+        // This is the sole serial-event handoff into telemetry. It runs only
+        // after startup replay and live delivery have been merged by native
+        // sequence number, so telemetry cannot create another listener or
+        // observe a different ordering than the terminal.
+        renderSerialChunk(event);
+        try {
+          if (telemetrySessionKey) liveTelemetryStore.ingestOrderedSerialEvent(telemetrySessionKey, event);
+        } catch {
+          // Telemetry is best-effort. A parser or subscriber failure must
+          // never interrupt the ordered terminal stream or raw capture.
+        }
+      };
       const acceptSerialEvent = (event: SerialDataEvent) => {
         if (event.sequence < nextSequence) return;
         if (!pendingEvents.has(event.sequence) && pendingEvents.size >= MAX_PENDING_SERIAL_EVENTS) {
@@ -596,7 +613,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
           const next = pendingEvents.get(nextSequence);
           pendingEvents.delete(nextSequence);
           nextSequence += 1;
-          if (next) renderSerialChunk(next);
+          if (next) processOrderedSerialEvent(next);
         }
       };
       const continueAfterSequence = (sequence: number) => {
@@ -606,7 +623,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
           const next = pendingEvents.get(nextSequence);
           pendingEvents.delete(nextSequence);
           nextSequence += 1;
-          if (next) renderSerialChunk(next);
+          if (next) processOrderedSerialEvent(next);
         }
       };
       const reportBackendTerminalFailure = () => {
@@ -701,7 +718,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
       };
     }
     return undefined;
-  }, [nativeSession, sessionId]);
+  }, [nativeSession, sessionId, telemetrySessionKey]);
 
   useEffect(() => () => {
     flushFinalPartialLine();
