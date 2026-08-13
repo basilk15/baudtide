@@ -39,6 +39,8 @@ const MAX_VISIBLE_DATA_LINE_CHARACTERS = 4096;
 const CONTINUATION_PREFIX = '↪ ';
 const CONTINUATION_SUFFIX = ' ↪ continued';
 const MAX_QUEUED_DISPLAY_CHANGES = 2_048;
+const MAX_PENDING_DISPLAY_EVENTS = 512;
+const MAX_PENDING_DISPLAY_BYTES = 2 * 1024 * 1024;
 const MAX_PENDING_SERIAL_EVENTS = 256;
 const MAX_COMMAND_HISTORY = 50;
 const MAX_SERIAL_WRITE_BYTES = 64 * 1024;
@@ -217,6 +219,8 @@ export type LiveMonitorProps = {
   /** Stable App-owned identity; unlike sessionId, it survives a native reconnect. */
   telemetrySessionKey?: string;
   nativeSession?: boolean;
+  /** Keep serial ingestion alive while pausing expensive display work for hidden tabs. */
+  displayActive?: boolean;
   /** Absolute local path returned for a desktop session's raw capture. */
   capturePath?: string;
 };
@@ -280,6 +284,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   sessionId,
   telemetrySessionKey,
   nativeSession = false,
+  displayActive = true,
   capturePath,
 }: LiveMonitorProps, ref) {
   const [initialComposerState] = useState(() => loadComposerState(sessionId, lineEnding));
@@ -327,10 +332,16 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   // events. Keep the visible, unfinished line separate from line termination.
   const currentDataLineRef = useRef<MonitorLine | null>(null);
   const skipNextLineFeedRef = useRef(false);
+  const displayActiveRef = useRef(displayActive);
+  const pendingDisplayEventsRef = useRef<SerialDataEvent[]>([]);
+  const pendingDisplayBytesRef = useRef(0);
+  const displayBacklogDroppedRef = useRef(false);
   const lineIdRef = useRef(0);
   const pausedRef = useRef(false);
   const queuedChangesRef = useRef<DisplayChange[]>([]);
   const renderFrameRef = useRef<number | null>(null);
+  const autoScrollRef = useRef(true);
+  const autoScrollFrameRef = useRef<number | null>(null);
   const onConnectionStateChangeRef = useRef(onConnectionStateChange);
   const onNativeSessionEndedRef = useRef(onNativeSessionEnded);
   const onNativeStorageLimitRef = useRef(onNativeStorageLimit);
@@ -340,6 +351,21 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   const historyDraftRef = useRef('');
   const modeDraftsRef = useRef<Record<SendMode, string>>({ text: '', hex: '' });
   const capturePathCopyResetRef = useRef<number | undefined>(undefined);
+
+  const setAutoScrollState = (next: boolean) => {
+    if (autoScrollRef.current === next) return;
+    autoScrollRef.current = next;
+    setAutoScroll(next);
+  };
+
+  const scheduleAutoScroll = () => {
+    if (autoScrollFrameRef.current !== null) return;
+    autoScrollFrameRef.current = window.requestAnimationFrame(() => {
+      autoScrollFrameRef.current = null;
+      if (pausedRef.current || !autoScrollRef.current || !outputRef.current) return;
+      outputRef.current.scrollTop = outputRef.current.scrollHeight;
+    });
+  };
 
   // A mounted monitor normally keeps the same id across reconnects. If React
   // ever reuses it for another session, restore only that session's bounded
@@ -364,6 +390,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
 
   useEffect(() => () => {
     if (capturePathCopyResetRef.current !== undefined) window.clearTimeout(capturePathCopyResetRef.current);
+    if (autoScrollFrameRef.current !== null) window.cancelAnimationFrame(autoScrollFrameRef.current);
   }, []);
 
   useEffect(() => {
@@ -563,6 +590,50 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
     setLines((current) => [...current, line].slice(-500));
   };
 
+  const queueInactiveDisplayEvent = (event: SerialDataEvent) => {
+    const pending = pendingDisplayEventsRef.current;
+    pending.push(event);
+    pendingDisplayBytesRef.current += event.bytes.length;
+    if (pending.length <= MAX_PENDING_DISPLAY_EVENTS && pendingDisplayBytesRef.current <= MAX_PENDING_DISPLAY_BYTES) return;
+    pending.length = 0;
+    pendingDisplayBytesRef.current = 0;
+    displayBacklogDroppedRef.current = true;
+  };
+
+  const replayInactiveDisplayEvents = () => {
+    const pending = pendingDisplayEventsRef.current.splice(0);
+    pendingDisplayBytesRef.current = 0;
+    if (displayBacklogDroppedRef.current) {
+      currentDataLineRef.current = null;
+      skipNextLineFeedRef.current = false;
+      utf8DecoderRef.current = new TextDecoder();
+      appendDisplayLine({
+        id: `display-hidden-overload-${Date.now()}`,
+        timestamp: currentTimestamp(),
+        text: 'Live display fell behind while this terminal was hidden. The raw capture contains all persisted bytes.',
+        kind: 'error',
+      });
+      displayBacklogDroppedRef.current = false;
+    }
+    for (const event of pending) renderSerialChunk(event);
+  };
+
+  useEffect(() => {
+    const wasActive = displayActiveRef.current;
+    displayActiveRef.current = displayActive;
+    if (!displayActive) {
+      if (renderFrameRef.current !== null) {
+        window.cancelAnimationFrame(renderFrameRef.current);
+        renderFrameRef.current = null;
+      }
+      return;
+    }
+    if (!wasActive) {
+      flushDisplayChanges();
+      replayInactiveDisplayEvents();
+    }
+  }, [displayActive]);
+
   useEffect(() => {
     if (nativeSession && sessionId) {
       let unlistenData: (() => void) | undefined;
@@ -576,6 +647,9 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
       skipNextLineFeedRef.current = false;
       utf8DecoderRef.current = new TextDecoder();
       displayOverloadReportedRef.current = false;
+      pendingDisplayEventsRef.current = [];
+      pendingDisplayBytesRef.current = 0;
+      displayBacklogDroppedRef.current = false;
 
       // Native reads can arrive between registering the listener and receiving
       // the buffered startup replay. Sequence numbers make both paths one
@@ -585,7 +659,8 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
         // after startup replay and live delivery have been merged by native
         // sequence number, so telemetry cannot create another listener or
         // observe a different ordering than the terminal.
-        renderSerialChunk(event);
+        if (displayActiveRef.current) renderSerialChunk(event);
+        else queueInactiveDisplayEvent(event);
         try {
           if (telemetrySessionKey) liveTelemetryStore.ingestOrderedSerialEvent(telemetrySessionKey, event);
         } catch {
@@ -733,7 +808,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   }, [initialConnectionState, nativeSession]);
 
   useEffect(() => {
-    if (!isPaused && autoScroll && outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight;
+    if (!isPaused && autoScroll) scheduleAutoScroll();
   }, [filteredLines, isPaused, autoScroll]);
 
   const toggleDisplayPause = () => {
@@ -755,10 +830,8 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
     setPaused(false);
     setPausedLines([]);
     setWaitingLines(0);
-    setAutoScroll(true);
-    window.requestAnimationFrame(() => {
-      if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight;
-    });
+    setAutoScrollState(true);
+    scheduleAutoScroll();
   };
 
   const send = async (event: FormEvent) => {
@@ -885,6 +958,9 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
     currentDataLineRef.current = null;
     skipNextLineFeedRef.current = false;
     utf8DecoderRef.current = new TextDecoder();
+    pendingDisplayEventsRef.current = [];
+    pendingDisplayBytesRef.current = 0;
+    displayBacklogDroppedRef.current = false;
     if (renderFrameRef.current !== null) {
       window.cancelAnimationFrame(renderFrameRef.current);
       renderFrameRef.current = null;
@@ -1053,7 +1129,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
         <div className="sd-terminal-toolbar">
           <div className="sd-terminal-title"><span className="sd-terminal-led" /> Incoming data <em>{lines.length} lines in display</em></div>
           <div className="sd-terminal-controls">
-            <label className="sd-autoscroll-toggle"><input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} /> Auto-scroll</label>
+            <label className="sd-autoscroll-toggle"><input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScrollState(event.target.checked)} /> Auto-scroll</label>
             {(!autoScroll || isPaused) && <button className="sd-monitor-secondary sd-go-to-end" type="button" onClick={goToEnd} title="Resume the display and jump to the newest data"><ChevronsDown size={15} /> Go to end</button>}
             <button className={`sd-monitor-secondary ${isPaused ? 'active' : ''}`} type="button" onClick={toggleDisplayPause}>{isPaused ? <CirclePlay size={15} /> : <CirclePause size={15} />}{isPaused ? 'Resume display' : 'Pause display'}</button>
             <button
@@ -1127,7 +1203,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
         )}
         <div className={`sd-terminal-output ${showTimestamps ? '' : 'no-timestamps'}`} ref={outputRef} onScroll={(event) => {
           const target = event.currentTarget;
-          setAutoScroll(target.scrollHeight - target.scrollTop - target.clientHeight < 32);
+          setAutoScrollState(target.scrollHeight - target.scrollTop - target.clientHeight < 32);
         }} role="log" aria-live={isPaused ? 'off' : 'polite'} aria-relevant="additions text" aria-label={showTimestamps ? 'Timestamped serial output' : 'Serial output'}>
           {!visibleLines.length && <div className="sd-terminal-empty"><TerminalSquare size={23} /><strong>Display cleared</strong><span>New incoming bytes will appear here. The active log is still recording.</span></div>}
           {visibleLines.length > 0 && !filteredLines.length && <div className="sd-terminal-empty"><Search size={23} /><strong>No matching output</strong><span>Try a different filter or clear the search.</span></div>}

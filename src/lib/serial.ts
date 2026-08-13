@@ -82,6 +82,45 @@ export type SerialStatusEvent = {
   message: string;
 };
 
+type SerialDataHandler = (event: SerialDataEvent) => void;
+type SerialStatusHandler = (event: SerialStatusEvent) => void;
+
+// Tauri events are global to the WebView. Keep one native listener per event
+// type and fan out only to the matching session. A listener per mounted
+// terminal makes every incoming chunk visit every hidden tab as well.
+const serialDataHandlers = new Map<string, Set<SerialDataHandler>>();
+const serialStatusHandlers = new Map<string, Set<SerialStatusHandler>>();
+let serialDataListenerPromise: Promise<UnlistenFn> | null = null;
+let serialStatusListenerPromise: Promise<UnlistenFn> | null = null;
+
+function ensureSerialDataListener() {
+  if (!serialDataListenerPromise) {
+    serialDataListenerPromise = listen<SerialDataEvent>('serial-data', (event) => {
+      const handlers = serialDataHandlers.get(event.payload.sessionId);
+      if (!handlers) return;
+      handlers.forEach((handler) => handler(event.payload));
+    }).catch((error) => {
+      serialDataListenerPromise = null;
+      throw error;
+    });
+  }
+  return serialDataListenerPromise;
+}
+
+function ensureSerialStatusListener() {
+  if (!serialStatusListenerPromise) {
+    serialStatusListenerPromise = listen<SerialStatusEvent>('serial-status', (event) => {
+      const handlers = serialStatusHandlers.get(event.payload.sessionId);
+      if (!handlers) return;
+      handlers.forEach((handler) => handler(event.payload));
+    }).catch((error) => {
+      serialStatusListenerPromise = null;
+      throw error;
+    });
+  }
+  return serialStatusListenerPromise;
+}
+
 export type SavedLog = {
   path: string;
   fileName: string;
@@ -264,14 +303,42 @@ export async function saveNativeSavedLog(sourcePath: string) {
 
 export async function listenForSerialData(sessionId: string, handler: (event: SerialDataEvent) => void): Promise<UnlistenFn> {
   ensureNativeRuntime();
-  return listen<SerialDataEvent>('serial-data', (event) => {
-    if (event.payload.sessionId === sessionId) handler(event.payload);
-  });
+  const handlers = serialDataHandlers.get(sessionId) ?? new Set<SerialDataHandler>();
+  handlers.add(handler);
+  serialDataHandlers.set(sessionId, handlers);
+  try {
+    await ensureSerialDataListener();
+  } catch (error) {
+    handlers.delete(handler);
+    if (!handlers.size) serialDataHandlers.delete(sessionId);
+    throw error;
+  }
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    handlers.delete(handler);
+    if (!handlers.size) serialDataHandlers.delete(sessionId);
+  };
 }
 
 export async function listenForSerialStatus(sessionId: string, handler: (event: SerialStatusEvent) => void): Promise<UnlistenFn> {
   ensureNativeRuntime();
-  return listen<SerialStatusEvent>('serial-status', (event) => {
-    if (event.payload.sessionId === sessionId) handler(event.payload);
-  });
+  const handlers = serialStatusHandlers.get(sessionId) ?? new Set<SerialStatusHandler>();
+  handlers.add(handler);
+  serialStatusHandlers.set(sessionId, handlers);
+  try {
+    await ensureSerialStatusListener();
+  } catch (error) {
+    handlers.delete(handler);
+    if (!handlers.size) serialStatusHandlers.delete(sessionId);
+    throw error;
+  }
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    handlers.delete(handler);
+    if (!handlers.size) serialStatusHandlers.delete(sessionId);
+  };
 }

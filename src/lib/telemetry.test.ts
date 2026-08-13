@@ -116,6 +116,18 @@ describe('TelemetrySessionStore', () => {
     expect(Object.isFrozen(afterIngest.samples)).toBe(true);
   });
 
+  it('does not notify subscribers for chunks that have not completed a telemetry line', () => {
+    const store = new TelemetrySessionStore();
+    let subscriberCalls = 0;
+    store.subscribe('stable-ui-key', () => { subscriberCalls += 1; });
+
+    store.ingestOrderedSerialEvent('stable-ui-key', event('native-a', 1, 'temp='));
+    expect(subscriberCalls).toBe(0);
+
+    store.ingestOrderedSerialEvent('stable-ui-key', event('native-a', 2, '1\n'));
+    expect(subscriberCalls).toBe(1);
+  });
+
   it('contains subscriber failures and safely notifies an evicted session', () => {
     const store = new TelemetrySessionStore({ maxSessions: 1 });
     let healthySubscriberCalls = 0;

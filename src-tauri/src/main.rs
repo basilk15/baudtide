@@ -30,6 +30,10 @@ const READ_BUFFER_SIZE: usize = 4096;
 /// only in filesystem caches while avoiding an expensive sync for every UART
 /// read chunk.
 const CAPTURE_DURABILITY_SYNC_INTERVAL: Duration = Duration::from_secs(1);
+/// Hand bytes to the operating system at a bounded cadence instead of forcing
+/// a flush for every read chunk. The durability sync remains on its own,
+/// slower cadence below.
+const CAPTURE_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
 /// Startup data is normally drained as soon as the React monitor subscribes.
 /// This cap prevents a disconnected/failed WebView from retaining an
 /// unbounded device stream; raw logging continues even if it is reached.
@@ -3044,6 +3048,15 @@ fn broadcast_mobile_serial_data(
     replay: &Arc<Mutex<MobileReplayBuffer>>,
     event: &SerialDataEvent,
 ) {
+    let clients = match shares.lock() {
+        Ok(shares) => shares
+            .get(&event.session_id)
+            .map(|share| Arc::clone(&share.clients)),
+        Err(_) => None,
+    };
+    let Some(clients) = clients else {
+        return;
+    };
     let payload = match serde_json::to_string(event) {
         Ok(payload) => payload,
         Err(_) => return,
@@ -3055,15 +3068,6 @@ fn broadcast_mobile_serial_data(
         return;
     };
     replay.push(event.clone());
-    let clients = match shares.lock() {
-        Ok(shares) => shares
-            .get(&event.session_id)
-            .map(|share| Arc::clone(&share.clients)),
-        Err(_) => None,
-    };
-    let Some(clients) = clients else {
-        return;
-    };
     if let Ok(mut clients) = clients.lock() {
         clients.retain(|_, sender| sender.try_send(payload.clone()).is_ok());
     };
@@ -4230,6 +4234,7 @@ where
     let mut terminal_status: Option<(&'static str, String)> = None;
     let mut next_sequence = 1_u64;
     let mut last_durable_sync = Instant::now();
+    let mut last_flush = Instant::now();
 
     while !stop.load(Ordering::Acquire) {
         match reader.read(&mut buffer) {
@@ -4248,16 +4253,26 @@ where
                             ));
                             break;
                         }
-                        match log.write_all(&bytes[..allowed]).and_then(|()| log.flush()) {
-                            Ok(())
-                                if !capture_durability_sync_is_due(last_durable_sync.elapsed()) =>
-                            {
+                        let sync_due = capture_durability_sync_is_due(last_durable_sync.elapsed());
+                        let flush_due = sync_due || last_flush.elapsed() >= CAPTURE_FLUSH_INTERVAL;
+                        match log.write_all(&bytes[..allowed]).and_then(|()| {
+                            if flush_due {
+                                log.flush()
+                            } else {
+                                Ok(())
+                            }
+                        }) {
+                            Ok(()) if !sync_due => {
+                                if flush_due {
+                                    last_flush = Instant::now();
+                                }
                                 quota.used_bytes = quota.used_bytes.saturating_add(allowed as u64);
                                 allowed
                             }
                             Ok(()) => match log.get_ref().sync_data() {
                                 Ok(()) => {
                                     last_durable_sync = Instant::now();
+                                    last_flush = Instant::now();
                                     quota.used_bytes =
                                         quota.used_bytes.saturating_add(allowed as u64);
                                     allowed

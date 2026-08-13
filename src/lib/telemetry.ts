@@ -407,6 +407,8 @@ type InternalSession = {
   assembler: Utf8LineAssembler;
   parser: TelemetryLineParser;
   samples: TelemetrySample[];
+  sampleWriteIndex: number;
+  maxSamplesPerSession: number;
   fields: Map<string, MutableTelemetryField>;
   gaps: TelemetryGap[];
   latestNativeSessionId: string | null;
@@ -448,7 +450,7 @@ export class TelemetrySessionStore {
   ingestOrderedSerialEvent(sessionKey: string, event: SerialDataEvent) {
     if (!sessionKey) return;
     const session = this.ensureSession(sessionKey);
-    this.invalidateSnapshot(session);
+    let snapshotChanged = false;
     if (session.latestNativeSessionId && session.latestNativeSessionId !== event.sessionId) {
       session.assembler.reset();
       session.parser.resetForStreamBoundary();
@@ -461,11 +463,17 @@ export class TelemetrySessionStore {
         nextSequence: event.sequence,
       });
       if (session.gaps.length > this.maxGapsPerSession) session.gaps.splice(0, session.gaps.length - this.maxGapsPerSession);
+      snapshotChanged = true;
     }
     session.latestNativeSessionId = event.sessionId;
 
     const lines = session.assembler.push(event.bytes);
-    session.droppedOverlongLineCount += session.assembler.takeDroppedLineCount();
+    const droppedLineCount = session.assembler.takeDroppedLineCount();
+    if (droppedLineCount) {
+      session.droppedOverlongLineCount += droppedLineCount;
+      snapshotChanged = true;
+    }
+    if (lines.length) snapshotChanged = true;
     for (const line of lines) {
       session.receivedCompleteLineCount += 1;
       const records = session.parser.pushLine(line, {
@@ -475,7 +483,10 @@ export class TelemetrySessionStore {
       });
       for (const record of records) this.appendRecord(sessionKey, session, record);
     }
-    this.emit(sessionKey);
+    if (snapshotChanged) {
+      this.invalidateSnapshot(session);
+      this.emit(sessionKey);
+    }
   }
 
   /** A future screen can use this with useSyncExternalStore. */
@@ -526,6 +537,8 @@ export class TelemetrySessionStore {
       assembler: new Utf8LineAssembler({ maxLineLength: this.maxLineLength }),
       parser: new TelemetryLineParser({ maxDetectedSchemas: this.maxDetectedSchemasPerSession }),
       samples: [],
+      sampleWriteIndex: 0,
+      maxSamplesPerSession: this.maxSamplesPerSession,
       fields: new Map(),
       gaps: [],
       latestNativeSessionId: null,
@@ -552,8 +565,13 @@ export class TelemetrySessionStore {
       schemaId: record.schemaId,
       values: cloneValues(record.values),
     };
-    session.samples.push(sample);
-    if (session.samples.length > this.maxSamplesPerSession) session.samples.splice(0, session.samples.length - this.maxSamplesPerSession);
+    if (session.samples.length < session.maxSamplesPerSession) {
+      session.samples.push(sample);
+      if (session.samples.length === session.maxSamplesPerSession) session.sampleWriteIndex = 0;
+    } else {
+      session.samples[session.sampleWriteIndex] = sample;
+      session.sampleWriteIndex = (session.sampleWriteIndex + 1) % session.maxSamplesPerSession;
+    }
     session.acceptedSampleCount += 1;
     for (const [key, value] of Object.entries(sample.values)) {
       const existing = session.fields.get(key);
@@ -617,10 +635,18 @@ function cloneSample(sample: TelemetrySample): TelemetrySample {
   return Object.freeze({ ...sample, values: cloneValues(sample.values) });
 }
 
+function orderedSamples(session: InternalSession): readonly TelemetrySample[] {
+  if (session.samples.length < session.maxSamplesPerSession || session.sampleWriteIndex === 0) return session.samples;
+  return [
+    ...session.samples.slice(session.sampleWriteIndex),
+    ...session.samples.slice(0, session.sampleWriteIndex),
+  ];
+}
+
 function createSnapshot(sessionKey: string, session: InternalSession): TelemetrySessionSnapshot {
   return Object.freeze({
     sessionKey,
-    samples: Object.freeze(session.samples.map(cloneSample)),
+    samples: Object.freeze(orderedSamples(session).map(cloneSample)),
     fields: Object.freeze([...session.fields.values()].map((field) => Object.freeze({
       ...field,
       formats: Object.freeze([...field.formats]),
