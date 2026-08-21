@@ -26,6 +26,7 @@ BaudTide is an open-source serial terminal and monitor built for embedded develo
 - Save named terminal layouts and return to them later.
 - Keep logs on your computer; browse, search, preview, export, or delete them when needed.
 - Share live output with a phone by scanning a QR code; remote control stays off unless you enable it.
+- Send a raw mobile log through the phone's native share sheet when the browser supports file sharing, with download and excerpt-sharing fallbacks.
 - Choose a dark or light workspace.
 
 ## Quick start
@@ -43,7 +44,7 @@ npm run dev
 
 ## Mobile sharing
 
-Share an active terminal—or a read-only snapshot of multiple terminals—with a phone on the same local network. Create a link from the relevant **Mobile sharing** panel and scan its QR code.
+Share an active terminal—or a read-only snapshot of multiple terminals—with a phone on the same local network. Create a link from the relevant **Mobile sharing** panel and scan its QR code. On the live terminal page, **Send logs** shares the raw capture through the iOS Share Sheet or Android Sharesheet when available; otherwise it keeps the existing download path (or shares the visible excerpt when only text sharing is supported).
 
 Links are read-only by default. Remote control is an explicit opt-in for one active terminal; it can send text or hexadecimal bytes, is rate-limited, and can be disabled or revoked at any time.
 

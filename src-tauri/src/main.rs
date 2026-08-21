@@ -2081,6 +2081,7 @@ fn handle_mobile_share_connection(
                     "Content-Security-Policy",
                     "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self' ws: wss:",
                 ),
+                ("Permissions-Policy", "web-share=(self)"),
             ],
         );
     } else if is_download {
@@ -3377,7 +3378,11 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
     button:hover{border-color:#7dd3fc;background:#26364a}
     button.active{border-color:#4adeba;background:#173d38;color:#baf5e3}
     button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #75dfc0;outline-offset:2px}
-    .download{margin-left:auto;padding:8px 2px;font-size:.8rem}
+    .download-actions{display:flex;align-items:center;gap:12px;margin-left:auto;flex-wrap:wrap}
+    .download{padding:8px 2px;font-size:.8rem}
+    .share-log{border:0;background:transparent;color:#bfdbfe;padding:8px 2px;font-size:.8rem}
+    .share-log:hover{border-color:transparent;background:transparent;color:#e0f2fe;text-decoration:underline}
+    .share-log:disabled{cursor:wait}
     .excerpt-row{align-items:center}.excerpt-label,.export-format{color:#9caec0;font-size:.72rem}.export-format{display:flex;align-items:center;gap:5px}.export-format select{min-height:34px;border:1px solid #4b5563;border-radius:7px;padding:7px 8px;color:#e5e7eb;background:#1f2937;font:inherit;font-size:.8rem}.excerpt-status{min-height:1.1em;color:#a7f3d0;font-size:.72rem}
     .search{display:flex;align-items:center;gap:7px;color:#b6c5d5;font-size:.78rem}
     .search input{width:100%;min-width:0;border:1px solid #4b5563;border-radius:7px;padding:8px 9px;background:#0b1220;color:#f3f4f6;font:inherit;font-size:.82rem}
@@ -3397,7 +3402,7 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
     textarea{box-sizing:border-box;width:100%;min-height:68px;resize:vertical;border:1px solid #4b5563;border-radius:6px;background:#030712;color:#f9fafb;padding:9px;font:inherit;line-height:1.4}
     button:disabled,textarea:disabled,select:disabled{opacity:.55;cursor:not-allowed}.control-hint,.control-message{color:#94a3b8;font-size:.72rem}.control-message{min-height:1.1em;color:#a7f3d0}
     .mobile-launch-splash{display:none}.mobile-app{transition:opacity .42s cubic-bezier(.16,1,.3,1),transform .42s cubic-bezier(.16,1,.3,1)}html.mobile-ready .mobile-launch-splash{position:fixed;z-index:20;inset:0;display:grid;place-items:center;overflow:hidden;isolation:isolate;background:radial-gradient(ellipse 64% 48% at 50% 46%,#123a46 0%,#0d2631 38%,transparent 73%),radial-gradient(ellipse 75% 64% at 110% -12%,#183e51 0%,transparent 64%),#090f18;color:#edf7f6}html.mobile-ready .mobile-app{opacity:0;transform:translateY(10px)}.mobile-launch-splash::before{position:absolute;z-index:-1;inset:0;content:"";opacity:.52;background-image:linear-gradient(#9de5dc0a 1px,transparent 1px),linear-gradient(90deg,#9de5dc0a 1px,transparent 1px);background-size:34px 34px;mask-image:radial-gradient(ellipse 78% 76% at 50% 44%,#000 0%,transparent 76%)}.mobile-launch-content{display:grid;justify-items:center;padding:24px;text-align:center;animation:mobile-launch-enter .6s cubic-bezier(.16,1,.3,1) both}.mobile-launch-mark{position:relative;width:min(35vw,138px);min-width:106px;filter:drop-shadow(0 18px 25px #0017219c);animation:mobile-launch-mark .72s .05s cubic-bezier(.16,1,.3,1) both}.mobile-launch-mark::before{position:absolute;z-index:-1;inset:18%;border-radius:50%;content:"";background:#35e6c9;opacity:.25;filter:blur(24px)}.mobile-launch-mark svg{display:block;width:100%;height:auto}.mobile-launch-frame{fill:none;stroke:#113a62;stroke-width:9;stroke-linecap:round;stroke-linejoin:round}.mobile-launch-wave{fill:none;stroke:url(#mobile-launch-gradient);stroke-width:8;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:88;stroke-dashoffset:88;animation:mobile-launch-wave .72s .35s ease-out forwards}.mobile-launch-node{fill:#20dfcf;opacity:0;animation:mobile-launch-node .2s .95s ease-out forwards}.mobile-launch-name{margin-top:17px;color:#f0faf8;font:800 1.88rem/1 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:-.08em}.mobile-launch-name span{color:#7ee1c3}.mobile-launch-copy{margin:10px 0 0;color:#9fd6c9;font-size:.61rem;font-weight:800;letter-spacing:.17em}.mobile-launch-loader{position:absolute;bottom:max(37px,7vh);display:grid;gap:10px;width:min(220px,calc(100vw - 48px));animation:mobile-launch-enter .55s .24s cubic-bezier(.16,1,.3,1) both}.mobile-launch-loader span{display:flex;align-items:center;justify-content:center;gap:8px;color:#a7bac7;font-size:.7rem}.mobile-launch-loader span::before{width:6px;height:6px;border-radius:50%;content:"";background:#7be0c2;box-shadow:0 0 0 4px #7be0c21a,0 0 15px #7be0c2a3;animation:mobile-launch-dot 1.1s ease-in-out infinite}.mobile-launch-progress{height:2px;overflow:hidden;border-radius:999px;background:#8fe8d31c}.mobile-launch-progress i{display:block;width:52%;height:100%;border-radius:inherit;background:linear-gradient(90deg,#5acbb0,#9af1d4);box-shadow:0 0 13px #65dbbe8c;animation:mobile-launch-progress 1.15s cubic-bezier(.3,.04,.2,1) both}.mobile-launch-splash.is-leaving{pointer-events:none;animation:mobile-launch-exit .34s cubic-bezier(.4,0,1,1) forwards}html.mobile-ready .mobile-app.is-visible{opacity:1;transform:translateY(0)}@keyframes mobile-launch-enter{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}@keyframes mobile-launch-mark{from{opacity:0;transform:scale(.72)}to{opacity:1;transform:scale(1)}}@keyframes mobile-launch-wave{to{stroke-dashoffset:0}}@keyframes mobile-launch-node{to{opacity:1}}@keyframes mobile-launch-dot{50%{transform:scale(1.18);opacity:.64}}@keyframes mobile-launch-progress{from{transform:translateX(-100%)}to{transform:translateX(195%)}}@keyframes mobile-launch-exit{to{opacity:0;transform:scale(1.012)}}
-    @media(max-width:520px){main{padding:10px}.download{margin-left:0}.entry{grid-template-columns:72px minmax(0,1fr);gap:6px}.entry-time{font-size:10px}.entry-text{font-size:11px}#log{min-height:320px;height:64vh}.control-form-row{align-items:stretch;flex-direction:column}.control-form-row button,.control-form-row select{width:100%}.export-format{width:100%;justify-content:space-between}.excerpt-status{width:100%}}
+    @media(max-width:520px){main{padding:10px}.download-actions{width:100%;margin-left:0;justify-content:space-between}.entry{grid-template-columns:72px minmax(0,1fr);gap:6px}.entry-time{font-size:10px}.entry-text{font-size:11px}#log{min-height:320px;height:64vh}.control-form-row{align-items:stretch;flex-direction:column}.control-form-row button,.control-form-row select{width:100%}.export-format{width:100%;justify-content:space-between}.excerpt-status{width:100%}}
     @media(prefers-reduced-motion:reduce){.mobile-launch-content,.mobile-launch-mark,.mobile-launch-wave,.mobile-launch-node,.mobile-launch-loader,.mobile-launch-loader span::before,.mobile-launch-progress i,.mobile-launch-splash.is-leaving,.mobile-app{animation:none;transition:none}}
   </style>
 </head>
@@ -3413,7 +3418,7 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
   <main id="mobile-app" class="mobile-app" aria-hidden="true">
     <header>
       <div><h1>BaudTide · live serial log</h1><span id="state" role="status">Connecting…</span><span id="summary">Waiting for a recent capture tail…</span></div>
-      <a id="download" class="download" download>Download raw (.log)</a>
+      <div class="download-actions"><button id="share-raw" class="share-log" type="button">Send logs</button><a id="download" class="download" download>Download raw (.log)</a></div>
     </header>
     <section class="controls" aria-label="Log viewer controls">
       <div class="control-row">
@@ -3466,6 +3471,7 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
     const followButton=document.querySelector('#follow');
     const latestButton=document.querySelector('#latest');
     const searchInput=document.querySelector('#search');
+    const shareRawButton=document.querySelector('#share-raw');
     const download=document.querySelector('#download');
     const copyVisibleButton=document.querySelector('#copy-visible');
     const downloadVisibleButton=document.querySelector('#download-visible');
@@ -3629,6 +3635,75 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
       link.remove();
       window.setTimeout(()=>URL.revokeObjectURL(link.href),0);
     }
+    function downloadFile(file){
+      const link=document.createElement('a');
+      link.href=URL.createObjectURL(file);
+      link.download=file.name;
+      link.hidden=true;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(()=>URL.revokeObjectURL(link.href),0);
+    }
+    function rawLogFileName(response){
+      const disposition=response.headers.get('Content-Disposition')||'';
+      const match=disposition.match(/filename="([^"\r\n]+)"/i);
+      if(match&&match[1]) return match[1];
+      const stamp=new Date().toISOString().replace(/[:.]/g,'-');
+      return `baudtide-serial-log-${stamp}.log`;
+    }
+    async function fetchRawLogFile(){
+      const response=await fetch(download.href,{cache:'no-store'});
+      if(!response.ok) throw new Error(`Raw log download failed (${response.status}).`);
+      const blob=await response.blob();
+      return new File([blob],rawLogFileName(response),{type:'text/plain'});
+    }
+    function canShareRawFile(file){
+      if(typeof navigator.share!=='function') return false;
+      if(typeof navigator.canShare!=='function') return true;
+      try{return navigator.canShare({files:[file]})}catch{return false}
+    }
+    function canShareText(text){
+      if(typeof navigator.share!=='function') return false;
+      if(typeof navigator.canShare!=='function') return true;
+      try{return navigator.canShare({text})}catch{return false}
+    }
+    async function shareRawLog(){
+      if(typeof navigator.share!=='function'){
+        setExcerptStatus('Native sharing is unavailable in this browser; downloading the raw log instead.');
+        download.click();
+        return;
+      }
+      shareRawButton.disabled=true;
+      shareRawButton.textContent='Preparing…';
+      setExcerptStatus('Preparing the raw log for sharing…');
+      try{
+        const file=await fetchRawLogFile();
+        if(!canShareRawFile(file)){
+          const excerpt=excerptText();
+          if(!excerpt.visible.length||!canShareText(excerpt.text)){
+            setExcerptStatus('This browser cannot share .log files; downloading the raw log instead.');
+            downloadFile(file);
+            return;
+          }
+          await navigator.share({title:'BaudTide serial log excerpt',text:excerpt.text});
+          setExcerptStatus('The visible log excerpt is ready to send.');
+          return;
+        }
+        await navigator.share({title:'BaudTide serial log',files:[file]});
+        setExcerptStatus('The raw log is ready to send.');
+      }catch(error){
+        if(error&&typeof error==='object'&&error.name==='AbortError'){
+          setExcerptStatus('Sharing canceled.');
+          return;
+        }
+        setExcerptStatus('Native sharing failed; downloading the raw log instead.');
+        download.click();
+      }finally{
+        shareRawButton.disabled=false;
+        shareRawButton.textContent='Send logs';
+      }
+    }
     function render(){
       renderPending=false;
       const visible=visibleEntries();
@@ -3737,6 +3812,7 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
       if(nearBottom!==follow){follow=nearBottom;updateFollowButton()}
     });
     searchInput.addEventListener('input',()=>{query=searchInput.value.slice(0,128);render()});
+    shareRawButton.onclick=()=>{void shareRawLog()};
     copyVisibleButton.onclick=async()=>{
       const excerpt=excerptText();
       if(!excerpt.visible.length){setExcerptStatus('Nothing matches this view yet.');return}
