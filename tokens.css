@@ -1,0 +1,88 @@
+/* Hallmark · genre: modern-minimal · tone: technical-instrument · anchor hue: signal-aqua
+ * macrostructure: Workbench · design-system: design.md · designed-as-app
+ * pre-emit critique: P5 H5 E4 S5 R5 V4
+ */
+
+:root {
+  color-scheme: dark;
+  font-synthesis: none;
+
+  --color-app: oklch(15.5% 0.018 238);
+  --color-app-raised: oklch(18% 0.02 236);
+  --color-surface: oklch(20.5% 0.022 234);
+  --color-surface-raised: oklch(24% 0.024 232);
+  --color-rail: oklch(16.8% 0.019 239);
+  --color-border: oklch(34% 0.028 226);
+  --color-border-subtle: oklch(27% 0.024 230);
+  --color-ink: oklch(94% 0.012 220);
+  --color-ink-soft: oklch(82% 0.02 222);
+  --color-ink-muted: oklch(68% 0.026 224);
+  --color-ink-dim: oklch(55% 0.026 226);
+  --color-accent: oklch(78% 0.13 172);
+  --color-accent-strong: oklch(68% 0.14 172);
+  --color-accent-soft: oklch(25% 0.058 172);
+  --color-accent-ink: oklch(17% 0.035 172);
+  --color-focus: oklch(84% 0.13 172);
+  --color-info: oklch(74% 0.1 235);
+  --color-warning: oklch(78% 0.13 78);
+  --color-danger: oklch(68% 0.16 24);
+
+  --font-display: "Ubuntu Sans", "Noto Sans", system-ui, sans-serif;
+  --font-body: "Ubuntu Sans", "Noto Sans", system-ui, sans-serif;
+  --font-data: "Ubuntu Mono", "Noto Sans Mono", ui-monospace, monospace;
+
+  --space-2xs: 0.25rem;
+  --space-xs: 0.5rem;
+  --space-sm: 0.75rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2rem;
+  --space-2xl: 3rem;
+  --space-3xl: 4.5rem;
+
+  /* Readable UI scale: 12px metadata, 14px controls, 16px body copy. */
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.75rem;
+  --text-display: clamp(2.25rem, 3.2vw, 3.25rem);
+
+  --radius-control: 0.375rem;
+  --radius-panel: 0.5rem;
+  --radius-pill: 999px;
+  --shadow-panel: 0 16px 36px oklch(7% 0.02 238 / 0.22);
+  --shadow-popover: 0 22px 54px oklch(5% 0.02 238 / 0.5);
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-short: 160ms;
+  --dur-medium: 240ms;
+}
+
+:root[data-theme="light"],
+.theme-light {
+  color-scheme: light;
+  --color-app: oklch(96.5% 0.008 224);
+  --color-app-raised: oklch(98% 0.006 224);
+  --color-surface: oklch(99.3% 0.004 224);
+  --color-surface-raised: oklch(94.5% 0.012 224);
+  --color-rail: oklch(93.5% 0.012 226);
+  --color-border: oklch(78% 0.026 224);
+  --color-border-subtle: oklch(87% 0.018 224);
+  --color-ink: oklch(22% 0.032 228);
+  --color-ink-soft: oklch(34% 0.032 226);
+  --color-ink-muted: oklch(46% 0.034 226);
+  --color-ink-dim: oklch(48% 0.032 224);
+  --color-accent: oklch(48% 0.13 172);
+  --color-accent-strong: oklch(41% 0.12 172);
+  --color-accent-soft: oklch(91.5% 0.045 172);
+  --color-accent-ink: oklch(22% 0.05 172);
+  --color-focus: oklch(43% 0.14 172);
+  --color-info: oklch(48% 0.11 235);
+  --color-warning: oklch(52% 0.12 78);
+  --color-danger: oklch(50% 0.15 24);
+  --shadow-panel: 0 14px 34px oklch(25% 0.03 226 / 0.1);
+  --shadow-popover: 0 20px 48px oklch(25% 0.03 226 / 0.18);
+}

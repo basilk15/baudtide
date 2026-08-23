@@ -16,6 +16,13 @@ export type TelemetryChartSeries = Readonly<{
   latest?: TelemetryChartPoint;
 }>;
 
+export type AlignedTelemetryChartData = Readonly<{
+  /** Strictly increasing X values in seconds, ready for a time-series renderer. */
+  timestamps: readonly number[];
+  /** One nullable value array per input series, aligned to `timestamps`. */
+  values: readonly (readonly (number | null)[])[];
+}>;
+
 /** Fields with this unit share one Y scale. Fields without a unit form their own group. */
 export type TelemetryChartGroup = Readonly<{
   id: string;
@@ -58,6 +65,7 @@ export type PrepareTelemetryChartsOptions = Readonly<{
 
 const DEFAULT_MAX_POINTS_PER_SERIES = 1_200;
 const MIN_DECIMATION_POINTS = 4;
+const DUPLICATE_TIMESTAMP_STEP_MS = 0.001;
 
 type TimestampedSample = Readonly<{ sample: TelemetrySample; timestampMs: number; sourceIndex: number }>;
 
@@ -213,6 +221,54 @@ function pointsForField(field: TelemetryField, samples: readonly TimestampedSamp
   }
   points.sort((left, right) => left.timestampMs - right.timestampMs || left.sourceIndex - right.sourceIndex);
   return points.map(({ sourceIndex: _sourceIndex, ...point }) => point);
+}
+
+/**
+ * Aligns fields by sample identity instead of timestamp. Native reads can
+ * contain several complete records, all stamped with the same read time; a
+ * timestamp-keyed map would silently overwrite every record except the last.
+ * Duplicate X values receive a sub-millisecond tie-breaker so a time-series
+ * renderer can keep them as distinct, strictly ordered points without changing
+ * displayed labels.
+ */
+export function alignTelemetryChartData(series: readonly TelemetryChartSeries[]): AlignedTelemetryChartData {
+  type Row = {
+    sampleId: string;
+    timestampMs: number;
+    order: number;
+    values: Map<string, number>;
+  };
+
+  const rowsBySampleId = new Map<string, Row>();
+  let nextOrder = 0;
+  for (const currentSeries of series) {
+    for (const point of currentSeries.points) {
+      let row = rowsBySampleId.get(point.sampleId);
+      if (!row) {
+        row = { sampleId: point.sampleId, timestampMs: point.timestampMs, order: nextOrder, values: new Map() };
+        nextOrder += 1;
+        rowsBySampleId.set(point.sampleId, row);
+      }
+      row.values.set(currentSeries.key, point.value);
+    }
+  }
+
+  const rows = [...rowsBySampleId.values()].sort((left, right) => left.timestampMs - right.timestampMs || left.order - right.order);
+  const occurrencesByTimestamp = new Map<number, number>();
+  let previousTimestampMs = Number.NEGATIVE_INFINITY;
+  const timestamps = rows.map((row) => {
+    const occurrence = occurrencesByTimestamp.get(row.timestampMs) ?? 0;
+    occurrencesByTimestamp.set(row.timestampMs, occurrence + 1);
+    const candidate = row.timestampMs + occurrence * DUPLICATE_TIMESTAMP_STEP_MS;
+    const timestampMs = Math.max(candidate, previousTimestampMs + DUPLICATE_TIMESTAMP_STEP_MS);
+    previousTimestampMs = timestampMs;
+    return timestampMs / 1_000;
+  });
+
+  return {
+    timestamps,
+    values: series.map((currentSeries) => rows.map((row) => row.values.get(currentSeries.key) ?? null)),
+  };
 }
 
 function filteredGapMarkers(gaps: readonly TelemetryGap[], startMs?: number, endMs?: number) {

@@ -19,6 +19,7 @@ const electronExecutable = path.join(
 );
 const nativeManifest = path.join(projectRoot, 'src-native', 'Cargo.toml');
 const developmentUrl = 'http://127.0.0.1:1420';
+const developmentRestartExitCode = 86;
 const launcherArguments = process.argv.slice(2);
 const skipNativeBuild = launcherArguments.includes('--skip-native-build');
 const electronArguments = launcherArguments.filter((argument) => argument !== '--skip-native-build');
@@ -104,11 +105,11 @@ function run(command, args, options = {}) {
   return child;
 }
 
-function waitForExit(child, label) {
+function waitForExit(child, label, { allowExitCodes = [0] } = {}) {
   return new Promise((resolve, reject) => {
     child.once('error', (error) => reject(new Error(`${label} failed to start: ${error.message}`)));
     child.once('exit', (code, signal) => {
-      if (code === 0) resolve();
+      if (allowExitCodes.includes(code)) resolve(code);
       else reject(new Error(`${label} stopped with ${signal ? `signal ${signal}` : `exit code ${code}`}.`));
     });
   });
@@ -160,13 +161,16 @@ try {
   await waitForVite(vite);
 
   const electronLaunchExecutable = sandboxCompatibleElectronExecutable(electronExecutable);
-  const electron = run(electronLaunchExecutable, [projectRoot, ...electronArguments], {
-    env: {
-      ...process.env,
-      BAUDTIDE_DEV_SERVER_URL: developmentUrl,
-    },
-  });
-  await waitForExit(electron, 'Electron');
+  while (true) {
+    const electron = run(electronLaunchExecutable, [projectRoot, ...electronArguments], {
+      env: {
+        ...process.env,
+        BAUDTIDE_DEV_SERVER_URL: developmentUrl,
+      },
+    });
+    const exitCode = await waitForExit(electron, 'Electron', { allowExitCodes: [0, developmentRestartExitCode] });
+    if (exitCode !== developmentRestartExitCode) break;
+  }
   stopChildren();
 } catch (error) {
   if (requestedExitCode === null) {

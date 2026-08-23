@@ -3,12 +3,6 @@ import { Check, ChevronDown, Copy, LoaderCircle, QrCode, RefreshCw, ShieldCheck,
 import { getMobileShareStatus, getMobileWorkspaceShareStatus, setMobileShareControl, startMobileShare, startMobileWorkspaceShare, stopMobileShare, stopMobileWorkspaceShare, type MobileShareInfo, type MobileWorkspaceShareInfo } from '../lib/serial';
 import './mobile-share-panel.css';
 
-type MobileSharePanelProps = {
-  sessionId?: string;
-  nativeSession: boolean;
-  sessionConnected: boolean;
-};
-
 const STATUS_REFRESH_MS = 5_000;
 const QR_VERSION_SIX_SIZE = 41;
 const QR_VERSION_SIX_DATA_CODEWORDS = 108;
@@ -143,15 +137,31 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Mobile sharing could not be updated.';
 }
 
-type ShareNotice = {
+export type MobileShareNotice = {
   kind: 'error' | 'success';
   text: string;
 };
 
-export function MobileSharePanel({ sessionId, nativeSession, sessionConnected }: MobileSharePanelProps) {
+export type MobileSharePanelState = {
+  scope: 'terminal' | 'workspace';
+  active: boolean;
+  clientCount: number;
+  controlEnabled: boolean;
+  isWorking: boolean;
+  notice: MobileShareNotice | null;
+};
+
+type MobileSharePanelProps = {
+  sessionId?: string;
+  nativeSession: boolean;
+  sessionConnected: boolean;
+  onStateChange?: (state: MobileSharePanelState) => void;
+};
+
+export function MobileSharePanel({ sessionId, nativeSession, sessionConnected, onStateChange }: MobileSharePanelProps) {
   const [share, setShare] = useState<MobileShareInfo | null>(null);
   const [isWorking, setWorking] = useState(false);
-  const [message, setMessage] = useState<ShareNotice | null>(null);
+  const [message, setMessage] = useState<MobileShareNotice | null>(null);
   const [copied, setCopied] = useState(false);
   const workingRef = useRef(false);
   const canShare = Boolean(nativeSession && sessionId && sessionConnected);
@@ -191,6 +201,17 @@ export function MobileSharePanel({ sessionId, nativeSession, sessionConnected }:
     if (sessionConnected) return;
     setShare(null);
   }, [sessionConnected]);
+
+  useEffect(() => {
+    onStateChange?.({
+      scope: 'terminal',
+      active: Boolean(share?.enabled),
+      clientCount: share?.clientCount ?? 0,
+      controlEnabled: share?.controlEnabled ?? false,
+      isWorking,
+      notice: message,
+    });
+  }, [isWorking, message, onStateChange, share]);
 
   const enable = async () => {
     if (!sessionId || !canShare || !startWorking()) return;
@@ -324,13 +345,14 @@ export function MobileSharePanel({ sessionId, nativeSession, sessionConnected }:
 type WorkspaceMobileSharePanelProps = {
   nativeEnabled: boolean;
   activeSessionCount: number;
+  onStateChange?: (state: MobileSharePanelState) => void;
 };
 
 /** One workspace-scoped link for all native sessions active when sharing starts. */
-export function WorkspaceMobileSharePanel({ nativeEnabled, activeSessionCount }: WorkspaceMobileSharePanelProps) {
+export function WorkspaceMobileSharePanel({ nativeEnabled, activeSessionCount, onStateChange }: WorkspaceMobileSharePanelProps) {
   const [share, setShare] = useState<MobileWorkspaceShareInfo | null>(null);
   const [isWorking, setWorking] = useState(false);
-  const [message, setMessage] = useState<ShareNotice | null>(null);
+  const [message, setMessage] = useState<MobileShareNotice | null>(null);
   const [copied, setCopied] = useState(false);
   const workingRef = useRef(false);
   const canShare = nativeEnabled && activeSessionCount > 0;
@@ -365,6 +387,17 @@ export function WorkspaceMobileSharePanel({ nativeEnabled, activeSessionCount }:
       window.clearInterval(interval);
     };
   }, [nativeEnabled]);
+
+  useEffect(() => {
+    onStateChange?.({
+      scope: 'workspace',
+      active: Boolean(share?.enabled),
+      clientCount: share?.clientCount ?? 0,
+      controlEnabled: false,
+      isWorking,
+      notice: message,
+    });
+  }, [isWorking, message, onStateChange, share]);
 
   const enable = async () => {
     if (!canShare || !startWorking()) return;
@@ -435,7 +468,7 @@ export function WorkspaceMobileSharePanel({ nativeEnabled, activeSessionCount }:
     <aside className="sd-mobile-workspace-share" aria-label="Mobile workspace dashboard sharing">
       <div className="sd-mobile-workspace-heading">
         <div className="sd-mobile-share-icon"><Smartphone size={18} /></div>
-        <div><p>Mobile workspace</p><h2>Share all active terminals</h2></div>
+        <div><h2>Share all active terminals</h2><span>One phone view for the terminals that are live now.</span></div>
         {share && <span className="sd-mobile-share-live"><i /> Live</span>}
       </div>
 

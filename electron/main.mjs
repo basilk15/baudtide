@@ -35,6 +35,7 @@ const electronOwnedCommands = new Set([
 ]);
 const APP_ID = 'com.basil.baudtide';
 const APP_NAME = 'BaudTide';
+const DEVELOPMENT_RESTART_EXIT_CODE = 86;
 const APPLICATION_SCHEME = 'baudtide';
 const APPLICATION_HOST = 'app';
 const PRODUCTION_CSP = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; media-src 'none'; worker-src 'none'";
@@ -335,6 +336,23 @@ function toggleMenuBar(args) {
   return visible;
 }
 
+async function forceReload() {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  await backend.stop();
+  shutdownComplete = true;
+
+  // The development launcher owns Vite. Give it a restart-only exit code so
+  // it can keep Vite alive while starting a fresh Electron process. Packaged
+  // apps can use Electron's native relaunch path directly.
+  if (!app.isPackaged && validatedDevelopmentUrl()) {
+    app.exit(DEVELOPMENT_RESTART_EXIT_CODE);
+    return;
+  }
+  app.relaunch();
+  app.exit(0);
+}
+
 ipcMain.handle(invokeChannel, async (event, command, args = {}) => {
   if (
     !mainWindow
@@ -383,6 +401,11 @@ function buildApplicationMenu() {
       label: 'View',
       submenu: [
         { role: 'reload' },
+        {
+          label: 'Force Reload (restart app)',
+          accelerator: process.platform === 'darwin' ? 'Cmd+Shift+R' : 'Ctrl+Shift+R',
+          click: () => { void forceReload(); },
+        },
         ...(app.isPackaged ? [] : [{ role: 'toggleDevTools' }]),
         { type: 'separator' },
         { role: 'resetZoom' },
@@ -526,7 +549,10 @@ async function createMainWindow() {
     minWidth: 900,
     minHeight: 650,
     show: false,
-    autoHideMenuBar: false,
+    // Keep the native menu unobtrusive; Electron reveals it when the user
+    // presses the single Alt key, while View > Toggle Menu Bar remains
+    // available for an explicit persistent toggle.
+    autoHideMenuBar: true,
     backgroundColor: '#0a0d14',
     webPreferences: {
       preload: path.join(electronDirectory, 'preload.cjs'),

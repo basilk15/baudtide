@@ -3,6 +3,7 @@ import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import type { TelemetryField, TelemetryGap, TelemetrySample } from '../lib/telemetry';
 import {
+  alignTelemetryChartData,
   formatTelemetryValue,
   prepareTelemetryCharts,
   TELEMETRY_SERIES_COLORS,
@@ -35,30 +36,14 @@ function formatTime(timestampMs: number, includeDate: boolean) {
   }).format(date);
 }
 
-function chartTimeRange(group: TelemetryChartGroup, gaps: readonly TelemetryChartGapMarker[], startMs?: number, endMs?: number) {
+function chartTimeRange(group: TelemetryChartGroup, gaps: readonly TelemetryChartGapMarker[], startMs?: number, endMs?: number, data?: uPlot.AlignedData) {
   const timestamps = group.series.flatMap((series) => series.points.map((point) => point.timestampMs));
   timestamps.push(...gaps.map((gap) => gap.timestampMs));
+  if (data?.[0]) timestamps.push(...data[0].map((timestamp) => Number(timestamp) * 1_000));
+  const latestTimestamp = timestamps.length ? Math.max(...timestamps) : undefined;
   const start = startMs ?? (timestamps.length ? Math.min(...timestamps) : undefined);
-  const end = endMs ?? (timestamps.length ? Math.max(...timestamps) : undefined);
+  const end = latestTimestamp === undefined ? endMs : Math.max(endMs ?? Number.NEGATIVE_INFINITY, latestTimestamp);
   return start === undefined || end === undefined ? undefined : { start, end };
-}
-
-/** uPlot uses one shared X array and a Y array per series. Nulls preserve gaps. */
-function alignedData(group: TelemetryChartGroup): uPlot.AlignedData {
-  const timestampSet = new Set<number>();
-  const valuesBySeries = group.series.map((series) => {
-    const values = new Map<number, number>();
-    series.points.forEach((point) => {
-      timestampSet.add(point.timestampMs);
-      values.set(point.timestampMs, point.value);
-    });
-    return values;
-  });
-  const timestamps = [...timestampSet].sort((left, right) => left - right);
-  return [
-    timestamps.map((timestampMs) => timestampMs / 1_000),
-    ...valuesBySeries.map((values) => timestamps.map((timestampMs) => values.get(timestampMs) ?? null)),
-  ] as uPlot.AlignedData;
 }
 
 function chartColor(colorsByField: ReadonlyMap<string, string>, fieldKey: string, index: number) {
@@ -161,8 +146,11 @@ function UPlotTelemetryChart({
   seriesRef.current = group.series;
 
   const domain = telemetryYDomain(group.series.flatMap((series) => series.points));
-  const timeRange = chartTimeRange(group, gaps, startMs, endMs);
-  const data = useMemo(() => alignedData(group), [group]);
+  const data = useMemo(() => {
+    const aligned = alignTelemetryChartData(group.series);
+    return [aligned.timestamps, ...aligned.values] as uPlot.AlignedData;
+  }, [group]);
+  const timeRange = chartTimeRange(group, gaps, startMs, endMs, data);
   const includeDate = Boolean(timeRange && timeRange.end - timeRange.start >= 24 * 60 * 60 * 1_000);
   const seriesSignature = group.series.map((series) => series.key).join('\u0000');
   const colorSignature = group.series.map((series, index) => chartColor(colorsByField, series.key, index)).join('\u0000');
@@ -362,7 +350,10 @@ export function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, wind
     gaps,
     selectedFieldKeys,
     windowMs,
-    maxPointsPerSeries: 600,
+    // The store already bounds history at 10k records. Keep every retained
+    // point here; uPlot is the canvas renderer and does not need lossy
+    // decimation for this bounded live stream.
+    maxPointsPerSeries: Math.max(4, samples.length),
   }), [fields, gaps, samples, selectedFieldKeys, windowMs]);
   const hasSelection = selectedFieldKeys.length > 0;
   const colorsByField = useMemo(() => new Map(fields.map((field, index) => [
