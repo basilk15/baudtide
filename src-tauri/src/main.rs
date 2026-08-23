@@ -1,4 +1,7 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(feature = "tauri-app", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
 #![allow(clippy::items_after_test_module)]
 
 use std::{
@@ -19,9 +22,58 @@ use std::{
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serialport::{DataBits, FlowControl, Parity, SerialPort, SerialPortType, StopBits};
+#[cfg(feature = "tauri-app")]
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+#[cfg(feature = "tauri-app")]
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
+
+#[cfg(not(feature = "tauri-app"))]
+use std::io::BufRead;
+
+#[cfg(not(feature = "tauri-app"))]
+type State<'a, T> = &'a T;
+
+/// Minimal host surface used by the shared backend when running as an
+/// Electron sidecar. All protocol writers share one lock so responses and
+/// asynchronous events are each emitted as one complete NDJSON line.
+#[cfg(not(feature = "tauri-app"))]
+#[derive(Clone)]
+struct AppHandle {
+    app_data_dir: Arc<PathBuf>,
+    protocol_writer: Arc<Mutex<BufWriter<io::Stdout>>>,
+}
+
+#[cfg(not(feature = "tauri-app"))]
+struct SidecarPathResolver<'a>(&'a Path);
+
+#[cfg(not(feature = "tauri-app"))]
+impl AppHandle {
+    fn new(app_data_dir: PathBuf) -> Self {
+        Self {
+            app_data_dir: Arc::new(app_data_dir),
+            protocol_writer: Arc::new(Mutex::new(BufWriter::new(io::stdout()))),
+        }
+    }
+
+    fn path(&self) -> SidecarPathResolver<'_> {
+        SidecarPathResolver(self.app_data_dir.as_path())
+    }
+
+    fn emit<T: Serialize>(&self, event: &str, payload: T) -> io::Result<()> {
+        write_protocol_line(
+            &self.protocol_writer,
+            &serde_json::json!({ "event": event, "payload": payload }),
+        )
+    }
+}
+
+#[cfg(not(feature = "tauri-app"))]
+impl SidecarPathResolver<'_> {
+    fn app_data_dir(&self) -> Result<PathBuf, &'static str> {
+        Ok(self.0.to_path_buf())
+    }
+}
 
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
 const READ_BUFFER_SIZE: usize = 4096;
@@ -941,14 +993,14 @@ impl Drop for ActiveSavedLogSearch {
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn list_serial_ports() -> CommandResult<Vec<AvailablePort>> {
     serialport::available_ports()
         .map_err(|error| format!("Could not list serial ports: {error}"))
         .map(|ports| ports.into_iter().map(port_metadata).collect())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn list_active_sessions(state: State<'_, SerialState>) -> CommandResult<Vec<SessionInfo>> {
     let sessions = state.sessions.lock().map_err(lock_error)?;
     let mut active = Vec::with_capacity(sessions.len());
@@ -976,7 +1028,7 @@ fn list_active_sessions(state: State<'_, SerialState>) -> CommandResult<Vec<Sess
 /// listener, then switches this session to direct event delivery. The sequence
 /// field on each event lets the frontend safely merge these with any event that
 /// reaches it immediately after the switch.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn take_pending_serial_data(
     state: State<'_, SerialState>,
     session_id: String,
@@ -1019,12 +1071,12 @@ fn activate_serial_event_delivery(delivery: &mut SerialEventDelivery) -> Pending
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn load_preferences(app: AppHandle) -> CommandResult<ApplicationSettings> {
     load_application_settings(&app)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn save_preferences(
     app: AppHandle,
     state: State<'_, SerialState>,
@@ -1033,11 +1085,26 @@ fn save_preferences(
     validate_preference_log_directory(&settings.storage.log_directory)?;
     let settings = normalize_application_settings(settings);
     let current = load_application_settings(&app)?;
+    #[cfg(feature = "tauri-app")]
     if !settings.storage.log_directory.is_empty()
         && settings.storage.log_directory != current.storage.log_directory
     {
         return Err("Choose a log folder with the native folder picker.".into());
     }
+    #[cfg(not(feature = "tauri-app"))]
+    let mut settings = settings;
+    #[cfg(not(feature = "tauri-app"))]
+    if !settings.storage.log_directory.is_empty() {
+        let directory = PathBuf::from(&settings.storage.log_directory)
+            .canonicalize()
+            .map_err(|error| format!("Could not use the selected log folder: {error}"))?;
+        if !directory.is_dir() {
+            return Err("Choose an existing log folder.".into());
+        }
+        settings.storage.log_directory = directory.display().to_string();
+    }
+    #[cfg(not(feature = "tauri-app"))]
+    let _ = current;
     save_application_settings(&app, &settings)?;
     state.capture_quota.lock().map_err(lock_error)?.limit_bytes =
         settings.storage.storage_limit_bytes;
@@ -1053,7 +1120,8 @@ fn validate_preference_log_directory(directory: &str) -> CommandResult<()> {
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+#[cfg(feature = "tauri-app")]
 async fn select_log_directory(app: AppHandle) -> CommandResult<Option<String>> {
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     app.dialog()
@@ -1080,12 +1148,13 @@ async fn select_log_directory(app: AppHandle) -> CommandResult<Option<String>> {
     Ok(Some(settings.storage.log_directory))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn list_saved_logs(app: AppHandle, state: State<'_, SerialState>) -> CommandResult<Vec<SavedLog>> {
     collect_saved_logs(&app, &state.sessions)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+#[cfg(feature = "tauri-app")]
 async fn search_saved_logs(
     app: AppHandle,
     state: State<'_, SerialState>,
@@ -1138,6 +1207,60 @@ async fn search_saved_logs(
     })
     .await
     .map_err(|error| format!("Saved-log search worker stopped unexpectedly: {error}"))?
+}
+
+#[cfg(not(feature = "tauri-app"))]
+fn search_saved_logs_sidecar(
+    app: AppHandle,
+    state: State<'_, SerialState>,
+    query: String,
+    options: Option<SavedLogSearchOptions>,
+) -> CommandResult<SavedLogSearchResponse> {
+    let options = options.unwrap_or_default();
+    let full_search = options.full_search;
+    let query = query.trim().to_owned();
+    if query.is_empty() {
+        return Ok(SavedLogSearchResponse {
+            results: Vec::new(),
+            scanned_log_count: 0,
+            scanned_bytes: 0,
+            full_search,
+            truncated: false,
+            result_limit_reached: false,
+            per_log_byte_limit: (!full_search).then_some(SEARCH_PER_LOG_BYTE_LIMIT),
+            total_byte_limit: (!full_search).then_some(SEARCH_TOTAL_BYTE_LIMIT),
+            result_limit: SEARCH_RESULT_LIMIT,
+            indexed_log_count: 0,
+            index_rebuilt_log_count: 0,
+            index_fallback_log_count: 0,
+            index_update_limited: false,
+        });
+    }
+    if query.len() > SEARCH_QUERY_BYTE_LIMIT {
+        return Err(format!(
+            "Search terms are limited to {SEARCH_QUERY_BYTE_LIMIT} bytes so local log search stays responsive."
+        ));
+    }
+    let active_search = if full_search {
+        options
+            .search_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|search_id| !search_id.is_empty())
+            .map(|search_id| begin_saved_log_search(state, search_id))
+            .transpose()?
+    } else {
+        None
+    };
+    if state.shutting_down.load(Ordering::Acquire) {
+        if let Some(search) = active_search.as_ref() {
+            search.cancelled.store(true, Ordering::Release);
+        }
+    }
+    let cancellation = active_search
+        .as_ref()
+        .map(|search| search.cancelled.as_ref());
+    run_saved_log_search(&app, &state.sessions, query, full_search, cancellation)
 }
 
 fn run_saved_log_search(
@@ -1310,7 +1433,7 @@ fn run_saved_log_search(
     })
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn cancel_saved_log_search(state: State<'_, SerialState>, search_id: String) -> CommandResult<()> {
     let search_id = search_id.trim();
     if search_id.is_empty() {
@@ -1332,7 +1455,7 @@ fn cancel_saved_log_search(state: State<'_, SerialState>, search_id: String) -> 
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn read_saved_log(app: AppHandle, path: String) -> CommandResult<SavedLogContent> {
     let path = resolve_saved_log_path(&app, &path)?;
     const PREVIEW_LIMIT: u64 = 1_000_000;
@@ -1352,7 +1475,7 @@ fn read_saved_log(app: AppHandle, path: String) -> CommandResult<SavedLogContent
     })
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn delete_saved_log(
     app: AppHandle,
     state: State<'_, SerialState>,
@@ -1404,7 +1527,8 @@ fn release_capture_quota(quota: &mut CaptureQuota, deleted_bytes: u64) {
     quota.used_bytes = quota.used_bytes.saturating_sub(deleted_bytes);
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
+#[cfg(feature = "tauri-app")]
 async fn save_saved_log(app: AppHandle, source_path: String) -> CommandResult<Option<String>> {
     let source = resolve_saved_log_path(&app, &source_path)?;
     let default_name = source
@@ -1440,9 +1564,150 @@ async fn save_saved_log(app: AppHandle, source_path: String) -> CommandResult<Op
     Ok(Some(destination.display().to_string()))
 }
 
+#[cfg(not(feature = "tauri-app"))]
+fn save_saved_log_sidecar(
+    app: AppHandle,
+    source_path: String,
+    destination_path: String,
+) -> CommandResult<Option<String>> {
+    let source = resolve_saved_log_path(&app, &source_path)?;
+    let requested = PathBuf::from(destination_path.trim());
+    if !requested.is_absolute() {
+        return Err("The export destination must be an absolute path.".into());
+    }
+    let destination = if requested.extension().is_none() {
+        requested.with_extension("log")
+    } else {
+        requested
+    };
+    let file_name = destination
+        .file_name()
+        .ok_or_else(|| "Choose a file name for the saved copy.".to_string())?;
+    if file_name.is_empty() {
+        return Err("Choose a file name for the saved copy.".into());
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "Could not find the export destination folder.".to_string())?
+        .canonicalize()
+        .map_err(|error| format!("Could not use the export destination folder: {error}"))?;
+    if !parent.is_dir() {
+        return Err("Choose an existing export destination folder.".into());
+    }
+    let destination = parent.join(file_name);
+    if destination == source {
+        return Err("Choose a different location for the saved copy.".into());
+    }
+    match std::fs::symlink_metadata(&destination) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err("The export destination cannot be a symbolic link.".into());
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            return Err("The export destination must be a regular file.".into());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Could not inspect the export destination: {error}")),
+    }
+    copy_saved_log_atomically(&source, &destination)?;
+    Ok(Some(destination.display().to_string()))
+}
+
+/// Owns only the unpredictable temporary export path created by this process.
+/// A failed copy/rename removes that artifact without touching the requested
+/// destination or any other file in its directory.
+#[cfg(not(feature = "tauri-app"))]
+struct PendingSavedLogExport {
+    path: PathBuf,
+    published: bool,
+}
+
+#[cfg(not(feature = "tauri-app"))]
+impl Drop for PendingSavedLogExport {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+#[cfg(not(feature = "tauri-app"))]
+fn copy_saved_log_atomically(source: &Path, destination: &Path) -> CommandResult<()> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "Could not find the export destination folder.".to_string())?;
+    let destination_name = destination
+        .file_name()
+        .ok_or_else(|| "Choose a file name for the saved copy.".to_string())?;
+    let mut temporary_name = std::ffi::OsString::from(".");
+    temporary_name.push(destination_name);
+    temporary_name.push(format!(".baudtide-export-{}.tmp", Uuid::new_v4()));
+    let temporary_path = parent.join(temporary_name);
+    let mut pending = PendingSavedLogExport {
+        path: temporary_path.clone(),
+        published: false,
+    };
+
+    let mut source_file = File::open(source)
+        .map_err(|error| format!("Could not open the saved log for export: {error}"))?;
+    let source_permissions = source_file
+        .metadata()
+        .map_err(|error| format!("Could not inspect the saved log for export: {error}"))?
+        .permissions();
+    let mut temporary_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary_path)
+        .map_err(|error| format!("Could not create the temporary saved-log copy: {error}"))?;
+    io::copy(&mut source_file, &mut temporary_file)
+        .and_then(|_| temporary_file.flush())
+        .and_then(|()| temporary_file.set_permissions(source_permissions))
+        .and_then(|()| temporary_file.sync_all())
+        .map_err(|error| format!("Could not finish the saved-log copy: {error}"))?;
+    drop(temporary_file);
+
+    replace_saved_log_destination(&temporary_path, destination)
+        .map_err(|error| format!("Could not publish the saved-log copy: {error}"))?;
+    pending.published = true;
+
+    // The file contents are already durable. On Unix, also persist the
+    // directory-entry replacement so a successful export survives a crash.
+    #[cfg(unix)]
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("Could not finalize the saved-log copy: {error}"))?;
+    Ok(())
+}
+
+#[cfg(all(not(feature = "tauri-app"), unix))]
+fn replace_saved_log_destination(temporary: &Path, destination: &Path) -> io::Result<()> {
+    // POSIX rename replaces the destination directory entry atomically. It
+    // neither follows a destination symlink nor truncates an existing hard
+    // link to the source capture.
+    std::fs::rename(temporary, destination)
+}
+
+#[cfg(all(not(feature = "tauri-app"), windows))]
+fn replace_saved_log_destination(temporary: &Path, destination: &Path) -> io::Result<()> {
+    // Rust's Windows rename does not replace an existing file. Removing the
+    // selected destination first still avoids following symlinks or truncating
+    // a hard-linked source; the Unix implementation above remains atomic.
+    match std::fs::remove_file(destination) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    std::fs::rename(temporary, destination)
+}
+
+#[cfg(all(not(feature = "tauri-app"), not(any(unix, windows))))]
+fn replace_saved_log_destination(temporary: &Path, destination: &Path) -> io::Result<()> {
+    std::fs::rename(temporary, destination)
+}
+
 /// Enables an explicitly requested companion page for one live serial session.
 /// The listener is IPv4 LAN-only and starts with remote control disabled.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn start_mobile_share(
     state: State<'_, SerialState>,
     session_id: String,
@@ -1541,7 +1806,7 @@ where
     Ok(info)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn get_mobile_share_status(
     state: State<'_, SerialState>,
     session_id: String,
@@ -1568,7 +1833,7 @@ fn get_mobile_share_status(
         }))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn set_mobile_share_control(
     state: State<'_, SerialState>,
     session_id: String,
@@ -1586,7 +1851,7 @@ fn set_mobile_share_control(
     Ok(active_mobile_share_info(&session_id, share))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn stop_mobile_share(
     state: State<'_, SerialState>,
     session_id: String,
@@ -1608,7 +1873,7 @@ fn stop_mobile_share(
 /// that are active at creation time. The scope is deliberately immutable: a
 /// later terminal or reconnect receives a new native session ID and cannot
 /// enter an already-issued bearer link.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn start_mobile_workspace_share(
     state: State<'_, SerialState>,
 ) -> CommandResult<MobileWorkspaceShareInfo> {
@@ -1671,7 +1936,7 @@ fn start_mobile_workspace_share(
     Ok(info)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn get_mobile_workspace_share_status(
     state: State<'_, SerialState>,
 ) -> CommandResult<MobileWorkspaceShareInfo> {
@@ -1682,7 +1947,7 @@ fn get_mobile_workspace_share_status(
         .unwrap_or_else(empty_mobile_workspace_share_info))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn stop_mobile_workspace_share(
     state: State<'_, SerialState>,
 ) -> CommandResult<MobileWorkspaceShareInfo> {
@@ -3974,7 +4239,7 @@ fn mobile_workspace_share_page() -> &'static str {
 </html>"##
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn start_serial_session(
     app: AppHandle,
     state: State<'_, SerialState>,
@@ -4118,7 +4383,7 @@ fn start_serial_session(
     Ok(info)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn send_serial_text(
     state: State<'_, SerialState>,
     session_id: String,
@@ -4127,7 +4392,7 @@ fn send_serial_text(
     send_serial_bytes(state, session_id, text.into_bytes())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn send_serial_bytes(
     state: State<'_, SerialState>,
     session_id: String,
@@ -4190,7 +4455,7 @@ fn close_serial_writer<W>(writer: &Mutex<Option<W>>) -> CommandResult<()> {
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn disconnect_serial_session(
     app: AppHandle,
     state: State<'_, SerialState>,
@@ -7172,6 +7437,7 @@ fn shutdown_serial_sessions(app: &AppHandle, state: &SerialState) {
     }
 }
 
+#[cfg(feature = "tauri-app")]
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -7218,4 +7484,530 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running BaudTide");
+}
+
+#[cfg(not(feature = "tauri-app"))]
+const SIDECAR_REQUEST_BYTE_LIMIT: usize = 1024 * 1024;
+
+#[cfg(not(feature = "tauri-app"))]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProtocolRequest {
+    id: serde_json::Value,
+    method: String,
+    #[serde(default = "empty_protocol_params")]
+    params: serde_json::Value,
+}
+
+#[cfg(not(feature = "tauri-app"))]
+fn empty_protocol_params() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
+#[cfg(not(feature = "tauri-app"))]
+fn write_protocol_line(
+    writer: &Arc<Mutex<BufWriter<io::Stdout>>>,
+    message: &serde_json::Value,
+) -> io::Result<()> {
+    let mut writer = writer
+        .lock()
+        .map_err(|_| io::Error::other("protocol writer lock was poisoned"))?;
+    serde_json::to_writer(&mut *writer, message)?;
+    writer.write_all(b"\n")?;
+    writer.flush()
+}
+
+#[cfg(not(feature = "tauri-app"))]
+fn protocol_response(
+    app: &AppHandle,
+    id: serde_json::Value,
+    result: CommandResult<serde_json::Value>,
+) -> io::Result<()> {
+    write_protocol_line(&app.protocol_writer, &protocol_response_message(id, result))
+}
+
+#[cfg(not(feature = "tauri-app"))]
+fn protocol_response_message(
+    id: serde_json::Value,
+    result: CommandResult<serde_json::Value>,
+) -> serde_json::Value {
+    match result {
+        Ok(result) => serde_json::json!({ "id": id, "result": result }),
+        Err(error) => serde_json::json!({ "id": id, "error": error }),
+    }
+}
+
+#[cfg(not(feature = "tauri-app"))]
+fn serialize_command_result<T: Serialize>(
+    result: CommandResult<T>,
+) -> CommandResult<serde_json::Value> {
+    result.and_then(|value| {
+        serde_json::to_value(value)
+            .map_err(|error| format!("Could not encode command result: {error}"))
+    })
+}
+
+#[cfg(not(feature = "tauri-app"))]
+fn protocol_params(
+    params: &serde_json::Value,
+) -> CommandResult<&serde_json::Map<String, serde_json::Value>> {
+    params
+        .as_object()
+        .ok_or_else(|| "Request params must be a JSON object.".to_string())
+}
+
+#[cfg(not(feature = "tauri-app"))]
+fn no_protocol_params(params: &serde_json::Value) -> CommandResult<()> {
+    if protocol_params(params)?.is_empty() {
+        Ok(())
+    } else {
+        Err("This method does not accept params.".into())
+    }
+}
+
+#[cfg(not(feature = "tauri-app"))]
+fn required_protocol_param<T: for<'de> Deserialize<'de>>(
+    params: &serde_json::Value,
+    name: &str,
+) -> CommandResult<T> {
+    let value = protocol_params(params)?
+        .get(name)
+        .cloned()
+        .ok_or_else(|| format!("Missing required param `{name}`."))?;
+    serde_json::from_value(value).map_err(|error| format!("Invalid param `{name}`: {error}"))
+}
+
+#[cfg(not(feature = "tauri-app"))]
+fn optional_protocol_param<T: for<'de> Deserialize<'de>>(
+    params: &serde_json::Value,
+    name: &str,
+) -> CommandResult<Option<T>> {
+    protocol_params(params)?
+        .get(name)
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| format!("Invalid param `{name}`: {error}"))
+}
+
+#[cfg(not(feature = "tauri-app"))]
+fn dispatch_sidecar_request(
+    app: AppHandle,
+    state: &SerialState,
+    method: &str,
+    params: serde_json::Value,
+) -> CommandResult<serde_json::Value> {
+    match method {
+        "list_serial_ports" => {
+            no_protocol_params(&params)?;
+            serialize_command_result(list_serial_ports())
+        }
+        "list_active_sessions" => {
+            no_protocol_params(&params)?;
+            serialize_command_result(list_active_sessions(state))
+        }
+        "take_pending_serial_data" => serialize_command_result(take_pending_serial_data(
+            state,
+            required_protocol_param(&params, "sessionId")?,
+        )),
+        "load_preferences" => {
+            no_protocol_params(&params)?;
+            serialize_command_result(load_preferences(app))
+        }
+        "save_preferences" => serialize_command_result(save_preferences(
+            app,
+            state,
+            required_protocol_param(&params, "settings")?,
+        )),
+        "list_saved_logs" => {
+            no_protocol_params(&params)?;
+            serialize_command_result(list_saved_logs(app, state))
+        }
+        "search_saved_logs" => serialize_command_result(search_saved_logs_sidecar(
+            app,
+            state,
+            required_protocol_param(&params, "query")?,
+            optional_protocol_param(&params, "options")?,
+        )),
+        "cancel_saved_log_search" => serialize_command_result(cancel_saved_log_search(
+            state,
+            required_protocol_param(&params, "searchId")?,
+        )),
+        "read_saved_log" => serialize_command_result(read_saved_log(
+            app,
+            required_protocol_param(&params, "path")?,
+        )),
+        "delete_saved_log" => serialize_command_result(delete_saved_log(
+            app,
+            state,
+            required_protocol_param(&params, "path")?,
+        )),
+        "save_saved_log" => serialize_command_result(save_saved_log_sidecar(
+            app,
+            required_protocol_param(&params, "sourcePath")?,
+            required_protocol_param(&params, "destinationPath")?,
+        )),
+        "start_mobile_share" => serialize_command_result(start_mobile_share(
+            state,
+            required_protocol_param(&params, "sessionId")?,
+        )),
+        "get_mobile_share_status" => serialize_command_result(get_mobile_share_status(
+            state,
+            required_protocol_param(&params, "sessionId")?,
+        )),
+        "set_mobile_share_control" => serialize_command_result(set_mobile_share_control(
+            state,
+            required_protocol_param(&params, "sessionId")?,
+            required_protocol_param(&params, "enabled")?,
+        )),
+        "stop_mobile_share" => serialize_command_result(stop_mobile_share(
+            state,
+            required_protocol_param(&params, "sessionId")?,
+        )),
+        "start_mobile_workspace_share" => {
+            no_protocol_params(&params)?;
+            serialize_command_result(start_mobile_workspace_share(state))
+        }
+        "get_mobile_workspace_share_status" => {
+            no_protocol_params(&params)?;
+            serialize_command_result(get_mobile_workspace_share_status(state))
+        }
+        "stop_mobile_workspace_share" => {
+            no_protocol_params(&params)?;
+            serialize_command_result(stop_mobile_workspace_share(state))
+        }
+        "start_serial_session" => serialize_command_result(start_serial_session(
+            app,
+            state,
+            required_protocol_param(&params, "request")?,
+        )),
+        "send_serial_text" => serialize_command_result(send_serial_text(
+            state,
+            required_protocol_param(&params, "sessionId")?,
+            required_protocol_param(&params, "text")?,
+        )),
+        "send_serial_bytes" => serialize_command_result(send_serial_bytes(
+            state,
+            required_protocol_param(&params, "sessionId")?,
+            required_protocol_param(&params, "bytes")?,
+        )),
+        "disconnect_serial_session" => serialize_command_result(disconnect_serial_session(
+            app,
+            state,
+            required_protocol_param(&params, "sessionId")?,
+        )),
+        "select_log_directory" => {
+            Err("select_log_directory is handled by the Electron main process.".into())
+        }
+        "shutdown" => Err("shutdown is handled by the sidecar protocol loop.".into()),
+        _ => Err(format!("Unknown sidecar method `{method}`.")),
+    }
+}
+
+#[cfg(not(feature = "tauri-app"))]
+fn parse_sidecar_app_data_dir() -> CommandResult<PathBuf> {
+    let mut arguments = std::env::args_os().skip(1);
+    let mut app_data_dir = None;
+    while let Some(argument) = arguments.next() {
+        if argument == "--app-data-dir" {
+            if app_data_dir.is_some() {
+                return Err("--app-data-dir may be specified only once.".into());
+            }
+            app_data_dir = Some(
+                arguments
+                    .next()
+                    .ok_or_else(|| "--app-data-dir requires an absolute path.".to_string())?,
+            );
+        } else {
+            return Err(format!(
+                "Unknown sidecar argument: {}",
+                PathBuf::from(argument).display()
+            ));
+        }
+    }
+    let path = PathBuf::from(
+        app_data_dir
+            .ok_or_else(|| "Missing required --app-data-dir ABS_PATH argument.".to_string())?,
+    );
+    if !path.is_absolute() {
+        return Err("--app-data-dir must be an absolute path.".into());
+    }
+    create_dir_all(&path)
+        .map_err(|error| format!("Could not create the app-data directory: {error}"))?;
+    path.canonicalize()
+        .map_err(|error| format!("Could not use the app-data directory: {error}"))
+}
+
+#[cfg(not(feature = "tauri-app"))]
+fn cancel_active_saved_log_searches(state: &SerialState) {
+    if let Ok(searches) = state.saved_log_searches.lock() {
+        for cancelled in searches.values() {
+            cancelled.store(true, Ordering::Release);
+        }
+    }
+}
+
+#[cfg(not(feature = "tauri-app"))]
+fn parse_protocol_request(line: &str) -> CommandResult<ProtocolRequest> {
+    let request: ProtocolRequest =
+        serde_json::from_str(line).map_err(|error| format!("Invalid sidecar request: {error}"))?;
+    if !(request.id.is_number() || request.id.is_string()) {
+        return Err("Request id must be a JSON number or string.".into());
+    }
+    if request.method.trim().is_empty() {
+        return Err("Request method must not be empty.".into());
+    }
+    if !request.params.is_object() {
+        return Err("Request params must be a JSON object.".into());
+    }
+    Ok(request)
+}
+
+#[cfg(not(feature = "tauri-app"))]
+fn sidecar_main() -> CommandResult<()> {
+    let app = AppHandle::new(parse_sidecar_app_data_dir()?);
+    let state = Arc::new(SerialState::default());
+    let stdin = io::stdin();
+    let mut reader = BufReader::new(stdin.lock());
+    let mut workers: Vec<JoinHandle<()>> = Vec::new();
+    loop {
+        let mut worker_index = 0;
+        while worker_index < workers.len() {
+            if workers[worker_index].is_finished() {
+                let worker = workers.swap_remove(worker_index);
+                let _ = worker.join();
+            } else {
+                worker_index += 1;
+            }
+        }
+        let mut line = String::new();
+        let bytes = reader
+            .read_line(&mut line)
+            .map_err(|error| format!("Could not read a sidecar request: {error}"))?;
+        if bytes == 0 {
+            break;
+        }
+        if line.len() > SIDECAR_REQUEST_BYTE_LIMIT {
+            protocol_response(
+                &app,
+                serde_json::Value::Null,
+                Err(format!(
+                    "Sidecar requests are limited to {SIDECAR_REQUEST_BYTE_LIMIT} bytes."
+                )),
+            )
+            .map_err(|error| format!("Could not write a sidecar response: {error}"))?;
+            continue;
+        }
+        let request = match parse_protocol_request(&line) {
+            Ok(request) => request,
+            Err(error) => {
+                let id = serde_json::from_str::<serde_json::Value>(&line)
+                    .ok()
+                    .and_then(|value| value.get("id").cloned())
+                    .filter(|id| id.is_number() || id.is_string())
+                    .unwrap_or(serde_json::Value::Null);
+                protocol_response(&app, id, Err(error))
+                    .map_err(|error| format!("Could not write a sidecar response: {error}"))?;
+                continue;
+            }
+        };
+        if request.method == "shutdown" {
+            no_protocol_params(&request.params)?;
+            state.shutting_down.store(true, Ordering::Release);
+            cancel_active_saved_log_searches(&state);
+            for worker in workers.drain(..) {
+                let _ = worker.join();
+            }
+            shutdown_serial_sessions(&app, &state);
+            protocol_response(&app, request.id, Ok(serde_json::json!(true)))
+                .map_err(|error| format!("Could not write the shutdown response: {error}"))?;
+            return Ok(());
+        }
+        let worker_app = app.clone();
+        let worker_state = Arc::clone(&state);
+        workers.push(thread::spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                dispatch_sidecar_request(
+                    worker_app.clone(),
+                    worker_state.as_ref(),
+                    &request.method,
+                    request.params,
+                )
+            }))
+            .unwrap_or_else(|_| {
+                Err("The native backend stopped while handling this request.".into())
+            });
+            if let Err(error) = protocol_response(&worker_app, request.id, result) {
+                eprintln!("Could not write a sidecar response: {error}");
+            }
+        }));
+    }
+    state.shutting_down.store(true, Ordering::Release);
+    cancel_active_saved_log_searches(&state);
+    for worker in workers {
+        let _ = worker.join();
+    }
+    shutdown_serial_sessions(&app, &state);
+    Ok(())
+}
+
+#[cfg(not(feature = "tauri-app"))]
+pub(crate) fn sidecar_entry() {
+    if let Err(error) = sidecar_main() {
+        eprintln!("{error}");
+        std::process::exit(2);
+    }
+}
+
+#[cfg(all(test, not(feature = "tauri-app")))]
+mod sidecar_protocol_tests {
+    use super::*;
+
+    fn temporary_export_directory(name: &str) -> PathBuf {
+        let directory =
+            std::env::temp_dir().join(format!("baudtide-sidecar-export-{name}-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        directory
+    }
+
+    #[test]
+    fn protocol_requires_correlatable_ids_and_object_params() {
+        let numeric =
+            parse_protocol_request(r#"{"id":7,"method":"list_active_sessions","params":{}}"#)
+                .unwrap();
+        assert_eq!(numeric.id, serde_json::json!(7));
+        let string = parse_protocol_request(
+            r#"{"id":"request-7","method":"list_active_sessions","params":{}}"#,
+        )
+        .unwrap();
+        assert_eq!(string.id, serde_json::json!("request-7"));
+
+        assert!(parse_protocol_request(
+            r#"{"id":null,"method":"list_active_sessions","params":{}}"#
+        )
+        .is_err());
+        assert!(
+            parse_protocol_request(r#"{"id":7,"method":"list_active_sessions","params":[]}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn protocol_response_envelopes_have_exact_success_and_error_shapes() {
+        assert_eq!(
+            protocol_response_message(serde_json::json!(8), Ok(serde_json::json!({ "ok": true }))),
+            serde_json::json!({ "id": 8, "result": { "ok": true } })
+        );
+        assert_eq!(
+            protocol_response_message(serde_json::json!("a"), Err("failed".into())),
+            serde_json::json!({ "id": "a", "error": "failed" })
+        );
+    }
+
+    #[test]
+    fn protocol_events_keep_the_event_payload_envelope_and_camel_case() {
+        let payload = SerialDataEvent {
+            session_id: "session-1".into(),
+            port: "/dev/pts/1".into(),
+            sequence: 3,
+            timestamp: "2026-01-02T03:04:05.000Z".into(),
+            text: "ok".into(),
+            bytes: vec![111, 107],
+        };
+        let event = serde_json::json!({ "event": "serial-data", "payload": payload });
+        assert_eq!(event["event"], "serial-data");
+        assert_eq!(event["payload"]["sessionId"], "session-1");
+        assert!(event["payload"].get("session_id").is_none());
+    }
+
+    #[test]
+    fn dispatcher_preserves_command_names_and_rejects_unknown_methods() {
+        let app = AppHandle::new(std::env::temp_dir());
+        let state = SerialState::default();
+        let result = dispatch_sidecar_request(
+            app.clone(),
+            &state,
+            "list_active_sessions",
+            serde_json::json!({}),
+        )
+        .unwrap();
+        assert_eq!(result, serde_json::json!([]));
+        let error = dispatch_sidecar_request(app, &state, "not_a_command", serde_json::json!({}))
+            .unwrap_err();
+        assert!(error.contains("Unknown sidecar method"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_export_replaces_a_hard_link_without_modifying_the_capture() {
+        use std::os::unix::fs::MetadataExt;
+
+        let directory = temporary_export_directory("hard-link");
+        let source = directory.join("capture.log");
+        let destination = directory.join("export.log");
+        std::fs::write(&source, b"authoritative capture").unwrap();
+        std::fs::hard_link(&source, &destination).unwrap();
+        assert_eq!(
+            source.metadata().unwrap().ino(),
+            destination.metadata().unwrap().ino()
+        );
+
+        copy_saved_log_atomically(&source, &destination).unwrap();
+        assert_ne!(
+            source.metadata().unwrap().ino(),
+            destination.metadata().unwrap().ino()
+        );
+        std::fs::write(&destination, b"changed exported copy").unwrap();
+        assert_eq!(std::fs::read(&source).unwrap(), b"authoritative capture");
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_export_replaces_a_destination_symlink_without_following_it() {
+        use std::os::unix::fs::symlink;
+
+        let directory = temporary_export_directory("symlink");
+        let source = directory.join("capture.log");
+        let protected = directory.join("protected.log");
+        let destination = directory.join("export.log");
+        std::fs::write(&source, b"capture bytes").unwrap();
+        std::fs::write(&protected, b"must remain unchanged").unwrap();
+        symlink(&protected, &destination).unwrap();
+
+        copy_saved_log_atomically(&source, &destination).unwrap();
+        assert!(!std::fs::symlink_metadata(&destination)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"capture bytes");
+        assert_eq!(std::fs::read(&protected).unwrap(), b"must remain unchanged");
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_atomic_export_removes_only_its_unique_temporary_file() {
+        let directory = temporary_export_directory("cleanup");
+        let source = directory.join("capture.log");
+        let destination = directory.join("existing-directory");
+        std::fs::write(&source, b"capture bytes").unwrap();
+        std::fs::create_dir(&destination).unwrap();
+
+        assert!(copy_saved_log_atomically(&source, &destination).is_err());
+        let names = std::fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(names.len(), 2);
+        assert!(source.is_file());
+        assert!(destination.is_dir());
+        assert!(!names
+            .iter()
+            .any(|name| name.to_string_lossy().contains(".baudtide-export-")));
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }

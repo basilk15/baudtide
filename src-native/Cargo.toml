@@ -1,25 +1,24 @@
 [package]
-name = "baudtide"
+name = "baudtide-sidecar"
 version = "0.3.0"
-description = "A focused, multi-port serial monitor for Linux"
+description = "BaudTide native serial backend sidecar"
 authors = ["Basil"]
 edition = "2021"
 rust-version = "1.77.2"
 
-[features]
-default = ["tauri-app"]
-tauri-app = []
+[[bin]]
+name = "baudtide-backend"
+path = "src/main.rs"
 
-[build-dependencies]
-tauri-build = { version = "2", features = [] }
+[features]
+default = []
+tauri-app = []
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serialport = "4"
-tauri = { version = "2", features = [] }
-tauri-plugin-dialog = "2.7.1"
 uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(unix)'.dependencies]

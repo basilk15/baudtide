@@ -1,5 +1,11 @@
-import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import {
+  invokeDesktop,
+  isDesktopRuntime,
+  listenDesktop,
+  type DesktopUnlisten,
+} from './desktop';
+
+type UnlistenFn = DesktopUnlisten;
 
 export type NativeSerialPort = {
   path: string;
@@ -85,7 +91,7 @@ export type SerialStatusEvent = {
 type SerialDataHandler = (event: SerialDataEvent) => void;
 type SerialStatusHandler = (event: SerialStatusEvent) => void;
 
-// Tauri events are global to the WebView. Keep one native listener per event
+// Desktop events are global to the renderer. Keep one native listener per event
 // type and fan out only to the matching session. A listener per mounted
 // terminal makes every incoming chunk visit every hidden tab as well.
 const serialDataHandlers = new Map<string, Set<SerialDataHandler>>();
@@ -95,11 +101,11 @@ let serialStatusListenerPromise: Promise<UnlistenFn> | null = null;
 
 function ensureSerialDataListener() {
   if (!serialDataListenerPromise) {
-    serialDataListenerPromise = listen<SerialDataEvent>('serial-data', (event) => {
-      const handlers = serialDataHandlers.get(event.payload.sessionId);
+    serialDataListenerPromise = Promise.resolve().then(() => listenDesktop<SerialDataEvent>('serial-data', (payload) => {
+      const handlers = serialDataHandlers.get(payload.sessionId);
       if (!handlers) return;
-      handlers.forEach((handler) => handler(event.payload));
-    }).catch((error) => {
+      handlers.forEach((handler) => handler(payload));
+    })).catch((error) => {
       serialDataListenerPromise = null;
       throw error;
     });
@@ -109,11 +115,11 @@ function ensureSerialDataListener() {
 
 function ensureSerialStatusListener() {
   if (!serialStatusListenerPromise) {
-    serialStatusListenerPromise = listen<SerialStatusEvent>('serial-status', (event) => {
-      const handlers = serialStatusHandlers.get(event.payload.sessionId);
+    serialStatusListenerPromise = Promise.resolve().then(() => listenDesktop<SerialStatusEvent>('serial-status', (payload) => {
+      const handlers = serialStatusHandlers.get(payload.sessionId);
       if (!handlers) return;
-      handlers.forEach((handler) => handler(event.payload));
-    }).catch((error) => {
+      handlers.forEach((handler) => handler(payload));
+    })).catch((error) => {
       serialStatusListenerPromise = null;
       throw error;
     });
@@ -175,17 +181,13 @@ export type SavedLogSearchResponse = {
   indexUpdateLimited: boolean;
 };
 
-export function isTauriRuntime() {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-}
-
 function ensureNativeRuntime() {
-  if (!isTauriRuntime()) throw new Error('Serial ports are available only in the BaudTide desktop app.');
+  if (!isDesktopRuntime()) throw new Error('Serial ports are available only in the BaudTide desktop app.');
 }
 
 export async function listNativeSerialPorts() {
   ensureNativeRuntime();
-  return invoke<NativeSerialPort[]>('list_serial_ports');
+  return invokeDesktop<NativeSerialPort[]>('list_serial_ports');
 }
 
 export type StartNativeSerialSessionRequest = {
@@ -197,103 +199,103 @@ export type StartNativeSerialSessionRequest = {
 
 export async function startNativeSerialSession(request: StartNativeSerialSessionRequest) {
   ensureNativeRuntime();
-  return invoke<StartedSerialSession>('start_serial_session', { request });
+  return invokeDesktop<StartedSerialSession>('start_serial_session', { request });
 }
 
 export async function listActiveNativeSerialSessions() {
   ensureNativeRuntime();
-  return invoke<StartedSerialSession[]>('list_active_sessions');
+  return invokeDesktop<StartedSerialSession[]>('list_active_sessions');
 }
 
 export async function takePendingNativeSerialData(sessionId: string) {
   ensureNativeRuntime();
-  return invoke<PendingSerialData>('take_pending_serial_data', { sessionId });
+  return invokeDesktop<PendingSerialData>('take_pending_serial_data', { sessionId });
 }
 
 export async function chooseNativeLogDirectory() {
   ensureNativeRuntime();
-  return invoke<string | null>('select_log_directory');
+  return invokeDesktop<string | null>('select_log_directory');
 }
 
 export async function sendNativeSerialText(sessionId: string, text: string) {
   ensureNativeRuntime();
-  return invoke<number>('send_serial_text', { sessionId, text });
+  return invokeDesktop<number>('send_serial_text', { sessionId, text });
 }
 
 /** Send an exact byte payload without text encoding or a line ending. */
 export async function sendNativeSerialBytes(sessionId: string, bytes: number[]) {
   ensureNativeRuntime();
-  return invoke<number>('send_serial_bytes', { sessionId, bytes });
+  return invokeDesktop<number>('send_serial_bytes', { sessionId, bytes });
 }
 
 export async function disconnectNativeSerialSession(sessionId: string) {
   ensureNativeRuntime();
-  return invoke<StartedSerialSession>('disconnect_serial_session', { sessionId });
+  return invokeDesktop<StartedSerialSession>('disconnect_serial_session', { sessionId });
 }
 
 export async function startMobileShare(sessionId: string) {
   ensureNativeRuntime();
-  return invoke<MobileShareInfo>('start_mobile_share', { sessionId });
+  return invokeDesktop<MobileShareInfo>('start_mobile_share', { sessionId });
 }
 
 export async function getMobileShareStatus(sessionId: string) {
   ensureNativeRuntime();
-  return invoke<MobileShareInfo>('get_mobile_share_status', { sessionId });
+  return invokeDesktop<MobileShareInfo>('get_mobile_share_status', { sessionId });
 }
 
 export async function stopMobileShare(sessionId: string) {
   ensureNativeRuntime();
-  return invoke<MobileShareInfo>('stop_mobile_share', { sessionId });
+  return invokeDesktop<MobileShareInfo>('stop_mobile_share', { sessionId });
 }
 
 export async function setMobileShareControl(sessionId: string, enabled: boolean) {
   ensureNativeRuntime();
-  return invoke<MobileShareInfo>('set_mobile_share_control', { sessionId, enabled });
+  return invokeDesktop<MobileShareInfo>('set_mobile_share_control', { sessionId, enabled });
 }
 
 export async function startMobileWorkspaceShare() {
   ensureNativeRuntime();
-  return invoke<MobileWorkspaceShareInfo>('start_mobile_workspace_share');
+  return invokeDesktop<MobileWorkspaceShareInfo>('start_mobile_workspace_share');
 }
 
 export async function getMobileWorkspaceShareStatus() {
   ensureNativeRuntime();
-  return invoke<MobileWorkspaceShareInfo>('get_mobile_workspace_share_status');
+  return invokeDesktop<MobileWorkspaceShareInfo>('get_mobile_workspace_share_status');
 }
 
 export async function stopMobileWorkspaceShare() {
   ensureNativeRuntime();
-  return invoke<MobileWorkspaceShareInfo>('stop_mobile_workspace_share');
+  return invokeDesktop<MobileWorkspaceShareInfo>('stop_mobile_workspace_share');
 }
 
 export async function listNativeSavedLogs() {
   ensureNativeRuntime();
-  return invoke<SavedLog[]>('list_saved_logs');
+  return invokeDesktop<SavedLog[]>('list_saved_logs');
 }
 
 export async function searchNativeSavedLogs(query: string, fullSearch = false, searchId?: string) {
   ensureNativeRuntime();
-  return invoke<SavedLogSearchResponse>('search_saved_logs', { query, options: { fullSearch, searchId } });
+  return invokeDesktop<SavedLogSearchResponse>('search_saved_logs', { query, options: { fullSearch, searchId } });
 }
 
 export async function cancelNativeSavedLogSearch(searchId: string) {
   ensureNativeRuntime();
-  return invoke<void>('cancel_saved_log_search', { searchId });
+  return invokeDesktop<void>('cancel_saved_log_search', { searchId });
 }
 
 export async function readNativeSavedLog(path: string) {
   ensureNativeRuntime();
-  return invoke<SavedLogContent>('read_saved_log', { path });
+  return invokeDesktop<SavedLogContent>('read_saved_log', { path });
 }
 
 export async function deleteNativeSavedLog(path: string) {
   ensureNativeRuntime();
-  return invoke<void>('delete_saved_log', { path });
+  return invokeDesktop<void>('delete_saved_log', { path });
 }
 
 export async function saveNativeSavedLog(sourcePath: string) {
   ensureNativeRuntime();
-  const savedPath = await invoke<string | null>('save_saved_log', { sourcePath });
+  const savedPath = await invokeDesktop<string | null>('save_saved_log', { sourcePath });
   if (!savedPath) return null;
   window.dispatchEvent(new CustomEvent<{ sourcePath: string; savedPath: string }>('baudtide:log-exported', {
     detail: { sourcePath, savedPath },

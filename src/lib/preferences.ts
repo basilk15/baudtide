@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invokeDesktop, isDesktopRuntime } from './desktop';
 
 export const SETTINGS_VERSION = 1 as const;
 
@@ -115,14 +115,10 @@ function writeBrowserPreferences(settings: BaudTidePreferences) {
   }
 }
 
-export function isTauriRuntime() {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-}
-
 export async function loadPreferences(): Promise<BaudTidePreferences> {
-  if (isTauriRuntime()) {
+  if (isDesktopRuntime()) {
     try {
-      return normalizePreferences(await invoke<unknown>('load_preferences'));
+      return normalizePreferences(await invokeDesktop<unknown>('load_preferences'));
     } catch {
       // Keep the UI usable if the desktop settings file cannot be read.
     }
@@ -134,11 +130,11 @@ export async function savePreferences(settings: BaudTidePreferences): Promise<Ba
   const normalized = normalizePreferences(settings);
   const logDirectoryError = logDirectoryValidationError(normalized.storage.logDirectory);
   if (logDirectoryError) throw new Error(logDirectoryError);
-  if (isTauriRuntime()) {
+  if (isDesktopRuntime()) {
     // Do not fall back to browser storage here: native validation or write failures
     // must remain visible so the displayed destination cannot diverge from the one
     // desktop sessions will actually use.
-    return normalizePreferences(await invoke<unknown>('save_preferences', { settings: normalized }));
+    return normalizePreferences(await invokeDesktop<unknown>('save_preferences', { settings: normalized }));
   }
   writeBrowserPreferences(normalized);
   return normalized;

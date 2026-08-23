@@ -10,7 +10,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-Linux-1f6f61?style=flat-square" alt="Linux" />
-  <img src="https://img.shields.io/badge/runtime-Tauri%20%2B%20React-1f6f61?style=flat-square" alt="Tauri and React" />
+  <img src="https://img.shields.io/badge/runtime-Electron%20%2B%20React-1f6f61?style=flat-square" alt="Electron and React" />
   <img src="https://img.shields.io/badge/status-active%20development-5ac8ae?style=flat-square" alt="Active development" />
 </p>
 
@@ -33,13 +33,53 @@ BaudTide is an open-source serial terminal and monitor built for embedded develo
 
 ```bash
 npm install
-npm run tauri dev
+npm run electron
 ```
+
+The Electron development command builds the Rust sidecar, starts Vite on
+`127.0.0.1:1420`, and opens the desktop window. Node.js 22.12 or newer and a
+Rust toolchain compatible with Rust 1.77.2 are required.
+
+Some Linux development hosts restrict Chromium user namespaces and require a
+properly installed setuid sandbox helper. Configure that sandbox for normal
+development. For a temporary local test only, Electron's documented fallback
+can be passed explicitly:
+
+```bash
+npm run electron -- --no-sandbox
+```
+
+Never use `--no-sandbox` for a production launch.
 
 For a browser-only UI preview without native serial access:
 
 ```bash
 npm run dev
+```
+
+## Test monitor
+
+Generate repeatable JSON telemetry without connecting physical hardware:
+
+```bash
+python3 scripts/test-monitor.py
+```
+
+Copy the printed `/dev/pts/N` path into the connection dialog and use 115200
+baud. The helper also prints bytes sent back from BaudTide. If the installed
+`baudtide-demo-data` command is available, it can be used in the same way.
+
+Run the automated checks with:
+
+```bash
+npm run check
+npm test
+```
+
+Create Linux AppImage and Debian packages under `release/` with:
+
+```bash
+npm run desktop:dist
 ```
 
 ## Mobile sharing
@@ -52,11 +92,29 @@ Links are read-only by default. Remote control is an explicit opt-in for one act
 
 ## Linux requirements
 
-BaudTide uses the normal Tauri GTK/WebKit development libraries. On Ubuntu/Debian, install `libudev-dev` for serial-port discovery. If access to a USB serial device is denied, add your user to the `dialout` group and sign in again.
+Install `libudev-dev` on Ubuntu/Debian before compiling the Rust serial
+backend. If access to a USB serial device is denied, add your user to the
+`dialout` group and sign in again.
+
+## Desktop architecture
+
+Electron's sandboxed renderer receives a narrow, allowlisted API from the
+preload script. The Electron main process owns windows, menus, native dialogs,
+and application lifecycle. It starts `baudtide-backend` and exchanges
+newline-delimited JSON requests, responses, and serial events over private
+standard-I/O pipes.
+
+The sidecar compiles the same Rust backend source used by the previous Tauri
+host, so serial sessions, log indexing and search, capture quotas, mobile
+sharing, validation, and PTY tests remain shared. On Linux it continues to use
+`$XDG_DATA_HOME/com.basil.baudtide`, or
+`~/.local/share/com.basil.baudtide`, preserving existing preferences and saved
+captures.
 
 ## Stack
 
-- Tauri v2 desktop shell
+- Electron desktop shell with a context-isolated, sandboxed renderer
+- Rust NDJSON sidecar using the shared native backend
 - Rust + `serialport` for native Linux serial access
 - React + TypeScript + Vite UI
 - Local file-based raw capture library

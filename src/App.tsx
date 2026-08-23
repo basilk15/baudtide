@@ -18,6 +18,7 @@ import { VisualizeScreen, type VisualizeSession } from './components/VisualizeSc
 import type { SignalDeckPage } from './components/phase3Types';
 import { defaultPreferences, loadPreferences, savePreferences, type BaudTidePreferences, type DisplayEncoding, type LineEnding } from './lib/preferences';
 import { stableTerminalSessionIdentity, type SavedSessionWorkspace, type TerminalLayout } from './lib/sessionWorkspaces';
+import { isDesktopRuntime } from './lib/desktop';
 import { Moon, Radio, Sun, TerminalSquare, X } from 'lucide-react';
 import './light-theme.css';
 import './components/theme-toggle.css';
@@ -25,7 +26,6 @@ import {
   defaultSerialConnectionSettings,
   disconnectNativeSerialSession,
   chooseNativeLogDirectory,
-  isTauriRuntime,
   listActiveNativeSerialSessions,
   listNativeSerialPorts,
   sendNativeSerialBytes,
@@ -101,7 +101,7 @@ export function shouldIgnoreGlobalShortcut(event: KeyboardEvent) {
   return isInteractiveShortcutTarget(event.target) || isInteractiveShortcutTarget(document.activeElement);
 }
 
-const nativeRuntime = isTauriRuntime();
+const nativeRuntime = isDesktopRuntime();
 
 function previewSessionId() {
   return `preview-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;

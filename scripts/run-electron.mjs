@@ -1,0 +1,112 @@
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const scriptsDirectory = path.dirname(fileURLToPath(import.meta.url));
+const projectRoot = path.resolve(scriptsDirectory, '..');
+const viteBin = path.join(projectRoot, 'node_modules', 'vite', 'bin', 'vite.js');
+const electronPackage = JSON.parse(fs.readFileSync(
+  path.join(projectRoot, 'node_modules', 'electron', 'package.json'),
+  'utf8',
+));
+const electronExecutable = path.join(
+  projectRoot,
+  'node_modules',
+  'electron',
+  electronPackage.bin.electron,
+);
+const nativeManifest = path.join(projectRoot, 'src-native', 'Cargo.toml');
+const developmentUrl = 'http://127.0.0.1:1420';
+const launcherArguments = process.argv.slice(2);
+const skipNativeBuild = launcherArguments.includes('--skip-native-build');
+const electronArguments = launcherArguments.filter((argument) => argument !== '--skip-native-build');
+const children = new Set();
+let stopping = false;
+let requestedExitCode = null;
+
+function run(command, args, options = {}) {
+  const child = spawn(command, args, {
+    cwd: projectRoot,
+    env: process.env,
+    stdio: 'inherit',
+    ...options,
+  });
+  children.add(child);
+  child.once('error', (error) => {
+    child.launchError = error;
+  });
+  child.once('exit', () => children.delete(child));
+  return child;
+}
+
+function waitForExit(child, label) {
+  return new Promise((resolve, reject) => {
+    child.once('error', (error) => reject(new Error(`${label} failed to start: ${error.message}`)));
+    child.once('exit', (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${label} stopped with ${signal ? `signal ${signal}` : `exit code ${code}`}.`));
+    });
+  });
+}
+
+async function waitForVite(child) {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (child.launchError) {
+      throw new Error(`Vite failed to start: ${child.launchError.message}`);
+    }
+    if (child.exitCode !== null) {
+      throw new Error(`Vite stopped before becoming ready (exit code ${child.exitCode}).`);
+    }
+    try {
+      const response = await fetch(developmentUrl, { signal: AbortSignal.timeout(1_000) });
+      if (response.ok) return;
+    } catch {
+      // The dev server is still starting.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error(`Vite did not become ready at ${developmentUrl} within 30 seconds.`);
+}
+
+function stopChildren(signal = 'SIGTERM') {
+  if (stopping) return;
+  stopping = true;
+  for (const child of children) {
+    if (child.exitCode === null && !child.killed) child.kill(signal);
+  }
+}
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, () => {
+    requestedExitCode = signal === 'SIGINT' ? 130 : 143;
+    stopChildren(signal);
+    process.exitCode = requestedExitCode;
+  });
+}
+
+try {
+  if (!skipNativeBuild) {
+    const cargo = run('cargo', ['build', '--manifest-path', nativeManifest, '--locked']);
+    await waitForExit(cargo, 'Native backend build');
+  }
+
+  const vite = run(process.execPath, [viteBin, '--host', '127.0.0.1']);
+  await waitForVite(vite);
+
+  const electron = run(electronExecutable, [projectRoot, ...electronArguments], {
+    env: {
+      ...process.env,
+      BAUDTIDE_DEV_SERVER_URL: developmentUrl,
+    },
+  });
+  await waitForExit(electron, 'Electron');
+  stopChildren();
+} catch (error) {
+  if (requestedExitCode === null) {
+    console.error(error instanceof Error ? error.message : error);
+  }
+  stopChildren();
+  process.exitCode = requestedExitCode ?? 1;
+}
