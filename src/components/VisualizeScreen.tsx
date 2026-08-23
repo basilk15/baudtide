@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
-import { AlertTriangle, Check, CirclePause, CirclePlay, Eraser, LoaderCircle, PlugZap, Radio } from 'lucide-react';
+import { AlertTriangle, CirclePause, CirclePlay, Eraser, LoaderCircle, PlugZap, Radio } from 'lucide-react';
 import { liveTelemetryStore, type TelemetryField, type TelemetrySessionSnapshot, type TelemetryValue } from '../lib/telemetry';
 import { TELEMETRY_SERIES_COLORS } from '../lib/telemetryChart';
-import { TelemetryCharts } from './TelemetryCharts';
+import { TelemetryCharts } from './TelemetryECharts';
 import { ThemedSelect } from './ThemedSelect';
 import './visualize-screen.css';
 
@@ -25,16 +25,18 @@ export type VisualizeScreenProps = {
 const EMPTY_SESSION_KEY = '__baudtide-visualize-empty__';
 const MAX_SELECTED_FIELDS = 8;
 const AUTO_SELECTED_FIELDS = 3;
+// The store keeps every sample, but the canvas only needs a bounded display
+// refresh rate. Rebuilding a full retained-history option on every serial
+// read makes pointer and dataZoom rendering compete with the live stream.
+const LIVE_SNAPSHOT_INTERVAL_MS = 120;
 const WINDOW_OPTIONS = [
+  { value: 0, label: 'All' },
   { value: 10_000, label: '10s' },
   { value: 30_000, label: '30s' },
   { value: 60_000, label: '1m' },
   { value: 5 * 60_000, label: '5m' },
   { value: 15 * 60_000, label: '15m' },
 ] as const;
-// The store still ingests every serial sample. This only caps visual refreshes
-// so SVG reconciliation cannot fight scrolling or pointer interactions.
-const LIVE_SNAPSHOT_INTERVAL_MS = 140;
 
 function statusDetails(state: VisualizeSession['connectionState']) {
   switch (state) {
@@ -73,7 +75,7 @@ function latestValues(snapshot: TelemetrySessionSnapshot) {
 function formatSummary(snapshot: TelemetrySessionSnapshot) {
   const formats = new Set(snapshot.detectedSchemas.map((schema) => schema.format));
   if (!formats.size) snapshot.fields.forEach((field) => field.formats.forEach((format) => formats.add(format)));
-  if (!formats.size) return 'Waiting for a repeated numeric record';
+  if (!formats.size) return 'No stable format detected';
   const labels = [...formats].map((format) => ({ json: 'JSON', pairs: 'Key/value', csv: 'CSV', tsv: 'TSV' })[format]);
   return labels.join(' · ');
 }
@@ -106,9 +108,9 @@ export function VisualizeScreen({ nativeEnabled, sessions, selectedSessionId, on
   const subscribe = useCallback((listener: () => void) => {
     let notificationTimer: number | undefined;
     const unsubscribe = liveTelemetryStore.subscribe(activeSessionKey, () => {
-      // Serial chunks can arrive much faster than a useful chart refresh. Keep
-      // ingestion lossless while bounding expensive 10k-sample snapshots and
-      // React renders to roughly 12 frames per second.
+      // Keep ingestion lossless while coalescing the displayed snapshot. The
+      // next callback reads the store's newest immutable snapshot, so no
+      // telemetry is lost and the chart never chases every serial byte.
       if (notificationTimer !== undefined) return;
       notificationTimer = window.setTimeout(() => {
         notificationTimer = undefined;
@@ -124,7 +126,7 @@ export function VisualizeScreen({ nativeEnabled, sessions, selectedSessionId, on
   const liveSnapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const frozenSnapshot = useRef<TelemetrySessionSnapshot | null>(null);
   const [paused, setPaused] = useState(false);
-  const [windowMs, setWindowMs] = useState<(typeof WINDOW_OPTIONS)[number]['value']>(30_000);
+  const [windowMs, setWindowMs] = useState<(typeof WINDOW_OPTIONS)[number]['value']>(0);
   const [manualSelections, setManualSelections] = useState<Record<string, readonly string[]>>({});
   const [manuallyConfiguredSessions, setManuallyConfiguredSessions] = useState<ReadonlySet<string>>(() => new Set());
   const [notice, setNotice] = useState('');
@@ -148,6 +150,7 @@ export function VisualizeScreen({ nativeEnabled, sessions, selectedSessionId, on
   const latestByKey = useMemo(() => latestValues(snapshot), [snapshot]);
   const status = activeSession ? statusDetails(activeSession.connectionState) : null;
   const windowLabel = WINDOW_OPTIONS.find((option) => option.value === windowMs)?.label ?? '30s';
+  const chartWindowSummary = windowMs > 0 ? `last ${windowLabel}` : 'all retained';
 
   const toggleField = (fieldKey: string) => {
     if (!activeSession) return;
@@ -196,8 +199,8 @@ export function VisualizeScreen({ nativeEnabled, sessions, selectedSessionId, on
   if (!activeSession) {
     return <section className="bt-visualize bt-visualize-empty" aria-labelledby="visualize-title">
       <div className="bt-visualize-empty-icon">{nativeEnabled ? <LoaderCircle className="sd-spin" size={27} /> : <PlugZap size={27} />}</div>
-      <p>LIVE VISUALIZE</p>
-      <h1 id="visualize-title">{nativeEnabled ? 'Waiting for a serial session' : 'Visualize telemetry from a desktop session'}</h1>
+      <p>VISUALIZE</p>
+      <h1 id="visualize-title">{nativeEnabled ? 'Connect a device to see live telemetry' : 'Connect a desktop session to inspect telemetry'}</h1>
       <span>{nativeEnabled
         ? 'Open a device session, then BaudTide will detect repeated numeric fields and plot them here.'
         : 'Open BaudTide desktop, connect a device, and return here to inspect its live numeric telemetry.'}</span>
@@ -208,12 +211,11 @@ export function VisualizeScreen({ nativeEnabled, sessions, selectedSessionId, on
   return <section className="bt-visualize" aria-labelledby="visualize-title">
     <header className="bt-visualize-header">
       <div className="bt-visualize-title-group">
-        <p>VISUALIZE</p>
-        <h1 id="visualize-title">Live telemetry</h1>
-        <span>Inspect changing device values without leaving the terminal.</span>
+        <h1 id="visualize-title">Signal canvas</h1>
+        <span>Read changing device values without leaving the terminal.</span>
       </div>
       <div className="bt-visualize-session-picker">
-        <span className="bt-visualize-form-label">SESSION</span>
+        <span className="bt-visualize-form-label">Source</span>
         <ThemedSelect
           value={activeSession.id}
           options={sessions.map((session) => ({ value: session.id, label: `${session.sessionName} · ${session.port}` }))}
@@ -235,9 +237,9 @@ export function VisualizeScreen({ nativeEnabled, sessions, selectedSessionId, on
 
       <div className="bt-visualize-layout">
       <aside className="bt-visualize-fields" aria-label="Detected numeric fields">
-        <header><div><p>DATA CHANNELS</p><h2>Signals</h2></div><span>{selectedFieldKeys.length} / {MAX_SELECTED_FIELDS}</span></header>
+        <header><div><h2>Signals</h2><span>Choose what to watch</span></div><strong>{selectedFieldKeys.length} / {MAX_SELECTED_FIELDS}</strong></header>
         {snapshot.fields.length ? <>
-          <p className="bt-visualize-field-help">Select up to {MAX_SELECTED_FIELDS} fields to compare on the same canvas.</p>
+          <p className="bt-visualize-field-help">Choose up to {MAX_SELECTED_FIELDS} fields to compare on one canvas.</p>
           <div className="bt-visualize-field-list">
             {snapshot.fields.map((field, index) => <FieldRow key={field.key} field={field} index={index} checked={selectedKeySet.has(field.key)} latest={latestByKey.get(field.key)} disabled={!selectedKeySet.has(field.key) && selectedFieldKeys.length >= MAX_SELECTED_FIELDS} onToggle={() => toggleField(field.key)} />)}
           </div>
@@ -246,20 +248,18 @@ export function VisualizeScreen({ nativeEnabled, sessions, selectedSessionId, on
           : 'Send repeated numeric records from the device to populate this list.'}</span></div>}
       </aside>
 
-      <main className="bt-visualize-chart-card">
+      <main className="bt-visualize-chart-shell">
         <header className="bt-visualize-chart-toolbar">
-          <div><p>LIVE PLOT</p><h2>{paused ? 'Paused snapshot' : 'Overview'}</h2><span className="bt-visualize-chart-subtitle">{selectedFieldKeys.length ? `${selectedFieldKeys.length} signal${selectedFieldKeys.length === 1 ? '' : 's'} · last ${windowLabel}` : 'Select a signal to begin'}</span></div>
+          <div><h2>{paused ? 'Paused capture' : 'Live traces'}</h2><span className="bt-visualize-chart-subtitle">{selectedFieldKeys.length ? `${selectedFieldKeys.length} signal${selectedFieldKeys.length === 1 ? '' : 's'} · ${chartWindowSummary}` : 'Select a field to begin'}</span></div>
           <div className="bt-visualize-chart-actions">
             <span className={`bt-visualize-live-state ${paused ? 'is-paused' : ''}`} role="status"><i aria-hidden="true" />{paused ? 'Paused' : 'Live'}</span>
-            <div className="bt-visualize-window"><span>Window</span><ThemedSelect compact value={String(windowMs)} options={WINDOW_OPTIONS.map((option) => ({ value: String(option.value), label: option.label }))} placeholder="Select window" label="Chart time window" onChange={(value) => setWindowMs(Number(value) as typeof windowMs)} /></div>
+            <div className="bt-visualize-window"><span>Display window</span><ThemedSelect compact value={String(windowMs)} options={WINDOW_OPTIONS.map((option) => ({ value: String(option.value), label: option.label }))} placeholder="Select window" label="Chart time window" onChange={(value) => setWindowMs(Number(value) as typeof windowMs)} /></div>
             <button className={`bt-visualize-control ${paused ? 'is-active' : ''}`} type="button" onClick={togglePause} title={paused ? 'Resume live chart' : 'Pause displayed chart'}>{paused ? <CirclePlay size={15} /> : <CirclePause size={15} />}{paused ? 'Resume' : 'Pause'}</button>
             <button className="bt-visualize-control" type="button" disabled={!snapshot.samples.length && !snapshot.fields.length} onClick={clearChart} title="Clear chart data"><Eraser size={15} /> Clear</button>
           </div>
         </header>
-        {paused && <div className="bt-visualize-paused"><CirclePause size={14} /><span>Display paused — incoming telemetry continues in the background.</span></div>}
-        {!snapshot.fields.length ? <div className="bt-visualize-chart-empty"><PlugZap size={27} /><h3>Looking for repeatable numeric telemetry</h3><p>BaudTide recognizes JSON objects, named key/value pairs, CSV, and TSV streams after it sees a consistent record.</p></div>
-          : !selectedFieldKeys.length ? <div className="bt-visualize-chart-empty"><Check size={27} /><h3>Select at least one signal</h3><p>Choose a numeric field in the Signals list to start charting its values.</p></div>
-            : <TelemetryCharts samples={snapshot.samples} fields={snapshot.fields} gaps={snapshot.gaps} selectedFieldKeys={selectedFieldKeys} windowMs={windowMs} paused={paused} />}
+        {paused && <div className="bt-visualize-paused"><CirclePause size={14} /><span>Display is paused. Incoming telemetry continues in the background.</span></div>}
+        <TelemetryCharts samples={snapshot.samples} fields={snapshot.fields} gaps={snapshot.gaps} selectedFieldKeys={selectedFieldKeys} windowMs={windowMs} paused={paused} />
         <footer className="bt-visualize-summary">
           <span><b>{formatCount(snapshot.acceptedSampleCount, 'sample')}</b> accepted</span>
           <span><b>{formatSummary(snapshot)}</b> format{snapshot.detectedSchemas.length === 1 ? '' : 's'}</span>

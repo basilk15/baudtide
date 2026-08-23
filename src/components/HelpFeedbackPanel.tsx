@@ -17,7 +17,7 @@ export function HelpFeedbackPanel({ nativeEnabled, openSessionCount, activeSessi
   const [openTopic, setOpenTopic] = useState(0); const [diagnosticsCopyStatus, setDiagnosticsCopyStatus] = useState<CopyStatus>('idle'); const [message, setMessage] = useState(''); const [feedbackCopyStatus, setFeedbackCopyStatus] = useState<CopyStatus>('idle'); const [githubOpened, setGithubOpened] = useState(false);
   const diagnostics = useMemo(() => [
     'BaudTide diagnostics',
-    `Runtime: ${nativeEnabled ? 'Tauri desktop' : 'browser preview (serial unavailable)'}`,
+    `Runtime: ${nativeEnabled ? 'Electron desktop' : 'browser preview (serial unavailable)'}`,
     `Platform: ${navigator.platform || 'not reported'}`,
     `Language: ${navigator.language || 'not reported'}`,
     `Open terminals: ${openSessionCount}`,

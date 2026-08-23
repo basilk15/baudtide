@@ -1,7 +1,10 @@
+import { useCallback, useEffect, useState } from 'react';
 import { Check, ChevronRight, ShieldCheck, Smartphone, TerminalSquare } from 'lucide-react';
-import { MobileSharePanel, WorkspaceMobileSharePanel } from './MobileSharePanel';
+import { MobileCompanionPreview } from './MobileCompanionPreview';
+import { MobileSharePanel, type MobileSharePanelState, WorkspaceMobileSharePanel } from './MobileSharePanel';
 import type { MonitorConnectionState } from './LiveMonitor';
 import './mobile-share-screen.css';
+import './mobile-share-rails.css';
 
 export type MobileShareSession = {
   id: string;
@@ -28,6 +31,14 @@ function connectionLabel(state: MonitorConnectionState) {
 export function MobileShareScreen({ nativeEnabled, sessions, selectedSessionId, onSelectSession }: MobileShareScreenProps) {
   const selectedSession = sessions.find((session) => session.id === selectedSessionId);
   const activeSessionCount = sessions.filter((session) => session.native && session.connectionState === 'connected').length;
+  const [terminalShareState, setTerminalShareState] = useState<MobileSharePanelState | null>(null);
+  const [workspaceShareState, setWorkspaceShareState] = useState<MobileSharePanelState | null>(null);
+  const onTerminalShareStateChange = useCallback((state: MobileSharePanelState) => setTerminalShareState(state), []);
+  const onWorkspaceShareStateChange = useCallback((state: MobileSharePanelState) => setWorkspaceShareState(state), []);
+
+  useEffect(() => {
+    setTerminalShareState(null);
+  }, [selectedSessionId]);
 
   return (
     <section className="sd-mobile-share-screen" aria-label="Mobile share workspace">
@@ -35,9 +46,8 @@ export function MobileShareScreen({ nativeEnabled, sessions, selectedSessionId, 
         <div className="sd-mobile-share-screen-heading">
           <div className="sd-mobile-share-screen-icon"><Smartphone size={22} aria-hidden="true" /></div>
           <div>
-            <p>MOBILE COMPANION</p>
             <h1>Mobile share</h1>
-            <span>Give a phone a focused view of your serial data without crowding the live terminal workspace.</span>
+            <span>Give a phone a focused view of your serial feed, with pairing and delivery states you can see at a glance.</span>
           </div>
         </div>
         <div className="sd-mobile-share-screen-status">
@@ -51,9 +61,16 @@ export function MobileShareScreen({ nativeEnabled, sessions, selectedSessionId, 
         <div><strong>Read-only by default</strong><span>Links work on the same local network. Remote control stays off until you explicitly enable it for a live terminal.</span></div>
       </div>
 
+      <MobileCompanionPreview
+        nativeEnabled={nativeEnabled}
+        selectedSession={selectedSession}
+        terminalShare={terminalShareState}
+        workspaceShare={workspaceShareState}
+      />
+
       <section className="sd-mobile-share-session-picker" aria-labelledby="mobile-share-session-heading">
         <div className="sd-mobile-share-section-heading">
-          <div><p>TERMINAL LINKS</p><h2 id="mobile-share-session-heading">Choose a terminal to share</h2></div>
+          <div><h2 id="mobile-share-session-heading">Choose a terminal to share</h2><span>Pick the source for your phone view.</span></div>
           <span>{sessions.length} {sessions.length === 1 ? 'terminal' : 'terminals'} open</span>
         </div>
         {sessions.length ? <div className="sd-mobile-share-session-list">
@@ -78,14 +95,13 @@ export function MobileShareScreen({ nativeEnabled, sessions, selectedSessionId, 
       </section>
 
       <div className="sd-mobile-share-screen-grid">
-        <WorkspaceMobileSharePanel nativeEnabled={nativeEnabled} activeSessionCount={activeSessionCount} />
+        <WorkspaceMobileSharePanel nativeEnabled={nativeEnabled} activeSessionCount={activeSessionCount} onStateChange={onWorkspaceShareStateChange} />
 
         <section className="sd-mobile-share-terminal-card" aria-labelledby="mobile-share-terminal-heading">
           <div className="sd-mobile-share-terminal-heading">
             <div className="sd-mobile-share-selected-session">
               <div className="sd-mobile-share-terminal-icon"><TerminalSquare size={18} aria-hidden="true" /></div>
               <div>
-                <p>SELECTED TERMINAL</p>
                 <h2 id="mobile-share-terminal-heading">{selectedSession?.sessionName ?? 'Choose a terminal'}</h2>
                 <span>{selectedSession ? `${selectedSession.port} · ${connectionLabel(selectedSession.connectionState)}` : 'Select a terminal above to manage its mobile link.'}</span>
               </div>
@@ -97,6 +113,7 @@ export function MobileShareScreen({ nativeEnabled, sessions, selectedSessionId, 
             sessionId={selectedSession.id}
             nativeSession={selectedSession.native}
             sessionConnected={selectedSession.connectionState === 'connected'}
+            onStateChange={onTerminalShareStateChange}
           /> : <div className="sd-mobile-share-terminal-empty">
             <Smartphone size={19} aria-hidden="true" />
             <strong>Select a terminal above</strong>

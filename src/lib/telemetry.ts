@@ -423,7 +423,7 @@ type InternalSession = {
 /**
  * Bounded, in-memory telemetry data organized by App's stable `LiveSession`
  * `uiKey`, not the short-lived backend serial-session ID. It intentionally has
- * no Tauri listener: LiveMonitor gives it only the already ordered stream.
+ * no native listener: LiveMonitor gives it only the already ordered stream.
  */
 export class TelemetrySessionStore {
   private readonly maxSamplesPerSession: number;
@@ -672,5 +672,5 @@ function emptySnapshot(sessionKey: string): TelemetrySessionSnapshot {
   });
 }
 
-/** Shared live registry. It is deliberately fed by LiveMonitor, never Tauri directly. */
+/** Shared live registry. It is deliberately fed by LiveMonitor, never the native bridge directly. */
 export const liveTelemetryStore = new TelemetrySessionStore();

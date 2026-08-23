@@ -1,0 +1,12 @@
+[
+  {
+    "date": "2026-08-23",
+    "scope": "app",
+    "macrostructure": "Workbench",
+    "theme": "custom",
+    "theme_axes": "dark-and-light cool-neutral / technical sans / signal-aqua",
+    "vibe": "calibrated Linux bench instrument",
+    "enrichment": "functional telemetry only",
+    "brief": "BaudTide whole-app visual redesign with behavior preserved"
+  }
+]

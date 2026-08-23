@@ -1,0 +1,9 @@
+{
+  "date": "2026-08-23",
+  "framework": "React 19 + Vite 8 + Electron",
+  "font_stack": "Ubuntu Sans / Noto Sans / Ubuntu Mono",
+  "palette": "project-root CSS custom properties in tokens.css",
+  "motion": "CSS-only, motion-cut",
+  "spacing": "4-point semantic scale",
+  "preserve": ["BaudTide mark", "dark and light themes", "existing behavior and copy"]
+}

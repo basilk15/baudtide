@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { TelemetryField, TelemetryGap, TelemetrySample } from './telemetry';
 import {
+  alignTelemetryChartData,
   decimateTelemetryPoints,
   filterTelemetryWindow,
   groupTelemetryFieldsByUnit,
@@ -28,6 +29,29 @@ const fields: readonly TelemetryField[] = [
 ];
 
 describe('telemetry chart preparation', () => {
+  it('keeps every record when one native read gives them the same timestamp', () => {
+    const timestamp = '2026-08-10T10:00:10.000Z';
+    const prepared = prepareTelemetryCharts({
+      samples: [
+        sample('one', timestamp, { temperature: 20 }),
+        sample('two', timestamp, { temperature: 21 }),
+        sample('three', timestamp, { temperature: 22 }),
+      ],
+      fields,
+      gaps: [],
+      selectedFieldKeys: ['temperature'],
+      windowMs: 0,
+    });
+    const series = prepared.groups[0].series[0];
+    const aligned = alignTelemetryChartData([series]);
+
+    expect(series.points.map((point) => point.value)).toEqual([20, 21, 22]);
+    expect(aligned.timestamps).toHaveLength(3);
+    expect(aligned.timestamps[1]).toBeGreaterThan(aligned.timestamps[0]);
+    expect(aligned.timestamps[2]).toBeGreaterThan(aligned.timestamps[1]);
+    expect(aligned.values[0]).toEqual([20, 21, 22]);
+  });
+
   it('filters its window from the newest valid timestamp and ignores invalid timestamps', () => {
     const rows = [
       sample('old', '2026-08-10T10:00:00.000Z', { temperature: 20 }),

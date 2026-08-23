@@ -24,6 +24,8 @@
 .sd-monitor .sd-autoscroll-toggle:focus-within::before { outline: 2px solid #75dfc055; outline-offset: 2px; }
 .sd-monitor .sd-go-to-end { color: #a8e6d4; background: #17372f; }
 .sd-monitor .sd-go-to-end:hover:not(:disabled) { background: #1f4a3f; }
+.sd-monitor .sd-terminal-output { overscroll-behavior: contain; scrollbar-gutter: stable; }
+.theme-light .sd-monitor .sd-terminal-output { scrollbar-color: #9db1c2 #f1f6fa; }
 @media (max-width: 720px) { .sd-monitor .sd-monitor-header-actions { gap: 3px; }.sd-monitor .sd-monitor-header-actions .sd-monitor-secondary, .sd-monitor .sd-monitor-header-actions .sd-monitor-danger-button { padding: 0 8px; }.sd-monitor .sd-terminal-toolbar { align-items: flex-start; flex-direction: column; }.sd-monitor .sd-terminal-controls { width: 100%; justify-content: flex-end; overflow-x: auto; }.sd-monitor .sd-terminal-controls .sd-autoscroll-toggle { margin-right: auto; } }
 
 /* Confirmations stay over the monitor instead of extending the page below the terminal. */

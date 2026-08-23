@@ -14,3 +14,30 @@
 @media (prefers-reduced-motion: reduce) {
   .sd-welcome-copy, .sd-welcome-visual, .sd-welcome-features, .sd-welcome-float { animation: none; }
 }
+
+/* One restrained entrance for the authored instrument; no floating chrome. */
+.sd-welcome-copy,
+.sd-welcome-visual,
+.sd-welcome-features {
+  animation: sd-welcome-in .5s var(--ease-out) both;
+}
+
+.sd-welcome-visual {
+  animation-delay: 60ms;
+}
+
+.sd-welcome-features {
+  animation-delay: 120ms;
+}
+
+.sd-welcome-float {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sd-welcome-copy,
+  .sd-welcome-visual,
+  .sd-welcome-features {
+    animation: none;
+  }
+}

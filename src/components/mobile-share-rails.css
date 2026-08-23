@@ -1,0 +1,246 @@
+/* Hallmark · macrostructure: Workbench · tone: technical · anchor hue: oxide-teal */
+
+.sd-mobile-share-screen .sd-mobile-share-session-picker {
+  margin-top: var(--space-3xl);
+  padding: 0;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-section-heading {
+  align-items: baseline;
+  padding: var(--space-lg) 0 var(--space-sm);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-section-heading > div {
+  display: grid;
+  gap: var(--space-2xs);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-section-heading h2 {
+  color: var(--color-ink);
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  letter-spacing: -0.03em;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-section-heading > div > span {
+  color: var(--color-ink-dim);
+  font-size: var(--text-xs);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-section-heading > span {
+  color: var(--color-ink-dim);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-session-list {
+  display: block;
+  margin-top: 0;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-session {
+  width: 100%;
+  min-height: var(--space-3xl);
+  padding: var(--space-sm) var(--space-2xs);
+  border: 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-ink-muted);
+  transform: none;
+  transition: background-color var(--dur-short) var(--ease-out), color var(--dur-short) var(--ease-out);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-session:last-child {
+  border-bottom: 0;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-session:hover {
+  border-color: var(--color-border-subtle);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  transform: none;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-session.is-selected {
+  border-color: var(--color-border-subtle);
+  background: var(--color-accent-soft);
+  color: var(--color-ink);
+  box-shadow: none;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-session.is-selected small {
+  color: var(--color-accent-strong);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-session > svg {
+  color: var(--color-accent);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-session-empty {
+  margin: 0;
+  padding: var(--space-md) var(--space-2xs);
+  border: 0;
+  border-top: 1px solid var(--color-border-subtle);
+  border-radius: 0;
+  background: transparent;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0;
+  margin-top: var(--space-3xl);
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid > .sd-mobile-workspace-share,
+.sd-mobile-share-screen .sd-mobile-share-terminal-card {
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-lg) 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid > .sd-mobile-workspace-share {
+  padding-right: var(--space-xl);
+  border-right: 1px solid var(--color-border-subtle);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-terminal-card {
+  padding-left: var(--space-xl);
+}
+
+.sd-mobile-share-screen .sd-mobile-workspace-heading,
+.sd-mobile-share-screen .sd-mobile-share-terminal-heading {
+  min-height: 54px;
+  padding: 0 0 var(--space-md);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.sd-mobile-share-screen .sd-mobile-workspace-heading > div:last-of-type,
+.sd-mobile-share-screen .sd-mobile-share-selected-session > div:last-child {
+  min-width: 0;
+}
+
+.sd-mobile-share-screen .sd-mobile-workspace-heading h2 {
+  color: var(--color-ink);
+  font-family: var(--font-display);
+  font-size: var(--text-md);
+  letter-spacing: -0.02em;
+}
+
+.sd-mobile-share-screen .sd-mobile-workspace-heading > div:last-of-type span {
+  display: block;
+  margin-top: var(--space-2xs);
+  color: var(--color-ink-dim);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-selected-session h2 {
+  color: var(--color-ink);
+  font-size: var(--text-md);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-terminal-heading {
+  align-items: flex-start;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share {
+  margin: 0;
+  padding: var(--space-md) 0 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-summary {
+  padding: 0 0 var(--space-sm);
+  border: 0;
+  background: transparent;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-content {
+  padding: 0;
+}
+
+.sd-mobile-share-screen .sd-mobile-workspace-start,
+.sd-mobile-share-screen .sd-mobile-share-start {
+  align-items: center;
+  margin-top: 0;
+  padding: var(--space-md) 0;
+  border: 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+  border-radius: 0;
+  background: transparent;
+}
+
+.sd-mobile-share-screen .sd-mobile-workspace-active,
+.sd-mobile-share-screen .sd-mobile-share-active {
+  margin-top: var(--space-md);
+  padding: var(--space-md) 0;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-preview {
+  margin-top: 0;
+  padding: var(--space-md) 0;
+  border: 0;
+  border-top: 1px solid var(--color-border-subtle);
+  border-bottom: 1px solid var(--color-border-subtle);
+  border-radius: 0;
+  background: transparent;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-safety {
+  margin-top: var(--space-md);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-terminal-empty {
+  padding: var(--space-2xl) 0;
+}
+
+@media (max-width: 900px) {
+  .sd-mobile-share-screen .sd-mobile-share-screen-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sd-mobile-share-screen .sd-mobile-share-screen-grid > .sd-mobile-workspace-share {
+    padding-right: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .sd-mobile-share-screen .sd-mobile-share-terminal-card {
+    padding-left: 0;
+  }
+}
+
+@media (max-width: 620px) {
+  .sd-mobile-share-screen .sd-mobile-share-session-picker,
+  .sd-mobile-share-screen .sd-mobile-share-screen-grid {
+    margin-top: var(--space-2xl);
+  }
+
+  .sd-mobile-share-screen .sd-mobile-share-section-heading {
+    align-items: flex-start;
+  }
+
+  .sd-mobile-share-screen .sd-mobile-share-screen-grid > .sd-mobile-workspace-share,
+  .sd-mobile-share-screen .sd-mobile-share-terminal-card {
+    padding-top: var(--space-lg);
+    padding-bottom: var(--space-lg);
+  }
+}

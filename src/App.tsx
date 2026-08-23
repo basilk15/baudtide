@@ -18,6 +18,7 @@ import { VisualizeScreen, type VisualizeSession } from './components/VisualizeSc
 import type { SignalDeckPage } from './components/phase3Types';
 import { defaultPreferences, loadPreferences, savePreferences, type BaudTidePreferences, type DisplayEncoding, type LineEnding } from './lib/preferences';
 import { stableTerminalSessionIdentity, type SavedSessionWorkspace, type TerminalLayout } from './lib/sessionWorkspaces';
+import { isDesktopRuntime } from './lib/desktop';
 import { Moon, Radio, Sun, TerminalSquare, X } from 'lucide-react';
 import './light-theme.css';
 import './components/theme-toggle.css';
@@ -25,7 +26,6 @@ import {
   defaultSerialConnectionSettings,
   disconnectNativeSerialSession,
   chooseNativeLogDirectory,
-  isTauriRuntime,
   listActiveNativeSerialSessions,
   listNativeSerialPorts,
   sendNativeSerialBytes,
@@ -101,7 +101,12 @@ export function shouldIgnoreGlobalShortcut(event: KeyboardEvent) {
   return isInteractiveShortcutTarget(event.target) || isInteractiveShortcutTarget(document.activeElement);
 }
 
-const nativeRuntime = isTauriRuntime();
+/** The telemetry canvas owns Ctrl/⌘+wheel for its horizontal dataZoom. */
+function isTelemetryChartTarget(target: EventTarget | null) {
+  return target instanceof Element && Boolean(target.closest('.bt-telemetry-echarts'));
+}
+
+const nativeRuntime = isDesktopRuntime();
 
 function previewSessionId() {
   return `preview-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
@@ -109,7 +114,6 @@ function previewSessionId() {
 
 function App() {
   const [page, setPage] = useState<SignalDeckPage>('dashboard');
-  const [isPageTransitioning, setPageTransitioning] = useState(false);
   const [isStartupVisible, setStartupVisible] = useState(true);
   const [isWelcomeVisible, setWelcomeVisible] = useState(true);
   const [isConnectionDialogOpen, setConnectionDialogOpen] = useState(false);
@@ -125,7 +129,7 @@ function App() {
   // render scheduler before a wheel gesture becomes visible.
   const zoomRef = useRef(1);
   const shellRef = useRef<HTMLDivElement>(null);
-  const pageTransitionTimerRef = useRef<number | null>(null);
+  const mainScrollRef = useRef<HTMLElement>(null);
   const monitorRefs = useRef<Record<string, LiveMonitorHandle | null>>({});
   const autoReconnectTimers = useRef<Record<string, AutoReconnectTimer>>({});
   const autoReconnectAttempts = useRef<Record<string, number>>({});
@@ -192,14 +196,12 @@ function App() {
   };
   const navigate = (nextPage: SignalDeckPage) => {
     if (nextPage !== page) {
-      setPageTransitioning(true);
-      if (pageTransitionTimerRef.current !== null) window.clearTimeout(pageTransitionTimerRef.current);
-      pageTransitionTimerRef.current = window.setTimeout(() => {
-        pageTransitionTimerRef.current = null;
-        setPageTransitioning(false);
-      }, 32);
+      // Every workspace starts at its own stable origin. Previously the
+      // document scroll offset leaked from the dashboard into the terminal,
+      // then snapped when the pages had different heights.
+      mainScrollRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+      setPage(nextPage);
     }
-    setPage(nextPage);
     if (nextPage !== 'dashboard') setWelcomeVisible(false);
   };
   const selectedMonitor = () => selectedSessionId ? monitorRefs.current[selectedSessionId] : null;
@@ -730,6 +732,7 @@ function App() {
       }
     };
     const onWheel = (event: WheelEvent) => {
+      if (isTelemetryChartTarget(event.target)) return;
       if (!(event.ctrlKey || event.metaKey) || event.deltaY === 0) return;
       event.preventDefault();
       // Mouse wheels typically report line-height jumps while touchpads report
@@ -794,13 +797,13 @@ function App() {
   if (isStartupVisible) return <AppStartupScreen onComplete={closeStartup} />;
   return <div ref={shellRef} className={`signaldeck-shell theme-${theme} zoom-${Math.round(zoomRef.current * 100)}`} style={{ zoom: zoomRef.current }}>
     <SidebarNavigation activePage={page} onNavigate={navigate} onPreferences={() => navigate('preferences')} onHelp={() => navigate('help')} />
-    <section className="signaldeck-main">
+    <section ref={mainScrollRef} className="signaldeck-main">
       <header className="signaldeck-topbar">
         <div className="signaldeck-breadcrumb"><span>BaudTide</span><b>/</b><strong>{page === 'sessions' && selectedSession ? selectedSession.sessionName : pageNames[page]}</strong></div>
         <div className={`signaldeck-preview-label ${nativeRuntime ? 'native' : ''}`}>{nativeRuntime ? 'Desktop mode · serial backend ready' : 'Browser preview · no serial backend'}</div>
         <div className="signaldeck-topbar-actions"><CommandPalette actions={commandActions} onAction={runCommand} /><TopThemeToggle theme={theme} onThemeChange={(nextTheme) => { setTheme(nextTheme); void saveAppPreferences({ ...preferences, appearance: { theme: nextTheme } }); }} /><NotificationsPanel notifications={notifications} onMarkRead={markRead} onMarkAllRead={markAllRead} /><WorkspaceProfileMenu onPreferences={() => navigate('preferences')} /></div>
       </header>
-      <div className={`signaldeck-content ${isPageTransitioning ? 'is-page-transitioning' : ''}`}>
+      <div className="signaldeck-content">
         <div hidden={page !== 'sessions'}><SessionsWorkspace workspaceVisible={page === 'sessions'} sessions={sessions} selectedSessionId={selectedSessionId} onSelect={setSelectedSessionId} onRequestConnection={openConnectionDialog} onDisconnect={disconnectSession} onReconnect={reconnectSession} onAutoReconnectChange={setSessionAutoReconnect} onClose={closeSession} onConnectionStateChange={updateSessionState} onNativeSessionEnded={markNativeSessionEnded} onNativeStorageLimit={markNativeStorageLimit} onNativeSessionStartupFailure={releaseNativeSessionAfterStartupFailure} onMonitorRef={(sessionId, monitor) => { monitorRefs.current[sessionId] = monitor; }} /></div>
         {page !== 'sessions' && (page === 'preferences' ? <PreferencesScreen preferences={preferences} nativeEnabled={nativeRuntime} onSave={saveAppPreferences} onThemePreview={setTheme} onChooseLogDirectory={chooseLogDirectory} />
           : page === 'help' ? <HelpFeedbackPanel nativeEnabled={nativeRuntime} openSessionCount={sessions.length} activeSessionCount={sessions.filter((session) => session.native && session.connectionState === 'connected').length} />

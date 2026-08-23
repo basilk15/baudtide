@@ -1,0 +1,34 @@
+appId: com.basil.baudtide
+productName: BaudTide
+artifactName: "${productName}-${version}-${arch}.${ext}"
+asar: true
+directories:
+  output: release
+  buildResources: build/icons
+files:
+  - dist/**/*
+  - electron/**/*
+  - LICENSE
+  - package.json
+extraResources:
+  - from: src-native/target/release/baudtide-backend
+    to: bin/baudtide-backend
+linux:
+  category: Development
+  icon: icon.png
+  syncDesktopName: true
+  target:
+    - AppImage
+    - deb
+    - rpm
+  executableName: baudtide
+  synopsis: A focused desktop serial monitor
+  description: Discover serial ports, monitor multiple devices, and capture local logs.
+deb:
+  packageCategory: devel
+  depends:
+    - libudev1
+rpm:
+  packageCategory: Development/Tools
+  depends:
+    - systemd-libs
