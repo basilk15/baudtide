@@ -1,7 +1,3 @@
-#![cfg_attr(
-    all(feature = "tauri-app", not(debug_assertions)),
-    windows_subsystem = "windows"
-)]
 #![allow(clippy::items_after_test_module)]
 
 use std::{
@@ -22,32 +18,23 @@ use std::{
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serialport::{DataBits, FlowControl, Parity, SerialPort, SerialPortType, StopBits};
-#[cfg(feature = "tauri-app")]
-use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
-#[cfg(feature = "tauri-app")]
-use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
-#[cfg(not(feature = "tauri-app"))]
 use std::io::BufRead;
 
-#[cfg(not(feature = "tauri-app"))]
 type State<'a, T> = &'a T;
 
-/// Minimal host surface used by the shared backend when running as an
-/// Electron sidecar. All protocol writers share one lock so responses and
-/// asynchronous events are each emitted as one complete NDJSON line.
-#[cfg(not(feature = "tauri-app"))]
+/// Minimal host surface used by the Electron sidecar. All protocol writers
+/// share one lock so responses and asynchronous events are each emitted as
+/// one complete NDJSON line.
 #[derive(Clone)]
 struct AppHandle {
     app_data_dir: Arc<PathBuf>,
     protocol_writer: Arc<Mutex<BufWriter<io::Stdout>>>,
 }
 
-#[cfg(not(feature = "tauri-app"))]
 struct SidecarPathResolver<'a>(&'a Path);
 
-#[cfg(not(feature = "tauri-app"))]
 impl AppHandle {
     fn new(app_data_dir: PathBuf) -> Self {
         Self {
@@ -68,7 +55,6 @@ impl AppHandle {
     }
 }
 
-#[cfg(not(feature = "tauri-app"))]
 impl SidecarPathResolver<'_> {
     fn app_data_dir(&self) -> Result<PathBuf, &'static str> {
         Ok(self.0.to_path_buf())
@@ -87,7 +73,7 @@ const CAPTURE_DURABILITY_SYNC_INTERVAL: Duration = Duration::from_secs(1);
 /// slower cadence below.
 const CAPTURE_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
 /// Startup data is normally drained as soon as the React monitor subscribes.
-/// This cap prevents a disconnected/failed WebView from retaining an
+/// This cap prevents a disconnected/failed renderer from retaining an
 /// unbounded device stream; raw logging continues even if it is reached.
 const STARTUP_EVENT_BUFFER_BYTE_LIMIT: usize = 4 * 1024 * 1024;
 const SETTINGS_VERSION: u32 = 1;
@@ -355,7 +341,7 @@ struct SerialDataEvent {
     bytes: Vec<u8>,
 }
 
-/// A serial reader begins as soon as a port opens, but the WebView cannot
+/// A serial reader begins as soon as a port opens, but the renderer cannot
 /// subscribe until the start command has returned its session ID. Keep the
 /// short startup window in-process, then atomically hand it to the UI.
 enum SerialEventDelivery {
@@ -993,19 +979,17 @@ impl Drop for ActiveSavedLogSearch {
     }
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn list_serial_ports() -> CommandResult<Vec<AvailablePort>> {
     serialport::available_ports()
         .map_err(|error| format!("Could not list serial ports: {error}"))
         .map(|ports| ports.into_iter().map(port_metadata).collect())
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn list_active_sessions(state: State<'_, SerialState>) -> CommandResult<Vec<SessionInfo>> {
     let sessions = state.sessions.lock().map_err(lock_error)?;
     let mut active = Vec::with_capacity(sessions.len());
     for session in sessions.values() {
-        // A WebView reload drops its event listeners while the native reader
+        // A renderer reload drops its event listeners while the native reader
         // keeps running. Discovery is the recovery boundary: bytes received
         // after this point use the same bounded replay handoff as a new
         // session, while the on-disk raw capture remains authoritative for the
@@ -1024,11 +1008,10 @@ fn list_active_sessions(state: State<'_, SerialState>) -> CommandResult<Vec<Sess
     Ok(active)
 }
 
-/// Atomically returns bytes received before the WebView registered its event
+/// Atomically returns bytes received before the renderer registered its event
 /// listener, then switches this session to direct event delivery. The sequence
 /// field on each event lets the frontend safely merge these with any event that
 /// reaches it immediately after the switch.
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn take_pending_serial_data(
     state: State<'_, SerialState>,
     session_id: String,
@@ -1071,29 +1054,17 @@ fn activate_serial_event_delivery(delivery: &mut SerialEventDelivery) -> Pending
     }
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn load_preferences(app: AppHandle) -> CommandResult<ApplicationSettings> {
     load_application_settings(&app)
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn save_preferences(
     app: AppHandle,
     state: State<'_, SerialState>,
     settings: ApplicationSettings,
 ) -> CommandResult<ApplicationSettings> {
     validate_preference_log_directory(&settings.storage.log_directory)?;
-    let settings = normalize_application_settings(settings);
-    let current = load_application_settings(&app)?;
-    #[cfg(feature = "tauri-app")]
-    if !settings.storage.log_directory.is_empty()
-        && settings.storage.log_directory != current.storage.log_directory
-    {
-        return Err("Choose a log folder with the native folder picker.".into());
-    }
-    #[cfg(not(feature = "tauri-app"))]
-    let mut settings = settings;
-    #[cfg(not(feature = "tauri-app"))]
+    let mut settings = normalize_application_settings(settings);
     if !settings.storage.log_directory.is_empty() {
         let directory = PathBuf::from(&settings.storage.log_directory)
             .canonicalize()
@@ -1103,8 +1074,6 @@ fn save_preferences(
         }
         settings.storage.log_directory = directory.display().to_string();
     }
-    #[cfg(not(feature = "tauri-app"))]
-    let _ = current;
     save_application_settings(&app, &settings)?;
     state.capture_quota.lock().map_err(lock_error)?.limit_bytes =
         settings.storage.storage_limit_bytes;
@@ -1120,96 +1089,10 @@ fn validate_preference_log_directory(directory: &str) -> CommandResult<()> {
     }
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
-#[cfg(feature = "tauri-app")]
-async fn select_log_directory(app: AppHandle) -> CommandResult<Option<String>> {
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-    app.dialog()
-        .file()
-        .set_title("Choose BaudTide log folder")
-        .pick_folder(move |selection| {
-            let _ = sender.send(selection.and_then(|path| path.into_path().ok()));
-        });
-    let selected = tauri::async_runtime::spawn_blocking(move || receiver.recv().ok().flatten())
-        .await
-        .map_err(|error| format!("Could not receive the selected log folder: {error}"))?;
-    let Some(directory) = selected else {
-        return Ok(None);
-    };
-    let directory = directory
-        .canonicalize()
-        .map_err(|error| format!("Could not use the selected log folder: {error}"))?;
-    if !directory.is_dir() {
-        return Err("Choose an existing log folder.".into());
-    }
-    let mut settings = load_application_settings(&app)?;
-    settings.storage.log_directory = directory.display().to_string();
-    save_application_settings(&app, &settings)?;
-    Ok(Some(settings.storage.log_directory))
-}
-
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn list_saved_logs(app: AppHandle, state: State<'_, SerialState>) -> CommandResult<Vec<SavedLog>> {
     collect_saved_logs(&app, &state.sessions)
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
-#[cfg(feature = "tauri-app")]
-async fn search_saved_logs(
-    app: AppHandle,
-    state: State<'_, SerialState>,
-    query: String,
-    options: Option<SavedLogSearchOptions>,
-) -> CommandResult<SavedLogSearchResponse> {
-    let options = options.unwrap_or_default();
-    let full_search = options.full_search;
-    let query = query.trim().to_owned();
-    if query.is_empty() {
-        return Ok(SavedLogSearchResponse {
-            results: Vec::new(),
-            scanned_log_count: 0,
-            scanned_bytes: 0,
-            full_search,
-            truncated: false,
-            result_limit_reached: false,
-            per_log_byte_limit: (!full_search).then_some(SEARCH_PER_LOG_BYTE_LIMIT),
-            total_byte_limit: (!full_search).then_some(SEARCH_TOTAL_BYTE_LIMIT),
-            result_limit: SEARCH_RESULT_LIMIT,
-            indexed_log_count: 0,
-            index_rebuilt_log_count: 0,
-            index_fallback_log_count: 0,
-            index_update_limited: false,
-        });
-    }
-    if query.len() > SEARCH_QUERY_BYTE_LIMIT {
-        return Err(format!(
-            "Search terms are limited to {SEARCH_QUERY_BYTE_LIMIT} bytes so local log search stays responsive."
-        ));
-    }
-
-    let active_search = if full_search {
-        options
-            .search_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|search_id| !search_id.is_empty())
-            .map(|search_id| begin_saved_log_search(&state, search_id))
-            .transpose()?
-    } else {
-        None
-    };
-    let sessions = Arc::clone(&state.sessions);
-    tauri::async_runtime::spawn_blocking(move || {
-        let cancellation = active_search
-            .as_ref()
-            .map(|search| search.cancelled.as_ref());
-        run_saved_log_search(&app, &sessions, query, full_search, cancellation)
-    })
-    .await
-    .map_err(|error| format!("Saved-log search worker stopped unexpectedly: {error}"))?
-}
-
-#[cfg(not(feature = "tauri-app"))]
 fn search_saved_logs_sidecar(
     app: AppHandle,
     state: State<'_, SerialState>,
@@ -1433,7 +1316,6 @@ fn run_saved_log_search(
     })
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn cancel_saved_log_search(state: State<'_, SerialState>, search_id: String) -> CommandResult<()> {
     let search_id = search_id.trim();
     if search_id.is_empty() {
@@ -1455,7 +1337,6 @@ fn cancel_saved_log_search(state: State<'_, SerialState>, search_id: String) -> 
     Ok(())
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn read_saved_log(app: AppHandle, path: String) -> CommandResult<SavedLogContent> {
     let path = resolve_saved_log_path(&app, &path)?;
     const PREVIEW_LIMIT: u64 = 1_000_000;
@@ -1475,7 +1356,6 @@ fn read_saved_log(app: AppHandle, path: String) -> CommandResult<SavedLogContent
     })
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn delete_saved_log(
     app: AppHandle,
     state: State<'_, SerialState>,
@@ -1527,44 +1407,6 @@ fn release_capture_quota(quota: &mut CaptureQuota, deleted_bytes: u64) {
     quota.used_bytes = quota.used_bytes.saturating_sub(deleted_bytes);
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
-#[cfg(feature = "tauri-app")]
-async fn save_saved_log(app: AppHandle, source_path: String) -> CommandResult<Option<String>> {
-    let source = resolve_saved_log_path(&app, &source_path)?;
-    let default_name = source
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("serial-capture.log")
-        .to_owned();
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-    app.dialog()
-        .file()
-        .set_title("Save serial log copy")
-        .set_file_name(default_name)
-        .add_filter("Serial log", &["log", "txt"])
-        .save_file(move |selection| {
-            let _ = sender.send(selection.and_then(|path| path.into_path().ok()));
-        });
-    let destination = tauri::async_runtime::spawn_blocking(move || receiver.recv().ok().flatten())
-        .await
-        .map_err(|error| format!("Could not receive the export destination: {error}"))?;
-    let Some(destination) = destination else {
-        return Ok(None);
-    };
-    let destination = if destination.extension().is_none() {
-        destination.with_extension("log")
-    } else {
-        destination
-    };
-    if destination == source {
-        return Err("Choose a different location for the saved copy.".into());
-    }
-    std::fs::copy(&source, &destination)
-        .map_err(|error| format!("Could not save a copy of the log: {error}"))?;
-    Ok(Some(destination.display().to_string()))
-}
-
-#[cfg(not(feature = "tauri-app"))]
 fn save_saved_log_sidecar(
     app: AppHandle,
     source_path: String,
@@ -1616,13 +1458,11 @@ fn save_saved_log_sidecar(
 /// Owns only the unpredictable temporary export path created by this process.
 /// A failed copy/rename removes that artifact without touching the requested
 /// destination or any other file in its directory.
-#[cfg(not(feature = "tauri-app"))]
 struct PendingSavedLogExport {
     path: PathBuf,
     published: bool,
 }
 
-#[cfg(not(feature = "tauri-app"))]
 impl Drop for PendingSavedLogExport {
     fn drop(&mut self) {
         if !self.published {
@@ -1631,7 +1471,6 @@ impl Drop for PendingSavedLogExport {
     }
 }
 
-#[cfg(not(feature = "tauri-app"))]
 fn copy_saved_log_atomically(source: &Path, destination: &Path) -> CommandResult<()> {
     let parent = destination
         .parent()
@@ -1679,7 +1518,7 @@ fn copy_saved_log_atomically(source: &Path, destination: &Path) -> CommandResult
     Ok(())
 }
 
-#[cfg(all(not(feature = "tauri-app"), unix))]
+#[cfg(unix)]
 fn replace_saved_log_destination(temporary: &Path, destination: &Path) -> io::Result<()> {
     // POSIX rename replaces the destination directory entry atomically. It
     // neither follows a destination symlink nor truncates an existing hard
@@ -1687,7 +1526,7 @@ fn replace_saved_log_destination(temporary: &Path, destination: &Path) -> io::Re
     std::fs::rename(temporary, destination)
 }
 
-#[cfg(all(not(feature = "tauri-app"), windows))]
+#[cfg(windows)]
 fn replace_saved_log_destination(temporary: &Path, destination: &Path) -> io::Result<()> {
     // Rust's Windows rename does not replace an existing file. Removing the
     // selected destination first still avoids following symlinks or truncating
@@ -1700,14 +1539,13 @@ fn replace_saved_log_destination(temporary: &Path, destination: &Path) -> io::Re
     std::fs::rename(temporary, destination)
 }
 
-#[cfg(all(not(feature = "tauri-app"), not(any(unix, windows))))]
+#[cfg(not(any(unix, windows)))]
 fn replace_saved_log_destination(temporary: &Path, destination: &Path) -> io::Result<()> {
     std::fs::rename(temporary, destination)
 }
 
 /// Enables an explicitly requested companion page for one live serial session.
 /// The listener is IPv4 LAN-only and starts with remote control disabled.
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn start_mobile_share(
     state: State<'_, SerialState>,
     session_id: String,
@@ -1806,7 +1644,6 @@ where
     Ok(info)
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn get_mobile_share_status(
     state: State<'_, SerialState>,
     session_id: String,
@@ -1833,7 +1670,6 @@ fn get_mobile_share_status(
         }))
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn set_mobile_share_control(
     state: State<'_, SerialState>,
     session_id: String,
@@ -1851,7 +1687,6 @@ fn set_mobile_share_control(
     Ok(active_mobile_share_info(&session_id, share))
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn stop_mobile_share(
     state: State<'_, SerialState>,
     session_id: String,
@@ -1873,7 +1708,6 @@ fn stop_mobile_share(
 /// that are active at creation time. The scope is deliberately immutable: a
 /// later terminal or reconnect receives a new native session ID and cannot
 /// enter an already-issued bearer link.
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn start_mobile_workspace_share(
     state: State<'_, SerialState>,
 ) -> CommandResult<MobileWorkspaceShareInfo> {
@@ -1936,7 +1770,6 @@ fn start_mobile_workspace_share(
     Ok(info)
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn get_mobile_workspace_share_status(
     state: State<'_, SerialState>,
 ) -> CommandResult<MobileWorkspaceShareInfo> {
@@ -1947,7 +1780,6 @@ fn get_mobile_workspace_share_status(
         .unwrap_or_else(empty_mobile_workspace_share_info))
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn stop_mobile_workspace_share(
     state: State<'_, SerialState>,
 ) -> CommandResult<MobileWorkspaceShareInfo> {
@@ -4239,7 +4071,6 @@ fn mobile_workspace_share_page() -> &'static str {
 </html>"##
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn start_serial_session(
     app: AppHandle,
     state: State<'_, SerialState>,
@@ -4383,7 +4214,6 @@ fn start_serial_session(
     Ok(info)
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn send_serial_text(
     state: State<'_, SerialState>,
     session_id: String,
@@ -4392,7 +4222,6 @@ fn send_serial_text(
     send_serial_bytes(state, session_id, text.into_bytes())
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn send_serial_bytes(
     state: State<'_, SerialState>,
     session_id: String,
@@ -4455,7 +4284,6 @@ fn close_serial_writer<W>(writer: &Mutex<Option<W>>) -> CommandResult<()> {
     Ok(())
 }
 
-#[cfg_attr(feature = "tauri-app", tauri::command)]
 fn disconnect_serial_session(
     app: AppHandle,
     state: State<'_, SerialState>,
@@ -4727,7 +4555,7 @@ fn deliver_serial_data(
     }
 }
 
-/// Atomically either holds a serial event for the initial WebView handoff or
+/// Atomically either holds a serial event for the initial renderer handoff or
 /// returns it for immediate delivery to a live listener.
 fn buffer_serial_event(
     event_delivery: &Arc<Mutex<SerialEventDelivery>>,
@@ -4801,6 +4629,7 @@ fn remove_failed_session(
 }
 
 #[cfg(all(test, target_os = "linux"))]
+#[path = "pty_tests.rs"]
 mod pty_tests;
 
 #[cfg(test)]
@@ -7437,59 +7266,8 @@ fn shutdown_serial_sessions(app: &AppHandle, state: &SerialState) {
     }
 }
 
-#[cfg(feature = "tauri-app")]
-fn main() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        .manage(SerialState::default())
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                let state = window.state::<SerialState>();
-                if state.shutting_down.swap(true, Ordering::AcqRel) {
-                    return;
-                }
-                api.prevent_close();
-                let app = window.app_handle().clone();
-                thread::spawn(move || {
-                    let state = app.state::<SerialState>();
-                    shutdown_serial_sessions(&app, &state);
-                    app.exit(0);
-                });
-            }
-        })
-        .invoke_handler(tauri::generate_handler![
-            list_serial_ports,
-            list_active_sessions,
-            take_pending_serial_data,
-            load_preferences,
-            save_preferences,
-            select_log_directory,
-            list_saved_logs,
-            search_saved_logs,
-            cancel_saved_log_search,
-            read_saved_log,
-            delete_saved_log,
-            save_saved_log,
-            start_mobile_share,
-            get_mobile_share_status,
-            set_mobile_share_control,
-            stop_mobile_share,
-            start_mobile_workspace_share,
-            get_mobile_workspace_share_status,
-            stop_mobile_workspace_share,
-            start_serial_session,
-            send_serial_text,
-            send_serial_bytes,
-            disconnect_serial_session
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running BaudTide");
-}
-
-#[cfg(not(feature = "tauri-app"))]
 const SIDECAR_REQUEST_BYTE_LIMIT: usize = 1024 * 1024;
 
-#[cfg(not(feature = "tauri-app"))]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProtocolRequest {
@@ -7499,12 +7277,10 @@ struct ProtocolRequest {
     params: serde_json::Value,
 }
 
-#[cfg(not(feature = "tauri-app"))]
 fn empty_protocol_params() -> serde_json::Value {
     serde_json::Value::Object(serde_json::Map::new())
 }
 
-#[cfg(not(feature = "tauri-app"))]
 fn write_protocol_line(
     writer: &Arc<Mutex<BufWriter<io::Stdout>>>,
     message: &serde_json::Value,
@@ -7517,7 +7293,6 @@ fn write_protocol_line(
     writer.flush()
 }
 
-#[cfg(not(feature = "tauri-app"))]
 fn protocol_response(
     app: &AppHandle,
     id: serde_json::Value,
@@ -7526,7 +7301,6 @@ fn protocol_response(
     write_protocol_line(&app.protocol_writer, &protocol_response_message(id, result))
 }
 
-#[cfg(not(feature = "tauri-app"))]
 fn protocol_response_message(
     id: serde_json::Value,
     result: CommandResult<serde_json::Value>,
@@ -7537,7 +7311,6 @@ fn protocol_response_message(
     }
 }
 
-#[cfg(not(feature = "tauri-app"))]
 fn serialize_command_result<T: Serialize>(
     result: CommandResult<T>,
 ) -> CommandResult<serde_json::Value> {
@@ -7547,7 +7320,6 @@ fn serialize_command_result<T: Serialize>(
     })
 }
 
-#[cfg(not(feature = "tauri-app"))]
 fn protocol_params(
     params: &serde_json::Value,
 ) -> CommandResult<&serde_json::Map<String, serde_json::Value>> {
@@ -7556,7 +7328,6 @@ fn protocol_params(
         .ok_or_else(|| "Request params must be a JSON object.".to_string())
 }
 
-#[cfg(not(feature = "tauri-app"))]
 fn no_protocol_params(params: &serde_json::Value) -> CommandResult<()> {
     if protocol_params(params)?.is_empty() {
         Ok(())
@@ -7565,7 +7336,6 @@ fn no_protocol_params(params: &serde_json::Value) -> CommandResult<()> {
     }
 }
 
-#[cfg(not(feature = "tauri-app"))]
 fn required_protocol_param<T: for<'de> Deserialize<'de>>(
     params: &serde_json::Value,
     name: &str,
@@ -7577,7 +7347,6 @@ fn required_protocol_param<T: for<'de> Deserialize<'de>>(
     serde_json::from_value(value).map_err(|error| format!("Invalid param `{name}`: {error}"))
 }
 
-#[cfg(not(feature = "tauri-app"))]
 fn optional_protocol_param<T: for<'de> Deserialize<'de>>(
     params: &serde_json::Value,
     name: &str,
@@ -7590,7 +7359,6 @@ fn optional_protocol_param<T: for<'de> Deserialize<'de>>(
         .map_err(|error| format!("Invalid param `{name}`: {error}"))
 }
 
-#[cfg(not(feature = "tauri-app"))]
 fn dispatch_sidecar_request(
     app: AppHandle,
     state: &SerialState,
@@ -7704,7 +7472,6 @@ fn dispatch_sidecar_request(
     }
 }
 
-#[cfg(not(feature = "tauri-app"))]
 fn parse_sidecar_app_data_dir() -> CommandResult<PathBuf> {
     let mut arguments = std::env::args_os().skip(1);
     let mut app_data_dir = None;
@@ -7738,7 +7505,6 @@ fn parse_sidecar_app_data_dir() -> CommandResult<PathBuf> {
         .map_err(|error| format!("Could not use the app-data directory: {error}"))
 }
 
-#[cfg(not(feature = "tauri-app"))]
 fn cancel_active_saved_log_searches(state: &SerialState) {
     if let Ok(searches) = state.saved_log_searches.lock() {
         for cancelled in searches.values() {
@@ -7747,7 +7513,6 @@ fn cancel_active_saved_log_searches(state: &SerialState) {
     }
 }
 
-#[cfg(not(feature = "tauri-app"))]
 fn parse_protocol_request(line: &str) -> CommandResult<ProtocolRequest> {
     let request: ProtocolRequest =
         serde_json::from_str(line).map_err(|error| format!("Invalid sidecar request: {error}"))?;
@@ -7763,7 +7528,6 @@ fn parse_protocol_request(line: &str) -> CommandResult<ProtocolRequest> {
     Ok(request)
 }
 
-#[cfg(not(feature = "tauri-app"))]
 fn sidecar_main() -> CommandResult<()> {
     let app = AppHandle::new(parse_sidecar_app_data_dir()?);
     let state = Arc::new(SerialState::default());
@@ -7851,7 +7615,6 @@ fn sidecar_main() -> CommandResult<()> {
     Ok(())
 }
 
-#[cfg(not(feature = "tauri-app"))]
 pub(crate) fn sidecar_entry() {
     if let Err(error) = sidecar_main() {
         eprintln!("{error}");
@@ -7859,7 +7622,7 @@ pub(crate) fn sidecar_entry() {
     }
 }
 
-#[cfg(all(test, not(feature = "tauri-app")))]
+#[cfg(test)]
 mod sidecar_protocol_tests {
     use super::*;
 

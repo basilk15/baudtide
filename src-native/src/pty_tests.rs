@@ -578,7 +578,7 @@ fn pty_capture_handoff_stays_ordered_across_a_frontend_reload() {
     assert_eq!(live_event.sequence, 2);
     assert_eq!(live_event.bytes, live);
 
-    // `list_active_sessions` performs this state transition after a WebView
+    // `list_active_sessions` performs this state transition after a renderer
     // reload. Reproduce it at the helper seam so bytes arriving in the reload
     // gap are buffered and replayed rather than emitted to the old listener.
     {

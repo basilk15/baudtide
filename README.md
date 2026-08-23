@@ -104,10 +104,9 @@ and application lifecycle. It starts `baudtide-backend` and exchanges
 newline-delimited JSON requests, responses, and serial events over private
 standard-I/O pipes.
 
-The sidecar compiles the same Rust backend source used by the previous Tauri
-host, so serial sessions, log indexing and search, capture quotas, mobile
-sharing, validation, and PTY tests remain shared. On Linux it continues to use
-`$XDG_DATA_HOME/com.basil.baudtide`, or
+The native sidecar in `src-native` owns serial sessions, log indexing and
+search, capture quotas, mobile sharing, validation, and PTY coverage. On Linux
+it continues to use `$XDG_DATA_HOME/com.basil.baudtide`, or
 `~/.local/share/com.basil.baudtide`, preserving existing preferences and saved
 captures.
 

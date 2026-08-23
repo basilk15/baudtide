@@ -4,7 +4,7 @@ artifactName: "${productName}-${version}-${arch}.${ext}"
 asar: true
 directories:
   output: release
-  buildResources: src-tauri/icons
+  buildResources: build/icons
 files:
   - dist/**/*
   - electron/**/*

@@ -49,7 +49,7 @@ protocol.registerSchemesAsPrivileged([{
   },
 }]);
 
-function legacyLinuxAppDataPath() {
+function linuxBackendDataPath() {
   const configuredDataHome = process.env.XDG_DATA_HOME;
   const dataHome = configuredDataHome && path.isAbsolute(configuredDataHome)
     ? configuredDataHome
@@ -60,11 +60,11 @@ function legacyLinuxAppDataPath() {
 app.setName(APP_NAME);
 app.setAppUserModelId(APP_ID);
 
-// Only the Rust backend reuses Tauri's application-data directory. Chromium's
-// cookies, cache, and session state remain isolated in Electron's own userData
-// directory so they cannot collide with capture metadata.
+// Keep Rust captures and preferences in the established Linux app-data path.
+// Chromium cookies, cache, and session state remain isolated in Electron's own
+// userData directory so they cannot collide with capture metadata.
 const backendDataDirectory = process.platform === 'linux'
-  ? legacyLinuxAppDataPath()
+  ? linuxBackendDataPath()
   : path.join(app.getPath('appData'), APP_ID);
 
 function backendExecutablePath() {

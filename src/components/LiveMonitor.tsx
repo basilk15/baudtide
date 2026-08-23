@@ -213,7 +213,7 @@ export type LiveMonitorProps = {
   /** Called when the native backend reports a terminal reader/logging failure. */
   onNativeSessionEnded?: (sessionId: string) => void;
   onNativeStorageLimit?: (sessionId: string) => void;
-  /** Called when the WebView cannot finish its listener/startup handoff. */
+  /** Called when the renderer cannot finish its listener/startup handoff. */
   onNativeSessionStartupFailure?: () => void | Promise<void>;
   sessionId?: string;
   /** Stable App-owned identity; unlike sessionId, it survives a native reconnect. */
@@ -772,7 +772,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
               });
             }
             // A recovered session may already have been in live-delivery mode
-            // when this WebView registered its listener. If an event reached
+            // when this renderer registered its listener. If an event reached
             // that listener just before the handoff response, resume at that
             // earliest queued sequence instead of advancing past it.
             const resumeSequence = handoff.events.length
