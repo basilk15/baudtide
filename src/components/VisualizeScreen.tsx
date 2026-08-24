@@ -244,7 +244,7 @@ export function VisualizeScreen({ nativeEnabled, sessions, selectedSessionId, on
             {snapshot.fields.map((field, index) => <FieldRow key={field.key} field={field} index={index} checked={selectedKeySet.has(field.key)} latest={latestByKey.get(field.key)} disabled={!selectedKeySet.has(field.key) && selectedFieldKeys.length >= MAX_SELECTED_FIELDS} onToggle={() => toggleField(field.key)} />)}
           </div>
         </> : <div className="bt-visualize-field-empty"><LoaderCircle className={activeSession.connectionState === 'connected' || activeSession.connectionState === 'reconnecting' ? 'sd-spin' : ''} size={20} /><strong>{snapshot.receivedCompleteLineCount ? 'No numeric fields detected yet' : 'Listening for telemetry'}</strong><span>{snapshot.receivedCompleteLineCount
-          ? 'BaudTide needs repeated JSON, key/value, CSV, or TSV numeric records before it creates a signal.'
+          ? 'BaudTide needs repeated JSON objects or batches, key/value pairs, or header-based CSV/TSV numeric records before it creates a signal.'
           : 'Send repeated numeric records from the device to populate this list.'}</span></div>}
       </aside>
 

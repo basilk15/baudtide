@@ -42,6 +42,8 @@ export type TelemetryChartsProps = {
 type TooltipItem = {
   axisValue?: number;
   color?: string;
+  dataIndex?: number;
+  seriesIndex?: number;
   seriesName?: string;
   value?: unknown;
 };
@@ -49,6 +51,16 @@ type TooltipItem = {
 type AxisPointerLabelParams = {
   value: string | number | Date;
 };
+
+type ChartMode = 'lanes' | 'compare';
+
+type NumericRange = {
+  min: number;
+  max: number;
+};
+
+const MAX_RENDERED_POINTS_PER_SERIES = 1_200;
+const CHART_DATA_FONT = '"Ubuntu Mono", "Noto Sans Mono", ui-monospace, monospace';
 
 function readableFieldName(key: string) {
   return key.replace(/[._-]+/gu, ' ');
@@ -64,14 +76,14 @@ function escapeHtml(value: string) {
   })[character] ?? character);
 }
 
-function formatChartTime(timestamp: number) {
+function formatChartTime(timestamp: number, includeMilliseconds = false) {
   const date = new Date(timestamp);
   const base = new Intl.DateTimeFormat(undefined, {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
   }).format(date);
-  return `${base}.${String(date.getMilliseconds()).padStart(3, '0')}`;
+  return includeMilliseconds ? `${base}.${String(date.getMilliseconds()).padStart(3, '0')}` : base;
 }
 
 function colorForField(fields: readonly TelemetryField[], fieldKey: string) {
@@ -79,8 +91,33 @@ function colorForField(fields: readonly TelemetryField[], fieldKey: string) {
   return TELEMETRY_SERIES_COLORS[(index < 0 ? 0 : index) % TELEMETRY_SERIES_COLORS.length];
 }
 
-function axisGutter(seriesCount: number) {
-  return 58 + Math.max(0, Math.ceil(seriesCount / 2) - 1) * 42;
+function formatAxisTime(timestamp: number, startMs?: number, endMs?: number) {
+  if (startMs !== undefined && endMs !== undefined && endMs > startMs && endMs - startMs <= 90_000) {
+    const seconds = Math.max(0, Math.round((timestamp - startMs) / 1_000));
+    return `+${seconds}s`;
+  }
+  return formatChartTime(timestamp);
+}
+
+function numericRange(points: readonly { value: number }[]): NumericRange | undefined {
+  if (!points.length) return undefined;
+  let min = points[0].value;
+  let max = points[0].value;
+  for (let index = 1; index < points.length; index += 1) {
+    min = Math.min(min, points[index].value);
+    max = Math.max(max, points[index].value);
+  }
+  return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : undefined;
+}
+
+function normalizeValue(value: number, range: NumericRange | undefined) {
+  if (!range || range.min === range.max) return 50;
+  return Math.max(0, Math.min(100, ((value - range.min) / (range.max - range.min)) * 100));
+}
+
+function tupleValue(value: unknown): [number, number] | undefined {
+  if (!Array.isArray(value) || typeof value[0] !== 'number' || typeof value[1] !== 'number') return undefined;
+  return [value[0], value[1]];
 }
 
 function chartOption({
@@ -91,6 +128,7 @@ function chartOption({
   startMs,
   endMs,
   isLight,
+  mode,
 }: {
   fields: readonly TelemetryField[];
   series: readonly ReturnType<typeof prepareTelemetryCharts>['groups'][number]['series'][number][];
@@ -99,6 +137,7 @@ function chartOption({
   startMs?: number;
   endMs?: number;
   isLight: boolean;
+  mode: ChartMode;
 }): EChartsOption {
   const palette = isLight ? {
     axis: 'rgba(55, 81, 99, 0.3)',
@@ -127,65 +166,166 @@ function chartOption({
     tooltipBorder: '#31515e',
     tooltipText: '#eaf5f6',
   };
-  const seriesCount = series.length;
-  const gutter = axisGutter(seriesCount);
+  const seriesCount = Math.max(1, series.length);
   const chartStartMs = startMs ?? (aligned.timestamps[0] === undefined ? undefined : aligned.timestamps[0] * 1_000);
   const chartEndMs = Math.max(
     endMs ?? Number.NEGATIVE_INFINITY,
     aligned.timestamps.length ? aligned.timestamps[aligned.timestamps.length - 1] * 1_000 : Number.NEGATIVE_INFINITY,
   );
   const hasZoom = aligned.timestamps.length > 80;
-  const showPointSymbols = aligned.timestamps.length <= 400;
+  const isLanes = mode === 'lanes';
+  const lastSeriesIndex = Math.max(0, series.length - 1);
+  const rawRanges = series.map((currentSeries) => numericRange(currentSeries.points));
 
-  const yAxis = series.map((currentSeries, index) => {
-    const domain = telemetryYDomain(currentSeries.points) ?? { min: 0, max: 1 };
-    const position = index % 2 === 0 ? 'left' : 'right';
-    const color = colorForField(fields, currentSeries.key);
-    return {
+  const laneTop = 4;
+  const laneBottom = hasZoom ? 16 : 10;
+  const laneGap = series.length > 1 ? Math.min(3.5, 14 / series.length) : 0;
+  const laneHeight = (100 - laneTop - laneBottom - laneGap * Math.max(0, series.length - 1)) / seriesCount;
+
+  const grid = isLanes
+    ? series.map((_currentSeries, index) => ({
+      left: 72,
+      right: 20,
+      top: `${laneTop + index * (laneHeight + laneGap)}%`,
+      height: `${laneHeight}%`,
+      containLabel: false,
+    }))
+    : {
+      left: 24,
+      right: 20,
+      top: 18,
+      bottom: hasZoom ? 62 : 40,
+      containLabel: true,
+    };
+
+  const yAxis = isLanes
+    ? series.map((currentSeries, index) => {
+      const domain = telemetryYDomain(currentSeries.points) ?? { min: 0, max: 1 };
+      const color = colorForField(fields, currentSeries.key);
+      return {
+        type: 'value' as const,
+        gridIndex: index,
+        min: domain.min,
+        max: domain.max,
+        scale: true,
+        splitNumber: 3,
+        position: 'left' as const,
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: {
+          color,
+          fontFamily: CHART_DATA_FONT,
+          fontSize: 10,
+          margin: 9,
+          hideOverlap: true,
+          formatter: (value: number) => formatTelemetryValue(value),
+        },
+        splitLine: {
+          show: true,
+          lineStyle: { color: palette.grid, type: 'dashed' as const, width: 1 },
+        },
+      };
+    })
+    : {
       type: 'value' as const,
-      min: domain.min,
-      max: domain.max,
-      scale: true,
-      position,
-      offset: Math.floor(index / 2) * 42,
-      axisLine: { show: true, lineStyle: { color, width: 1 } },
+      min: 0,
+      max: 100,
+      splitNumber: 4,
+      axisLine: { show: false },
       axisTick: { show: false },
       axisLabel: {
-        color,
-        fontFamily: '"DM Mono", ui-monospace, monospace',
+        color: palette.muted,
+        fontFamily: CHART_DATA_FONT,
         fontSize: 10,
-        margin: 8,
-        hideOverlap: true,
-        formatter: (value: number) => formatTelemetryValue(value),
+        formatter: (value: number) => `${Math.round(value)}%`,
       },
       splitLine: {
-        show: index === 0,
+        show: true,
         lineStyle: { color: palette.grid, type: 'dashed' as const, width: 1 },
       },
-      name: currentSeries.unit ?? '',
-      nameTextStyle: {
-        color,
-        fontFamily: '"DM Mono", ui-monospace, monospace',
-        fontSize: 9,
+    };
+
+  const xAxis = isLanes
+    ? series.map((_currentSeries, index) => ({
+      type: 'time' as const,
+      gridIndex: index,
+      min: chartStartMs,
+      max: Number.isFinite(chartEndMs) ? chartEndMs : undefined,
+      boundaryGap: false,
+      axisLine: { show: index === lastSeriesIndex, lineStyle: { color: palette.axis, width: 1 } },
+      axisTick: { show: false },
+      axisLabel: {
+        show: index === lastSeriesIndex,
+        color: palette.muted,
+        fontFamily: CHART_DATA_FONT,
+        fontSize: 10,
+        hideOverlap: true,
+        margin: 10,
+        formatter: (value: number) => formatAxisTime(value, chartStartMs, chartEndMs),
+      },
+      splitLine: { show: false },
+      axisPointer: {
+        show: true,
+        snap: false,
+        animation: false,
+        lineStyle: { color: palette.pointer, width: 1, type: 'dashed' as const },
+        label: {
+          show: index === lastSeriesIndex,
+          backgroundColor: isLight ? '#315766' : '#18323d',
+          color: palette.pointerLabel,
+          padding: [3, 5],
+          formatter: (params: AxisPointerLabelParams) => formatAxisTime(Number(params.value), chartStartMs, chartEndMs),
+        },
+      },
+    }))
+    : {
+      type: 'time' as const,
+      min: chartStartMs,
+      max: Number.isFinite(chartEndMs) ? chartEndMs : undefined,
+      boundaryGap: false,
+      axisLine: { lineStyle: { color: palette.axis, width: 1 } },
+      axisTick: { show: false },
+      axisLabel: {
+        color: palette.muted,
+        fontFamily: CHART_DATA_FONT,
+        fontSize: 10,
+        hideOverlap: true,
+        margin: 10,
+        formatter: (value: number) => formatAxisTime(value, chartStartMs, chartEndMs),
+      },
+      splitLine: { show: false },
+      axisPointer: {
+        show: true,
+        snap: false,
+        animation: false,
+        lineStyle: { color: palette.pointer, width: 1, type: 'dashed' as const },
+        label: {
+          show: true,
+          backgroundColor: isLight ? '#315766' : '#18323d',
+          color: palette.pointerLabel,
+          padding: [3, 5],
+          formatter: (params: AxisPointerLabelParams) => formatAxisTime(Number(params.value), chartStartMs, chartEndMs),
+        },
       },
     };
-  });
 
   const lineSeries = series.map((currentSeries, seriesIndex) => {
     const color = colorForField(fields, currentSeries.key);
     const values = aligned.values[seriesIndex] ?? [];
+    const normalizedValues = values.map((value) => typeof value === 'number' ? normalizeValue(value, rawRanges[seriesIndex]) : null);
     return {
       id: currentSeries.key,
       name: currentSeries.key,
       type: 'line' as const,
-      yAxisIndex: seriesIndex,
-      // Keep point markers on short traces, but let long retained histories
-      // render as lines. Thousands of circles per refresh make zoom and live
-      // updates compete for the same frame and can look like blinking.
-      showSymbol: showPointSymbols,
-      showAllSymbol: showPointSymbols,
+      xAxisIndex: isLanes ? seriesIndex : 0,
+      yAxisIndex: isLanes ? seriesIndex : 0,
+      // A small curve removes the angular, bead-like appearance without
+      // hiding fast telemetry changes behind aggressive smoothing.
+      smooth: isLanes ? 0.14 : 0.1,
+      showSymbol: false,
+      showAllSymbol: false,
       symbol: 'circle',
-      symbolSize: 3,
+      symbolSize: 6,
       connectNulls: false,
       // Telemetry arrives while dataZoom is also changing the coordinate
       // transform. Animating both at once can leave a line series in a stale
@@ -199,16 +339,20 @@ function chartOption({
       // Keep the full line in one render pass so moving the pointer never
       // restarts progressive drawing underneath the tooltip.
       progressive: 0,
-      lineStyle: { color, width: 2 },
+      lineStyle: { color, width: isLanes ? 2.4 : 2.1 },
       itemStyle: { color },
-      // Tooltips and the vertical guide still respond to the pointer, but
-      // the plotted traces never dim, thicken, or flash under the hand.
-      emphasis: { disabled: true },
-      data: aligned.timestamps.map((timestamp, index) => [timestamp * 1_000, values[index] ?? null]),
-      markLine: seriesIndex === 0 && gaps.length ? {
+      emphasis: {
+        focus: 'series' as const,
+        lineStyle: { width: isLanes ? 3 : 2.8 },
+      },
+      data: aligned.timestamps.map((timestamp, index) => [
+        timestamp * 1_000,
+        isLanes ? values[index] ?? null : normalizedValues[index],
+      ]),
+      markLine: gaps.length && (isLanes || seriesIndex === 0) ? {
         silent: true,
         symbol: 'none',
-        lineStyle: { color: 'rgba(239, 183, 120, 0.7)', type: 'dashed', width: 1 },
+        lineStyle: { color: TELEMETRY_SERIES_COLORS[2], type: 'dashed', width: 1, opacity: 0.62 },
         label: { show: false },
         data: gaps.map((gap) => ({ xAxis: gap.timestampMs })),
       } : undefined,
@@ -224,46 +368,18 @@ function chartOption({
     animationEasingUpdate: 'linear',
     stateAnimation: { duration: 0 },
     backgroundColor: 'transparent',
-    grid: {
-      left: gutter,
-      right: gutter,
-      top: 20,
-      bottom: hasZoom ? 52 : 34,
-      containLabel: false,
-    },
-    xAxis: {
-      type: 'time',
-      min: chartStartMs,
-      max: Number.isFinite(chartEndMs) ? chartEndMs : undefined,
-      boundaryGap: false,
-      axisLine: { lineStyle: { color: palette.axis, width: 1 } },
-      axisTick: { show: false },
-      axisLabel: {
-        color: palette.muted,
-        fontFamily: '"DM Mono", ui-monospace, monospace',
-        fontSize: 10,
-        hideOverlap: true,
-        formatter: (value: number) => formatChartTime(value),
-      },
-      splitLine: { show: false },
-      axisPointer: {
-        show: true,
-        snap: false,
-        animation: false,
-        lineStyle: { color: palette.pointer, width: 1, type: 'dashed' },
-        label: {
-          show: true,
-          backgroundColor: isLight ? '#315766' : '#18323d',
-          color: palette.pointerLabel,
-          padding: [3, 5],
-          formatter: (params: AxisPointerLabelParams) => formatChartTime(Number(params.value)),
-        },
-      },
-    },
+    grid,
+    xAxis,
     yAxis,
+    axisPointer: {
+      link: [{ xAxisIndex: 'all' }],
+      triggerOn: 'mousemove|click',
+    },
     tooltip: {
       trigger: 'axis',
       confine: true,
+      renderMode: 'html',
+      className: 'bt-telemetry-tooltip',
       backgroundColor: palette.tooltipBackground,
       borderColor: palette.tooltipBorder,
       borderWidth: 1,
@@ -271,7 +387,7 @@ function chartOption({
       transitionDuration: 0,
       textStyle: {
         color: palette.tooltipText,
-        fontFamily: '"DM Mono", ui-monospace, monospace',
+        fontFamily: CHART_DATA_FONT,
         fontSize: 11,
       },
       axisPointer: {
@@ -280,7 +396,6 @@ function chartOption({
         type: 'line',
         snap: false,
         animation: false,
-        triggerOn: 'mousemove|click',
         lineStyle: { color: palette.pointer, width: 1, type: 'dashed' },
         label: {
           show: true,
@@ -291,29 +406,48 @@ function chartOption({
       },
       formatter: (params: unknown) => {
         const items = (Array.isArray(params) ? params : [params]) as TooltipItem[];
-        const timestamp = Number(items[0]?.axisValue ?? (Array.isArray(items[0]?.value) ? items[0]?.value[0] : NaN));
+        const timestamp = Number(items[0]?.axisValue ?? tupleValue(items[0]?.value)?.[0] ?? NaN);
         const rows = items
-          .filter((item) => Array.isArray(item.value) && typeof item.value[1] === 'number')
           .map((item) => {
-            const value = (item.value as [number, number])[1];
+            const pair = tupleValue(item.value);
+            if (!pair) return '';
+            const seriesIndex = Number.isInteger(item.seriesIndex)
+              ? item.seriesIndex!
+              : series.findIndex((currentSeries) => currentSeries.key === item.seriesName);
+            const dataIndex = Number.isInteger(item.dataIndex) ? item.dataIndex! : 0;
+            const rawValue = aligned.values[seriesIndex]?.[dataIndex];
+            const value = typeof rawValue === 'number' ? rawValue : pair[1];
+            const currentSeries = series[seriesIndex];
             const name = escapeHtml(readableFieldName(item.seriesName ?? 'signal'));
             const color = item.color ?? '#9fd6c5';
-            return `<div class="bt-telemetry-tooltip-row"><span><i style="background:${color}"></i>${name}</span><strong>${formatTelemetryValue(value)}</strong></div>`;
+            const unit = currentSeries?.unit ? `<small>${escapeHtml(currentSeries.unit)}</small>` : '';
+            const relative = mode === 'compare' ? `<small>${Math.round(pair[1])}% range</small>` : '';
+            return `<div class="bt-telemetry-tooltip-row"><span><i style="background:${color}"></i>${name}</span><strong>${formatTelemetryValue(value)}${unit}${relative}</strong></div>`;
           })
+          .filter(Boolean)
           .join('');
-        return `<div class="bt-telemetry-tooltip-time">${Number.isFinite(timestamp) ? formatChartTime(timestamp) : 'Telemetry'}</div>${rows}`;
+        return `<div class="bt-telemetry-tooltip-time">${Number.isFinite(timestamp) ? formatChartTime(timestamp, true) : 'Telemetry'}</div>${rows}`;
       },
     },
     dataZoom: [
-      { id: 'telemetry-inside-zoom', type: 'inside', xAxisIndex: 0, filterMode: 'none', throttle: 40 },
+      {
+        id: 'telemetry-inside-zoom',
+        type: 'inside',
+        xAxisIndex: 'all',
+        filterMode: 'none',
+        throttle: 40,
+        zoomOnMouseWheel: 'shift',
+        moveOnMouseWheel: false,
+        moveOnMouseMove: true,
+      },
       ...(hasZoom ? [{
         id: 'telemetry-range-zoom',
         type: 'slider' as const,
-        xAxisIndex: 0,
-        height: 12,
-        bottom: 6,
-        left: gutter,
-        right: gutter,
+        xAxisIndex: 'all' as const,
+        height: 14,
+        bottom: 5,
+        left: isLanes ? 72 : 24,
+        right: 20,
         borderColor: 'transparent',
         borderWidth: 0,
         borderRadius: 0,
@@ -374,7 +508,7 @@ function EChartsSurface({ option, structureKey, ariaLabel }: { option: EChartsOp
       // Only replace component collections when their shape changes. Doing
       // this for every live sample recreates the plotted components and makes
       // the canvas visibly blink while it is being refreshed.
-      replaceMerge: structureChanged ? ['series', 'yAxis'] : undefined,
+      replaceMerge: structureChanged ? ['grid', 'series', 'xAxis', 'yAxis', 'dataZoom'] : undefined,
     });
     structureKeyRef.current = structureKey;
   }, []);
@@ -403,9 +537,10 @@ function EChartsSurface({ option, structureKey, ariaLabel }: { option: EChartsOp
     chart.on('datazoom', handleDataZoom);
     const resizeObserver = new ResizeObserver(() => chart.resize());
     const preventPageScroll = (event: WheelEvent) => {
-      // ECharts consumes this wheel gesture for inside dataZoom. Keep the
-      // same event from scrolling the document or reaching the app-level
-      // Ctrl/⌘+wheel shell zoom handler.
+      // Shift+wheel is the deliberate chart-zoom gesture. Leave an ordinary
+      // wheel available for page scrolling, especially in the taller lane
+      // view with several selected signals.
+      if (!event.shiftKey) return;
       event.preventDefault();
       event.stopPropagation();
     };
@@ -439,19 +574,33 @@ export function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, wind
     gaps,
     selectedFieldKeys,
     windowMs,
-    maxPointsPerSeries: Math.max(4, samples.length),
+    maxPointsPerSeries: MAX_RENDERED_POINTS_PER_SERIES,
   }), [fields, gaps, samples, selectedFieldKeys, windowMs]);
   const selectedSeries = useMemo(() => prepared.groups.flatMap((group) => group.series), [prepared.groups]);
   const aligned = useMemo(() => alignTelemetryChartData(selectedSeries), [selectedSeries]);
   const isLight = typeof document !== 'undefined' && document.documentElement.dataset.theme === 'light';
-  const option = useMemo(() => selectedSeries.length && aligned.timestamps.length
-    ? chartOption({ fields, series: selectedSeries, aligned, gaps: prepared.gaps, startMs: prepared.startMs, endMs: prepared.endMs, isLight })
-    : null, [aligned, fields, isLight, prepared.endMs, prepared.gaps, prepared.startMs, selectedSeries]);
+  const plots = useMemo(() => selectedSeries.map((series) => {
+    const plotAligned = alignTelemetryChartData([series]);
+    const option = plotAligned.timestamps.length
+      ? chartOption({
+        fields,
+        series: [series],
+        aligned: plotAligned,
+        gaps: prepared.gaps,
+        startMs: prepared.startMs,
+        endMs: prepared.endMs,
+        isLight,
+        mode: 'lanes',
+      })
+      : null;
+    return { series, aligned: plotAligned, option };
+  }), [fields, isLight, prepared.endMs, prepared.gaps, prepared.startMs, selectedSeries]);
+  const chartablePlots = plots.filter((plot) => plot.option && plot.aligned.timestamps.length);
 
   if (!fields.length) {
     return <section className="bt-telemetry-view bt-telemetry-view-empty" role="status">
       <strong>Waiting for repeatable numeric data</strong>
-      <span>Send a consistent JSON, key/value, CSV, or TSV record to create a signal.</span>
+      <span>Send repeated JSON objects or batches, key/value pairs, or header-based CSV/TSV records to create a signal.</span>
     </section>;
   }
 
@@ -462,41 +611,49 @@ export function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, wind
     </section>;
   }
 
-  if (!option || !selectedSeries.length) {
+  if (!chartablePlots.length) {
     return <section className="bt-telemetry-view bt-telemetry-view-empty" role="status">
       <strong>No chartable points in this window</strong>
       <span>Keep the serial stream running or choose a longer display window.</span>
     </section>;
   }
 
-  return <section className="bt-telemetry-view" aria-label="Live telemetry charts" data-paused={paused || undefined}>
-    <header className="bt-telemetry-legend-bar">
-      <div className="bt-telemetry-scale-note">
-        <strong>Independent scales</strong>
-        <span>Each signal keeps its own range so small changes stay readable.</span>
+  return <section className="bt-telemetry-view" aria-label="Live telemetry signal plots" data-paused={paused || undefined}>
+    <header className="bt-telemetry-stack-header">
+      <div className="bt-telemetry-stack-title">
+        <strong>Signal plots</strong>
+        <span>{chartablePlots.length} selected · independent scales</span>
       </div>
-      <ul className="bt-telemetry-legend" aria-label="Selected signal values">
-        {selectedSeries.map((series) => {
-          const color = colorForField(fields, series.key);
-          return <li key={series.key}>
-            <i aria-hidden="true" style={{ backgroundColor: color }} />
-            <span title={series.key}>{readableFieldName(series.key)}</span>
-            <strong>{series.latest ? formatTelemetryValue(series.latest.value) : '—'}</strong>
-            {series.unit ? <small>{series.unit}</small> : null}
-          </li>;
-        })}
-      </ul>
+      <span className="bt-telemetry-stack-hint">One plot per signal</span>
     </header>
-    <div className="bt-telemetry-plot-frame">
-      <EChartsSurface
-        option={option}
-        structureKey={selectedSeries.map((series) => series.key).join('\u0000')}
-        ariaLabel={`Live telemetry for ${selectedSeries.map((series) => readableFieldName(series.key)).join(', ')}`}
-      />
+    <div className="bt-telemetry-plot-stack">
+      {chartablePlots.map((plot) => {
+        const color = colorForField(fields, plot.series.key);
+        return <article className="bt-telemetry-plot" key={plot.series.key}>
+          <header className="bt-telemetry-plot-header">
+            <div className="bt-telemetry-plot-label">
+              <i aria-hidden="true" style={{ backgroundColor: color }} />
+              <strong>{readableFieldName(plot.series.key)}</strong>
+              {plot.series.unit ? <small>{plot.series.unit}</small> : null}
+            </div>
+            <div className="bt-telemetry-plot-readout">
+              <strong>{plot.series.latest ? formatTelemetryValue(plot.series.latest.value) : '—'}</strong>
+              <span>latest</span>
+            </div>
+          </header>
+          <div className="bt-telemetry-plot-canvas">
+            <EChartsSurface
+              option={plot.option!}
+              structureKey={`separate\u0000${plot.series.key}`}
+              ariaLabel={`${readableFieldName(plot.series.key)} telemetry plot`}
+            />
+          </div>
+        </article>;
+      })}
     </div>
     <footer className="bt-telemetry-view-footer">
-      <span><strong>{aligned.timestamps.length.toLocaleString()}</strong> records on canvas</span>
-      <span>{selectedSeries.length} independent scales</span>
+      <span><strong>{aligned.timestamps.length.toLocaleString()}</strong> records in window</span>
+      <span>{chartablePlots.length} separate plots</span>
       {prepared.gaps.length ? <span>{prepared.gaps.length} reconnect marker{prepared.gaps.length === 1 ? '' : 's'}</span> : null}
     </footer>
   </section>;

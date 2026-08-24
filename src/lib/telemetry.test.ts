@@ -61,6 +61,35 @@ describe('TelemetryLineParser', () => {
     expect(parser.pushLine('{not valid JSON}', metadata(4))).toEqual([]);
   });
 
+  it('accepts prefixed JSON, numeric strings, typed units, and JSON batches', () => {
+    const prefixedParser = new TelemetryLineParser();
+    const prefixed = '11:25:59.085 RX {"temperature":"20.94 C","humidity":"43.05","voltage":3.315}';
+
+    expect(prefixedParser.pushLine(prefixed, metadata(1))).toEqual([]);
+    const prefixedAccepted = prefixedParser.pushLine(prefixed, metadata(2));
+    expect(prefixedAccepted).toHaveLength(2);
+    expect(prefixedAccepted[0].values).toEqual({
+      temperature: { value: 20.94, unit: 'C' },
+      humidity: { value: 43.05 },
+      voltage: { value: 3.315 },
+    });
+
+    const typedParser = new TelemetryLineParser();
+    const typed = '{"temperature":{"value":"20.94","unit":"°C"},"voltage":{"value":3.315,"units":"V"}}';
+    typedParser.pushLine(typed, metadata(1));
+    expect(typedParser.pushLine(typed, metadata(2))[0].values).toEqual({
+      temperature: { value: 20.94, unit: '°C' },
+      voltage: { value: 3.315, unit: 'V' },
+    });
+
+    const batchParser = new TelemetryLineParser();
+    const batch = '{"data":[{"rpm":995},{"rpm":1004}]}';
+    const firstBatchAccepted = batchParser.pushLine(batch, metadata(1));
+    expect(firstBatchAccepted.map((record) => record.values.rpm.value)).toEqual([995, 1004]);
+    const batchAccepted = batchParser.pushLine(batch, metadata(2));
+    expect(batchAccepted.map((record) => record.values.rpm.value)).toEqual([995, 1004]);
+  });
+
   it('parses named pairs with units but ignores solitary or non-finite values', () => {
     const parser = new TelemetryLineParser();
     const line = 'temperature=24.5 C humidity: 60 %';
@@ -170,7 +199,7 @@ describe('TelemetrySessionStore', () => {
     store.ingestOrderedSerialEvent('ui-key', event('native-a', 1, '{"sensor":{"v":3'));
     store.ingestOrderedSerialEvent('ui-key', event('native-a', 2, '.3}}\n'));
     store.ingestOrderedSerialEvent('ui-key', event('native-a', 3, '{"sensor":{"v":3.4}}\n'));
-    store.ingestOrderedSerialEvent('ui-key', event('native-a', 4, '{"sensor":{"v":"3.5"}}\n'));
+    store.ingestOrderedSerialEvent('ui-key', event('native-a', 4, '{"sensor":{"v":"offline"}}\n'));
 
     const snapshot = store.getSnapshot('ui-key');
     expect(snapshot.samples).toHaveLength(2);

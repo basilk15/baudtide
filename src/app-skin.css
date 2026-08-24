@@ -1272,12 +1272,26 @@ button:disabled,
 }
 
 .sd-terminal-led,
-.sd-monitor-status.connected,
 .sd-mobile-share-session-dot.connected,
 .bt-visualize-live-state i,
 .bt-visualize-connection-signal {
   background: var(--color-accent);
   color: var(--color-accent);
+}
+
+.sd-monitor-status.connected {
+  border-color: color-mix(in oklch, var(--color-accent) 42%, var(--color-border-subtle));
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.sd-monitor-status.connected strong {
+  color: var(--color-accent);
+}
+
+.sd-monitor-status.connected span {
+  color: var(--color-ink-muted);
+  opacity: 1;
 }
 
 .sd-terminal-find,

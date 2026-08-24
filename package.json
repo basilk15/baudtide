@@ -28,7 +28,7 @@
     "lint:rust": "cargo clippy --manifest-path src-native/Cargo.toml --all-targets --locked -- -D warnings",
     "test:rust": "cargo test --manifest-path src-native/Cargo.toml --locked",
     "test:frontend": "vitest run",
-    "test:telemetry": "vitest run src/lib/telemetry.test.ts src/lib/telemetryChart.test.ts",
+    "test:telemetry": "vitest run src/lib/telemetry.test.ts src/lib/telemetryChart.test.ts src/lib/telemetryFixtures.test.ts",
     "test": "npm run test:frontend && npm run test:rust",
     "check": "npm run format:check && npm run lint:rust && npm run build",
     "audit:prod": "npm audit --omit=dev --audit-level=high"

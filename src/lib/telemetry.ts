@@ -163,6 +163,8 @@ type ParsedRecord = {
 
 type LineMetadata = Pick<ParsedRecord, 'timestamp' | 'nativeSessionId' | 'sequence'>;
 type DelimitedHeader = { delimiter: ',' | '\t'; fields: Array<{ key: string; unit?: string }> };
+type ParsedTelemetryPayload = Omit<ParsedRecord, keyof LineMetadata>;
+type JsonLineParseResult = { matched: boolean; records: ParsedTelemetryPayload[] };
 
 const NUMBER_TEXT_SOURCE = '[+-]?(?:(?:\\d+\\.\\d*)|(?:\\d*\\.\\d+)|\\d+)(?:[eE][+-]?\\d+)?';
 const FINITE_NUMBER_PATTERN = new RegExp(`^${NUMBER_TEXT_SOURCE}$`);
@@ -173,6 +175,11 @@ const NAMED_PAIR_PATTERN = new RegExp(
 const HEADER_UNIT_PATTERN = /^(.*?)\s*(?:\(([^()]+)\)|\[([^\[\]]+)\])\s*$/u;
 const MAX_FIELDS_PER_RECORD = 64;
 const MAX_PENDING_SCHEMAS = 16;
+const JSON_NUMBER_WITH_UNIT_PATTERN = new RegExp(
+  '^(' + NUMBER_TEXT_SOURCE + ')\\s*(%|[A-Za-zµμ°][A-Za-z0-9µμ°/*^._-]{0,23})?$',
+  'u',
+);
+const JSON_BATCH_KEYS = new Set(['data', 'measurements', 'readings', 'samples', 'telemetry']);
 
 function positiveInteger(value: number | undefined, fallback: number) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
@@ -182,6 +189,15 @@ function parseFiniteNumber(value: string): number | null {
   if (!FINITE_NUMBER_PATTERN.test(value)) return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseJsonTelemetryValue(value: unknown): TelemetryValue | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? { value } : null;
+  if (typeof value !== 'string') return null;
+  const match = value.trim().match(JSON_NUMBER_WITH_UNIT_PATTERN);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? { value: parsed, unit: normalizeUnit(match[2]) } : null;
 }
 
 function recordValue(value: unknown): value is Record<string, unknown> {
@@ -204,45 +220,141 @@ function buildSchemaId(format: TelemetryFormat, values: Record<string, Telemetry
     .join('|')}`;
 }
 
-function parseJsonObject(line: string): Omit<ParsedRecord, keyof LineMetadata> | null {
-  const trimmed = line.trim();
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return null;
+function balancedJsonEnd(line: string, start: number) {
+  const opening = line[start];
+  if (opening !== '{' && opening !== '[') return null;
+  const stack: string[] = [opening];
+  let inString = false;
+  let escaped = false;
+  for (let index = start + 1; index < line.length; index += 1) {
+    const character = line[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character === '{' || character === '[') {
+      stack.push(character);
+      continue;
+    }
+    if (character !== '}' && character !== ']') continue;
+    const expected = character === '}' ? '{' : '[';
+    if (stack.pop() !== expected) return null;
+    if (!stack.length) return index + 1;
   }
-  if (!recordValue(parsed)) return null;
+  return null;
+}
 
+function jsonCandidates(line: string): { matched: boolean; values: unknown[] } {
+  const trimmed = line.trim();
+  try {
+    return { matched: true, values: [JSON.parse(trimmed)] };
+  } catch {
+    // A device may prepend a timestamp, log level, or other text before its
+    // JSON packet. Scan balanced object/array fragments as a safe fallback.
+  }
+
+  const values: unknown[] = [];
+  let matched = false;
+  for (let start = 0; start < line.length; start += 1) {
+    if (line[start] !== '{' && line[start] !== '[') continue;
+    const end = balancedJsonEnd(line, start);
+    if (end === null) continue;
+    try {
+      values.push(JSON.parse(line.slice(start, end)));
+      matched = true;
+      start = end - 1;
+    } catch {
+      // An unrelated brace in a diagnostic line should not hide a later JSON
+      // fragment on the same line.
+    }
+  }
+  return { matched, values };
+}
+
+function jsonMeasurement(value: Record<string, unknown>): TelemetryValue | null {
+  const candidate = value.value ?? value.reading ?? value.val;
+  const parsed = parseJsonTelemetryValue(candidate);
+  if (!parsed) return null;
+  const explicitUnit = typeof value.unit === 'string'
+    ? value.unit
+    : typeof value.units === 'string' ? value.units : undefined;
+  return explicitUnit !== undefined
+    ? { value: parsed.value, unit: normalizeUnit(explicitUnit) }
+    : parsed;
+}
+
+function parseJsonRecord(value: unknown): ParsedTelemetryPayload | null {
+  if (!recordValue(value)) return null;
   const values: Record<string, TelemetryValue> = Object.create(null) as Record<string, TelemetryValue>;
   let invalid = false;
-  const flatten = (value: unknown, path: string, depth: number) => {
+  const flatten = (current: unknown, path: string, depth: number) => {
     if (invalid || depth > 16) {
       invalid = true;
       return;
     }
-    if (typeof value === 'number') {
-      if (!Number.isFinite(value) || !path || hasOwn(values, path) || Object.keys(values).length >= MAX_FIELDS_PER_RECORD) {
+    const scalar = parseJsonTelemetryValue(current);
+    if (scalar) {
+      if (!path || hasOwn(values, path) || Object.keys(values).length >= MAX_FIELDS_PER_RECORD) {
         invalid = true;
         return;
       }
-      values[path] = { value };
+      values[path] = scalar;
       return;
     }
-    if (!recordValue(value)) return;
-    for (const [key, child] of Object.entries(value)) {
+    if (Array.isArray(current)) {
+      current.forEach((child, index) => flatten(child, path ? path + '.' + index : String(index), depth + 1));
+      return;
+    }
+    if (!recordValue(current)) return;
+    if (path) {
+      const measurement = jsonMeasurement(current);
+      if (measurement) {
+        if (hasOwn(values, path) || Object.keys(values).length >= MAX_FIELDS_PER_RECORD) {
+          invalid = true;
+          return;
+        }
+        values[path] = measurement;
+        return;
+      }
+    }
+    for (const [key, child] of Object.entries(current)) {
       const segment = key.trim();
       if (!segment || segment.length > 80) {
         invalid = true;
         return;
       }
-      flatten(child, path ? `${path}.${segment}` : segment, depth + 1);
+      flatten(child, path ? path + '.' + segment : segment, depth + 1);
     }
   };
-  flatten(parsed, '', 0);
+  flatten(value, '', 0);
   if (invalid || !Object.keys(values).length) return null;
   return { format: 'json', schemaId: buildSchemaId('json', values), values };
+}
+
+function jsonRecordValues(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value.filter(recordValue);
+  if (!recordValue(value)) return [];
+  for (const [key, child] of Object.entries(value)) {
+    if (JSON_BATCH_KEYS.has(key.toLowerCase()) && Array.isArray(child) && child.some(recordValue)) {
+      return child.filter(recordValue);
+    }
+  }
+  return [value];
+}
+
+function parseJsonLine(line: string): JsonLineParseResult {
+  const candidates = jsonCandidates(line);
+  const records = candidates.values
+    .flatMap((value) => jsonRecordValues(value)
+      .map(parseJsonRecord)
+      .filter((record): record is ParsedTelemetryPayload => Boolean(record)));
+  return { matched: candidates.matched, records };
 }
 
 function parseNamedPairs(line: string): Omit<ParsedRecord, keyof LineMetadata> | null {
@@ -346,8 +458,8 @@ export class TelemetryLineParser {
   }
 
   pushLine(line: string, metadata: LineMetadata): ParsedRecord[] {
-    const json = parseJsonObject(line);
-    if (json) return this.accept({ ...metadata, ...json });
+    const json = parseJsonLine(line);
+    if (json.matched) return json.records.flatMap((record) => this.accept({ ...metadata, ...record }));
 
     const pairs = parseNamedPairs(line);
     if (pairs) return this.accept({ ...metadata, ...pairs });

@@ -3129,3 +3129,132 @@
     order: -1;
   }
 }
+
+/* The workbench is a continuous instrument surface, not a stack of cards. */
+.bt-visualize-workbench {
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.bt-visualize-connection,
+.bt-visualize-connection.is-reconnecting,
+.bt-visualize-connection.is-disconnected,
+.bt-visualize-connection.is-error {
+  border-inline: 0;
+  border-block: 1px solid var(--color-border-subtle);
+  background: transparent;
+}
+
+.bt-visualize-fields,
+.bt-visualize-chart-shell {
+  background: transparent;
+}
+
+.bt-visualize-window {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.bt-visualize-window > span {
+  color: var(--color-ink-dim);
+  font: 500 9px var(--font-data);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.bt-visualize-window .sd-themed-select-trigger,
+.bt-visualize-control {
+  border-color: transparent;
+  border-radius: 0;
+  background: transparent;
+}
+
+.bt-visualize-window .sd-themed-select-trigger:hover,
+.bt-visualize-window .sd-themed-select-trigger:focus-visible,
+.bt-visualize-control:hover:not(:disabled),
+.bt-visualize-control:focus-visible {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+}
+
+.bt-visualize-control.is-active {
+  border-color: transparent;
+  background: transparent;
+}
+
+/* Keep the chart controls as distinct controls when the toolbar gets narrow. */
+.bt-visualize-chart-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
+.bt-visualize-window {
+  flex: 0 0 auto;
+  min-width: max-content;
+}
+
+.bt-visualize-window > span {
+  flex: 0 0 auto;
+  font-size: var(--text-xs) !important;
+  line-height: 1;
+}
+
+.bt-visualize-window .sd-themed-select {
+  width: 82px;
+  min-width: 82px;
+  flex: 0 0 82px;
+}
+
+.bt-visualize-window .sd-themed-select-trigger {
+  width: 100%;
+  min-width: 82px;
+  font-size: var(--text-xs) !important;
+  line-height: 1.2;
+}
+
+.bt-visualize-control {
+  flex: 0 0 auto;
+  min-width: max-content;
+  font-size: var(--text-xs) !important;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .bt-visualize-chart-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--space-md);
+  }
+
+  .bt-visualize-chart-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 480px) {
+  .bt-visualize-chart-actions {
+    align-items: center;
+  }
+
+  .bt-visualize-window {
+    flex: 0 0 auto;
+    min-width: max-content;
+  }
+}

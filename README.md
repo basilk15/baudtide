@@ -29,6 +29,24 @@ BaudTide is an open-source serial terminal and monitor built for embedded develo
 - Send a raw mobile log through the phone's native share sheet when the browser supports file sharing, with download and excerpt-sharing fallbacks.
 - Choose a dark or light workspace.
 
+### Telemetry input formats
+
+The Visualize screen keeps the raw serial stream unchanged, then detects repeated
+numeric records from these common shapes:
+
+- JSON objects, including nested objects, numeric strings, values with units,
+  `{ "value": ..., "unit": ... }` measurements, text prefixes, and JSON arrays
+  or `data`/`readings` batches.
+- Key/value lines such as `temperature=20.9 C humidity:43.0 %`, with `=`, `:`,
+  comma, semicolon, pipe, or whitespace separators.
+- Header-based CSV and TSV, including units in headers such as `temp (°C)` or
+  `pressure [hPa]`.
+
+BaudTide waits for two records with the same field schema before plotting, so
+ordinary diagnostic lines containing an isolated number do not become signals.
+Delimiter-free numeric columns without a header, binary packets, and arbitrary
+non-numeric text still need a device-specific decoder.
+
 ## Quick start
 
 ```bash
@@ -68,6 +86,16 @@ python3 scripts/test-monitor.py
 Copy the printed `/dev/pts/N` path into the connection dialog and use 115200
 baud. The helper also prints bytes sent back from BaudTide. If the installed
 `baudtide-demo-data` command is available, it can be used in the same way.
+
+To exercise every supported telemetry shape through a virtual serial port:
+
+```
+python3 scripts/test-telemetry-formats.py --format all
+```
+
+Use `--format json-prefixed`, `--format json-measurements`, `--format csv-header`,
+or any other format listed by `--help` to check one shape at a time. Connect the
+printed PTY path, open **Visualize**, and confirm the detected fields and traces.
 
 Run the automated checks with:
 
