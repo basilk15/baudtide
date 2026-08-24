@@ -1,7 +1,7 @@
 {
   "name": "baudtide",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A focused desktop serial monitor for embedded development.",
   "license": "MIT",
   "author": "Basil Khowaja <bk08432@st.habib.edu.pk>",
