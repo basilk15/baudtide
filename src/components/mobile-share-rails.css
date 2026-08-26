@@ -244,3 +244,383 @@
     padding-bottom: var(--space-lg);
   }
 }
+
+/* Distilled share flow: pairing is the primary task; the phone mockup and
+ * security detail stay available without competing with the share controls. */
+.sd-mobile-share-screen .sd-mobile-share-screen-header {
+  align-items: center;
+  margin-bottom: var(--space-lg);
+  padding-bottom: var(--space-lg);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-heading h1 {
+  font-size: var(--text-xl);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-heading > div > span {
+  max-width: 48ch;
+  margin-top: var(--space-xs);
+  color: var(--color-ink-muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-status {
+  gap: var(--space-2xs);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-status > span {
+  padding: 5px 9px;
+  font-size: var(--text-xs);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-status small {
+  font-size: var(--text-xs);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-note {
+  align-items: center;
+  gap: var(--space-sm);
+  margin: 0;
+  padding: var(--space-sm) 0;
+  border: 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+  border-radius: 0;
+  background: transparent;
+  font-size: var(--text-sm);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-note > div {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-note strong {
+  display: inline;
+  margin: 0;
+  color: var(--color-ink-soft);
+  font-size: var(--text-sm);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-note span {
+  color: var(--color-ink-muted);
+  font-size: var(--text-xs);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-preview-disclosure {
+  margin-top: var(--space-xl);
+  border-block: 1px solid var(--color-border-subtle);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-preview-disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-height: 56px;
+  padding: var(--space-sm) 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-preview-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-preview-disclosure-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-accent);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-preview-disclosure-copy {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-preview-disclosure-copy strong {
+  color: var(--color-ink-soft);
+  font-size: var(--text-sm);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-preview-disclosure-copy small {
+  overflow: hidden;
+  color: var(--color-ink-dim);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-preview-disclosure-chevron {
+  flex: 0 0 auto;
+  color: var(--color-ink-dim);
+  transition: transform var(--dur-short) var(--ease-out);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-preview-disclosure[open] .sd-mobile-share-preview-disclosure-chevron {
+  transform: rotate(180deg);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-preview-body {
+  padding-bottom: var(--space-lg);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-preview-body .sd-mobile-companion-stage {
+  min-height: 0;
+  margin: 0;
+  border: 0;
+  border-radius: var(--radius-panel);
+  box-shadow: none;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-session-picker {
+  margin-top: var(--space-xl);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-section-heading {
+  padding-top: var(--space-md);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-section-heading h2 {
+  font-size: var(--text-lg);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid {
+  grid-template-columns: minmax(300px, 0.85fr) minmax(0, 1.15fr);
+  gap: var(--space-2xl);
+  margin-top: var(--space-xl);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid > .sd-mobile-workspace-share,
+.sd-mobile-share-screen .sd-mobile-share-terminal-card {
+  padding: var(--space-lg) 0;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid > .sd-mobile-workspace-share {
+  padding-right: 0;
+  border-right: 0;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-terminal-card {
+  padding-left: 0;
+}
+
+.sd-mobile-share-screen .sd-mobile-workspace-heading,
+.sd-mobile-share-screen .sd-mobile-share-terminal-heading {
+  min-height: 0;
+  padding-bottom: var(--space-md);
+}
+
+.sd-mobile-share-screen .sd-mobile-workspace-heading h2,
+.sd-mobile-share-screen .sd-mobile-share-selected-session h2 {
+  font-size: var(--text-md);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-workspace-active,
+.sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share-active {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-lg);
+  margin-top: var(--space-lg);
+  padding: var(--space-lg) 0;
+  border-inline: 0;
+  border-block: 1px solid var(--color-border-subtle);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share-qr {
+  width: 112px;
+  height: 112px;
+  padding: 6px;
+  border-radius: var(--radius-control);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share-instruction {
+  margin-bottom: var(--space-sm);
+  color: var(--color-ink-soft);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share-link code {
+  font-size: var(--text-xs);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share-metrics {
+  gap: var(--space-xs) var(--space-lg);
+  margin-top: var(--space-sm);
+  font-size: var(--text-xs);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share-control {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+  padding: var(--space-sm) 0;
+  border: 0;
+  border-block: 1px solid var(--color-border-subtle);
+  border-radius: 0;
+  background: transparent;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share-control > div {
+  min-width: 0;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share-control strong {
+  color: var(--color-ink-soft);
+  font-size: var(--text-sm);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share-control span {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-ink-muted);
+  font-size: var(--text-xs);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share-control > button {
+  min-height: 36px;
+  padding: 0 var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-ink-soft);
+  font-size: var(--text-xs) !important;
+  font-weight: 700;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share-control > button:hover:not(:disabled) {
+  border-color: var(--color-accent-strong);
+  background: var(--color-surface-raised);
+  color: var(--color-ink);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share-control.enabled > svg {
+  color: var(--color-warning);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-actions {
+  gap: var(--space-lg);
+  margin-top: var(--space-sm);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-actions button {
+  font-size: var(--text-xs) !important;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-safety {
+  display: block;
+  margin-top: var(--space-lg);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-safety > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  cursor: pointer;
+  list-style: none;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-safety > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sd-mobile-share-screen .sd-mobile-share-safety > summary > svg:first-child {
+  flex: 0 0 auto;
+  color: var(--color-accent);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-safety > summary strong {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-ink-soft);
+  font-size: var(--text-xs);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-safety-chevron {
+  flex: 0 0 auto;
+  color: var(--color-ink-dim);
+  transition: transform var(--dur-short) var(--ease-out);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-safety[open] .sd-mobile-share-safety-chevron {
+  transform: rotate(180deg);
+}
+
+.sd-mobile-share-screen .sd-mobile-share-safety > p {
+  margin: var(--space-xs) 0 0 27px;
+  color: var(--color-ink-muted);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+@media (max-width: 900px) {
+  .sd-mobile-share-screen .sd-mobile-share-screen-grid {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .sd-mobile-share-screen .sd-mobile-share-screen-grid > .sd-mobile-workspace-share {
+    padding-right: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+}
+
+@media (max-width: 620px) {
+  .sd-mobile-share-screen .sd-mobile-share-screen-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .sd-mobile-share-screen .sd-mobile-share-screen-heading h1 {
+    font-size: var(--text-lg);
+  }
+
+  .sd-mobile-share-screen .sd-mobile-share-screen-status {
+    justify-items: start;
+  }
+
+  .sd-mobile-share-screen .sd-mobile-share-screen-note {
+    align-items: flex-start;
+  }
+
+  .sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share-control {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share-control > button {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
+
+@media (max-width: 460px) {
+  .sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-workspace-active,
+  .sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share-active {
+    grid-template-columns: 1fr;
+  }
+
+  .sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share-qr {
+    width: 140px;
+    height: 140px;
+  }
+}

@@ -296,7 +296,7 @@ export function MobileSharePanel({ sessionId, nativeSession, sessionConnected, o
       <summary className="sd-mobile-share-summary">
         <div className="sd-mobile-share-heading">
         <div className="sd-mobile-share-icon"><Smartphone size={18} /></div>
-        <div><p>Mobile companion</p><h2>Share this live log</h2></div>
+        <div><p>Terminal link</p><h2>Share this terminal</h2></div>
         {share && <span className="sd-mobile-share-live"><i /> Live</span>}
         {share && <span className={`sd-mobile-share-permission ${share.controlEnabled ? 'enabled' : 'readonly'}`}>{share.controlEnabled ? 'Control enabled' : 'Read-only'}</span>}
         </div>
@@ -304,12 +304,12 @@ export function MobileSharePanel({ sessionId, nativeSession, sessionConnected, o
       </summary>
       <div className="sd-mobile-share-content">
 
-      {!nativeSession && <div className="sd-mobile-share-preview"><QrCode size={17} /><span>Available in the BaudTide desktop app after a serial session is connected.</span></div>}
+      {!nativeSession && <div className="sd-mobile-share-preview"><QrCode size={17} /><span>Available in the desktop app.</span></div>}
 
-      {nativeSession && !sessionConnected && <div className="sd-mobile-share-preview"><Wifi size={17} /><span>Connect this serial session before creating a mobile link.</span></div>}
+      {nativeSession && !sessionConnected && <div className="sd-mobile-share-preview"><Wifi size={17} /><span>Connect this terminal to create a link.</span></div>}
 
       {canShare && !share && <div className="sd-mobile-share-start">
-        <p>Let a phone on the same Wi-Fi view a recent tail, continue with live output, and download the raw capture. New links are read-only until you explicitly enable remote control below.</p>
+        <p>Share this feed over the same Wi-Fi. New links start read-only.</p>
         <button className="sd-primary-button" type="button" onClick={() => void enable()} disabled={isWorking}>
           {isWorking ? <LoaderCircle className="sd-spin" size={16} /> : <QrCode size={16} />} Create mobile link
         </button>
@@ -320,22 +320,25 @@ export function MobileSharePanel({ sessionId, nativeSession, sessionConnected, o
           <PairingQr value={share.url} />
         </div>
         <div className="sd-mobile-share-details">
-          <p className="sd-mobile-share-instruction">Scan the QR code with your phone camera, or open the link below on the same Wi-Fi. The viewer reconnects and resumes from its last sequence when the network blips.</p>
+          <p className="sd-mobile-share-instruction">Scan to open the live view, or copy the link below.</p>
           <div className="sd-mobile-share-link"><code title={share.url}>{share.url}</code><button type="button" onClick={() => void copyLink()} title="Copy mobile link" aria-label="Copy mobile link" disabled={isWorking}>{copied ? <Check size={15} /> : <Copy size={15} />}</button></div>
-          <div className="sd-mobile-share-metrics"><span><Users size={14} /> {share.clientCount} {share.clientCount === 1 ? 'phone connected' : 'phones connected'}</span><span><Wifi size={14} /> {share.host}:{share.port}</span></div>
+          <div className="sd-mobile-share-metrics"><span><Users size={14} /> {share.clientCount} {share.clientCount === 1 ? 'phone' : 'phones'}</span><span title="Local network address"><Wifi size={14} /> {share.host}:{share.port}</span></div>
           <div className={`sd-mobile-share-control ${share.controlEnabled ? 'enabled' : 'readonly'}`}>
             <ShieldCheck size={15} />
-            <div><strong>{share.controlEnabled ? 'Remote control is enabled' : 'Read-only by default'}</strong><span>{share.controlEnabled ? 'Anyone holding this current pairing link can send up to 4 KiB writes to this serial session.' : 'The phone can view and download the log, but cannot write to the serial session.'}</span></div>
-            <button type="button" onClick={() => void toggleControl()} disabled={isWorking} aria-pressed={share.controlEnabled}>{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : null}{share.controlEnabled ? 'Disable control' : 'Enable remote control'}</button>
+            <div><strong>{share.controlEnabled ? 'Control enabled' : 'Read-only'}</strong><span>{share.controlEnabled ? 'Phone can send serial commands.' : 'Phone can view and download.'}</span></div>
+            <button type="button" onClick={() => void toggleControl()} disabled={isWorking} aria-label={share.controlEnabled ? 'Disable remote control' : 'Enable remote control'} title={share.controlEnabled ? 'Disable remote control' : 'Enable remote control'} aria-pressed={share.controlEnabled}>{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : null}{share.controlEnabled ? 'Disable' : 'Enable'}</button>
           </div>
           <div className="sd-mobile-share-actions">
-            <button className="sd-mobile-share-rotate" type="button" onClick={() => void rotate()} disabled={isWorking} title="Create a new read-only link and invalidate the current one">{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : <RefreshCw size={14} />} {isWorking ? 'Rotating link…' : 'Rotate link'}</button>
-            <button className="sd-mobile-share-revoke" type="button" onClick={() => void revoke()} disabled={isWorking}>{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : null} {isWorking ? 'Revoking…' : 'Revoke mobile link'}</button>
+            <button className="sd-mobile-share-rotate" type="button" onClick={() => void rotate()} disabled={isWorking} title="Create a new read-only link and invalidate the current one" aria-label="Rotate mobile link">{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : <RefreshCw size={14} />} {isWorking ? 'Rotating…' : 'Rotate'}</button>
+            <button className="sd-mobile-share-revoke" type="button" onClick={() => void revoke()} disabled={isWorking} aria-label="Revoke mobile link" title="Revoke mobile link">{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : null} {isWorking ? 'Revoking…' : 'Revoke'}</button>
           </div>
         </div>
       </div>}
 
-      <div className="sd-mobile-share-safety"><ShieldCheck size={15} /><span><strong>{share?.controlEnabled ? 'Remote control enabled · local network only.' : 'Read-only by default · local network only.'}</strong> Revoke the link or disable control at any time. It ends automatically when the serial session disconnects.</span></div>
+      <details className="sd-mobile-share-safety">
+        <summary><ShieldCheck size={15} /><strong>{share?.controlEnabled ? 'Control enabled · local network only' : 'Read-only by default · local network only'}</strong><ChevronDown className="sd-mobile-share-safety-chevron" size={15} aria-hidden="true" /></summary>
+        <p>{share?.controlEnabled ? 'Anyone with this link can send up to 4 KiB to the serial session. Disable control or revoke the link at any time.' : 'The phone can view and download the log, but cannot write to the serial session. Enable control only when needed.'} The link ends when the serial session disconnects.</p>
+      </details>
       {message && <p className={`sd-mobile-share-message ${message.kind}`} role="status">{message.text}</p>}
       </div>
     </details>
@@ -468,16 +471,16 @@ export function WorkspaceMobileSharePanel({ nativeEnabled, activeSessionCount, o
     <aside className="sd-mobile-workspace-share" aria-label="Mobile workspace dashboard sharing">
       <div className="sd-mobile-workspace-heading">
         <div className="sd-mobile-share-icon"><Smartphone size={18} /></div>
-        <div><h2>Share all active terminals</h2><span>One phone view for the terminals that are live now.</span></div>
+        <div><h2>Share all active terminals</h2><span>{activeSessionCount} active · one phone view</span></div>
         {share && <span className="sd-mobile-share-live"><i /> Live</span>}
       </div>
 
-      {!nativeEnabled && <div className="sd-mobile-share-preview"><QrCode size={17} /><span>Available in the BaudTide desktop app with native serial sessions.</span></div>}
+      {!nativeEnabled && <div className="sd-mobile-share-preview"><QrCode size={17} /><span>Available in the desktop app.</span></div>}
 
-      {nativeEnabled && !share && !activeSessionCount && <div className="sd-mobile-share-preview"><Wifi size={17} /><span>Open at least one serial terminal before creating a workspace link.</span></div>}
+      {nativeEnabled && !share && !activeSessionCount && <div className="sd-mobile-share-preview"><Wifi size={17} /><span>Open a serial terminal to create a link.</span></div>}
 
       {canShare && !share && <div className="sd-mobile-workspace-start">
-        <p>One read-only link lets a phone switch between the {activeSessionCount} active terminal stream{activeSessionCount === 1 ? '' : 's'}. New terminals are not added to an existing link.</p>
+        <p>One local link shares the {activeSessionCount} active terminal stream{activeSessionCount === 1 ? '' : 's'}.</p>
         <button className="sd-primary-button" type="button" onClick={() => void enable()} disabled={isWorking}>
           {isWorking ? <LoaderCircle className="sd-spin" size={16} /> : <QrCode size={16} />} Create workspace link
         </button>
@@ -486,17 +489,20 @@ export function WorkspaceMobileSharePanel({ nativeEnabled, activeSessionCount, o
       {share && <div className="sd-mobile-workspace-active">
         <div className="sd-mobile-share-qr"><PairingQr value={share.url} /></div>
         <div className="sd-mobile-share-details">
-          <p className="sd-mobile-share-instruction">Scan once to open the dashboard. The link includes {share.sessionCount} terminal{share.sessionCount === 1 ? '' : 's'} from when it was created.</p>
+          <p className="sd-mobile-share-instruction">Scan to open the workspace view, or copy the link below.</p>
           <div className="sd-mobile-share-link"><code title={share.url}>{share.url}</code><button type="button" onClick={() => void copyLink()} title="Copy workspace mobile link" aria-label="Copy workspace mobile link" disabled={isWorking}>{copied ? <Check size={15} /> : <Copy size={15} />}</button></div>
-          <div className="sd-mobile-share-metrics"><span><Users size={14} /> {share.clientCount} {share.clientCount === 1 ? 'phone connected' : 'phones connected'}</span><span><Wifi size={14} /> {share.host}:{share.port}</span></div>
+          <div className="sd-mobile-share-metrics"><span><Users size={14} /> {share.clientCount} {share.clientCount === 1 ? 'phone' : 'phones'}</span><span title="Local network address"><Wifi size={14} /> {share.host}:{share.port}</span></div>
           <div className="sd-mobile-share-actions">
-            <button className="sd-mobile-share-rotate" type="button" onClick={() => void rotate()} disabled={isWorking} title="Create a new workspace link and invalidate the current one">{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : <RefreshCw size={14} />} {isWorking ? 'Rotating link…' : 'Rotate link'}</button>
-            <button className="sd-mobile-share-revoke" type="button" onClick={() => void revoke()} disabled={isWorking}>{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : null} {isWorking ? 'Revoking…' : 'Revoke workspace link'}</button>
+            <button className="sd-mobile-share-rotate" type="button" onClick={() => void rotate()} disabled={isWorking} title="Create a new workspace link and invalidate the current one" aria-label="Rotate workspace link">{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : <RefreshCw size={14} />} {isWorking ? 'Rotating…' : 'Rotate'}</button>
+            <button className="sd-mobile-share-revoke" type="button" onClick={() => void revoke()} disabled={isWorking} aria-label="Revoke workspace link" title="Revoke workspace link">{isWorking ? <LoaderCircle className="sd-spin" size={14} /> : null} {isWorking ? 'Revoking…' : 'Revoke'}</button>
           </div>
         </div>
       </div>}
 
-      <div className="sd-mobile-share-safety"><ShieldCheck size={15} /><span><strong>Read-only · local network only.</strong> The phone can view only the sessions included in this link; no serial commands or arbitrary files are exposed.</span></div>
+      <details className="sd-mobile-share-safety">
+        <summary><ShieldCheck size={15} /><strong>Read-only · local network only</strong><ChevronDown className="sd-mobile-share-safety-chevron" size={15} aria-hidden="true" /></summary>
+        <p>The phone can view the sessions included in this link. Serial commands and arbitrary files are not exposed. The link ends when the serial session disconnects.</p>
+      </details>
       {message && <p className={`sd-mobile-share-message ${message.kind}`} role="status">{message.text}</p>}
     </aside>
   );
