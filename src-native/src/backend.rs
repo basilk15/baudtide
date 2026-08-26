@@ -2165,11 +2165,12 @@ fn handle_mobile_share_connection(
         return;
     }
     if is_page {
+        let page = render_mobile_page(MOBILE_SHARE_PAGE);
         let _ = write_http_response(
             &stream,
             "200 OK",
             "text/html; charset=utf-8",
-            MOBILE_SHARE_PAGE.as_bytes(),
+            page.as_bytes(),
             &[
                 ("Cache-Control", "no-store"),
                 ("Referrer-Policy", "no-referrer"),
@@ -3451,6 +3452,51 @@ fn base64_encode(bytes: &[u8]) -> String {
     output
 }
 
+const MOBILE_TELEMETRY_STYLE: &str = include_str!("mobile_telemetry.css");
+const MOBILE_TELEMETRY_SCRIPT: &str = include_str!("mobile_telemetry.js");
+const MOBILE_TELEMETRY_PANEL: &str = r###"
+    <section class="bt-mobile-telemetry" data-mobile-telemetry aria-labelledby="mobile-telemetry-heading">
+      <header class="bt-mobile-telemetry-header">
+        <div class="bt-mobile-telemetry-heading">
+          <span class="bt-mobile-telemetry-kicker">Live telemetry</span>
+          <h2 id="mobile-telemetry-heading">Signal canvas</h2>
+        </div>
+        <span class="bt-mobile-telemetry-state" data-telemetry-state data-state="empty" role="status"><i aria-hidden="true"></i><span data-telemetry-state-text>Listening</span></span>
+      </header>
+      <div class="bt-mobile-telemetry-summary" aria-label="Chart summary">
+        <div class="bt-mobile-telemetry-current"><span class="bt-mobile-telemetry-current-label">Focus</span><strong class="bt-mobile-telemetry-current-value" data-telemetry-current>—</strong><span class="bt-mobile-telemetry-current-unit" data-telemetry-unit>No plotted signal yet</span></div>
+        <div class="bt-mobile-telemetry-counts"><span data-telemetry-signal-count>0 signals</span><span data-telemetry-sample-count>0 samples</span><span data-telemetry-range>—</span></div>
+      </div>
+      <div class="bt-mobile-telemetry-fields" data-telemetry-fields role="tablist" aria-label="Telemetry signals"><span class="bt-mobile-telemetry-fields-hint">Choose a signal</span></div>
+      <div class="bt-mobile-telemetry-chart-wrap">
+        <svg class="bt-mobile-telemetry-chart" data-telemetry-chart viewBox="0 0 640 240" role="img" aria-label="Mobile telemetry chart" preserveAspectRatio="none">
+          <defs><linearGradient id="bt-mobile-telemetry-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#78e1c0" stop-opacity=".28"></stop><stop offset="1" stop-color="#78e1c0" stop-opacity="0"></stop></linearGradient></defs>
+          <g aria-hidden="true"><line class="bt-mobile-telemetry-chart-grid" x1="48" y1="20" x2="622" y2="20"></line><line class="bt-mobile-telemetry-chart-grid" x1="48" y1="81" x2="622" y2="81"></line><line class="bt-mobile-telemetry-chart-grid" x1="48" y1="141" x2="622" y2="141"></line><line class="bt-mobile-telemetry-chart-grid" x1="48" y1="202" x2="622" y2="202"></line></g>
+          <text class="bt-mobile-telemetry-axis" data-telemetry-axis-top x="8" y="24">—</text><text class="bt-mobile-telemetry-axis" data-telemetry-axis-bottom x="8" y="206">—</text><text class="bt-mobile-telemetry-axis x" data-telemetry-axis-left x="48" y="226">—</text><text class="bt-mobile-telemetry-axis x" data-telemetry-axis-right x="622" y="226">—</text>
+          <path class="bt-mobile-telemetry-area" data-telemetry-area d=""></path><path class="bt-mobile-telemetry-line" data-telemetry-line d=""></path><circle class="bt-mobile-telemetry-point" data-telemetry-point cx="0" cy="0" r="0"></circle>
+        </svg>
+        <div class="bt-mobile-telemetry-empty" data-telemetry-empty><div><strong>Waiting for repeated numeric records</strong><span>Send repeated JSON, key/value, or header-based CSV/TSV records to populate the phone chart.</span></div></div>
+      </div>
+      <footer class="bt-mobile-telemetry-footer"><p>Latest bounded samples · raw output stays below</p><button class="bt-mobile-telemetry-pause" data-telemetry-pause type="button" aria-pressed="false">Pause chart</button></footer>
+    </section>
+"###;
+
+fn render_mobile_page(template: &str) -> String {
+    template
+        .replace(
+            "/* BAUDTIDE_MOBILE_TELEMETRY_STYLE */",
+            MOBILE_TELEMETRY_STYLE,
+        )
+        .replace(
+            "<!-- BAUDTIDE_MOBILE_TELEMETRY_PANEL -->",
+            MOBILE_TELEMETRY_PANEL,
+        )
+        .replace(
+            "/* BAUDTIDE_MOBILE_TELEMETRY_SCRIPT */",
+            MOBILE_TELEMETRY_SCRIPT,
+        )
+}
+
 const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
 <html lang="en">
 <head>
@@ -3502,8 +3548,9 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
     @media(max-width:520px){main{padding:10px}.download-actions{width:100%;margin-left:0;justify-content:space-between}.entry{grid-template-columns:72px minmax(0,1fr);gap:6px}.entry-time{font-size:10px}.entry-text{font-size:11px}#log{min-height:320px;height:64vh}.control-form-row{align-items:stretch;flex-direction:column}.control-form-row button,.control-form-row select{width:100%}.export-format{width:100%;justify-content:space-between}.excerpt-status{width:100%}}
     @media(prefers-reduced-motion:reduce){.mobile-launch-content,.mobile-launch-mark,.mobile-launch-wave,.mobile-launch-node,.mobile-launch-loader,.mobile-launch-loader span::before,.mobile-launch-progress i,.mobile-launch-splash.is-leaving,.mobile-app{animation:none;transition:none}}
   </style>
+  <style>/* BAUDTIDE_MOBILE_TELEMETRY_STYLE */</style>
 </head>
-<body>
+<body data-mobile-companion="terminal">
   <div id="mobile-launch-splash" class="mobile-launch-splash" role="status" aria-live="polite" aria-label="Opening BaudTide mobile companion">
     <div class="mobile-launch-content">
       <div class="mobile-launch-mark" aria-hidden="true"><svg viewBox="0 0 120 120"><defs><linearGradient id="mobile-launch-gradient" x1="31" y1="0" x2="91" y2="0" gradientUnits="userSpaceOnUse"><stop stop-color="#52e7a8"/><stop offset="1" stop-color="#19c9f1"/></linearGradient></defs><path class="mobile-launch-frame" d="M32 39 60 21l29 18v15M89 81v1L60 100 31 82l13-11"/><path class="mobile-launch-wave" d="M36 67h13c7 0 7-13 14-13s7 13 14 13h7c7 0 7-13 14-13"/><circle class="mobile-launch-node" cx="36" cy="67" r="5"/><circle class="mobile-launch-node" cx="91" cy="54" r="5"/></svg></div>
@@ -3517,6 +3564,7 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
       <div><h1>BaudTide · live serial log</h1><span id="state" role="status">Connecting…</span><span id="summary">Waiting for a recent capture tail…</span></div>
       <div class="download-actions"><button id="share-raw" class="share-log" type="button">Send logs</button><a id="download" class="download" download>Download raw (.log)</a></div>
     </header>
+    <!-- BAUDTIDE_MOBILE_TELEMETRY_PANEL -->
     <section class="controls" aria-label="Log viewer controls">
       <div class="control-row">
         <button id="pause" type="button">Pause</button>
@@ -3845,6 +3893,7 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
       const size=text.length+bytes;
       entries.push({sequence:item.sequence,timestamp:item.timestamp,text,byteLength:bytes,size});
       retainedBytes+=size;
+      window.baudtideTelemetry?.push(item);
       while(entries.length>MAX_RETAINED_EVENTS||retainedBytes>MAX_RETAINED_BYTES){
         const removed=entries.shift();
         if(removed) retainedBytes=Math.max(0,retainedBytes-removed.size);
@@ -3954,11 +4003,13 @@ const MOBILE_SHARE_PAGE: &str = r###"<!doctype html>
     connect();
   })();
   </script>
+  <script>/* BAUDTIDE_MOBILE_TELEMETRY_SCRIPT */</script>
 </body>
 </html>"###;
 
-fn mobile_workspace_share_page() -> &'static str {
-    r##"<!doctype html>
+fn mobile_workspace_share_page() -> String {
+    render_mobile_page(
+        r##"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -3972,8 +4023,9 @@ fn mobile_workspace_share_page() -> &'static str {
   <style>
     .mobile-launch-splash{display:none}.mobile-app{transition:opacity .42s cubic-bezier(.16,1,.3,1),transform .42s cubic-bezier(.16,1,.3,1)}html.mobile-ready .mobile-launch-splash{position:fixed;z-index:20;inset:0;display:grid;place-items:center;overflow:hidden;isolation:isolate;background:radial-gradient(ellipse 64% 48% at 50% 46%,#123a46 0%,#0d2631 38%,transparent 73%),radial-gradient(ellipse 75% 64% at 110% -12%,#183e51 0%,transparent 64%),#090f18;color:#edf7f6}html.mobile-ready .mobile-app{opacity:0;transform:translateY(10px)}.mobile-launch-splash::before{position:absolute;z-index:-1;inset:0;content:"";opacity:.52;background-image:linear-gradient(#9de5dc0a 1px,transparent 1px),linear-gradient(90deg,#9de5dc0a 1px,transparent 1px);background-size:34px 34px;mask-image:radial-gradient(ellipse 78% 76% at 50% 44%,#000 0%,transparent 76%)}.mobile-launch-content{display:grid;justify-items:center;padding:24px;text-align:center;animation:mobile-launch-enter .6s cubic-bezier(.16,1,.3,1) both}.mobile-launch-mark{position:relative;width:min(35vw,138px);min-width:106px;filter:drop-shadow(0 18px 25px #0017219c);animation:mobile-launch-mark .72s .05s cubic-bezier(.16,1,.3,1) both}.mobile-launch-mark::before{position:absolute;z-index:-1;inset:18%;border-radius:50%;content:"";background:#35e6c9;opacity:.25;filter:blur(24px)}.mobile-launch-mark svg{display:block;width:100%;height:auto}.mobile-launch-frame{fill:none;stroke:#113a62;stroke-width:9;stroke-linecap:round;stroke-linejoin:round}.mobile-launch-wave{fill:none;stroke:url(#mobile-launch-gradient);stroke-width:8;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:88;stroke-dashoffset:88;animation:mobile-launch-wave .72s .35s ease-out forwards}.mobile-launch-node{fill:#20dfcf;opacity:0;animation:mobile-launch-node .2s .95s ease-out forwards}.mobile-launch-name{margin-top:17px;color:#f0faf8;font:800 1.88rem/1 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:-.08em}.mobile-launch-name span{color:#7ee1c3}.mobile-launch-copy{margin:10px 0 0;color:#9fd6c9;font-size:.61rem;font-weight:800;letter-spacing:.17em}.mobile-launch-loader{position:absolute;bottom:max(37px,7vh);display:grid;gap:10px;width:min(220px,calc(100vw - 48px));animation:mobile-launch-enter .55s .24s cubic-bezier(.16,1,.3,1) both}.mobile-launch-loader span{display:flex;align-items:center;justify-content:center;gap:8px;color:#a7bac7;font-size:.7rem}.mobile-launch-loader span::before{width:6px;height:6px;border-radius:50%;content:"";background:#7be0c2;box-shadow:0 0 0 4px #7be0c21a,0 0 15px #7be0c2a3;animation:mobile-launch-dot 1.1s ease-in-out infinite}.mobile-launch-progress{height:2px;overflow:hidden;border-radius:999px;background:#8fe8d31c}.mobile-launch-progress i{display:block;width:52%;height:100%;border-radius:inherit;background:linear-gradient(90deg,#5acbb0,#9af1d4);box-shadow:0 0 13px #65dbbe8c;animation:mobile-launch-progress 1.15s cubic-bezier(.3,.04,.2,1) both}.mobile-launch-splash.is-leaving{pointer-events:none;animation:mobile-launch-exit .34s cubic-bezier(.4,0,1,1) forwards}html.mobile-ready .mobile-app.is-visible{opacity:1;transform:translateY(0)}@keyframes mobile-launch-enter{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}@keyframes mobile-launch-mark{from{opacity:0;transform:scale(.72)}to{opacity:1;transform:scale(1)}}@keyframes mobile-launch-wave{to{stroke-dashoffset:0}}@keyframes mobile-launch-node{to{opacity:1}}@keyframes mobile-launch-dot{50%{transform:scale(1.18);opacity:.64}}@keyframes mobile-launch-progress{from{transform:translateX(-100%)}to{transform:translateX(195%)}}@keyframes mobile-launch-exit{to{opacity:0;transform:scale(1.012)}}@media(prefers-reduced-motion:reduce){.mobile-launch-content,.mobile-launch-mark,.mobile-launch-wave,.mobile-launch-node,.mobile-launch-loader,.mobile-launch-loader span::before,.mobile-launch-progress i,.mobile-launch-splash.is-leaving,.mobile-app{animation:none;transition:none}}
   </style>
+  <style>/* BAUDTIDE_MOBILE_TELEMETRY_STYLE */</style>
 </head>
-<body>
+<body data-mobile-companion="workspace">
   <div id="mobile-launch-splash" class="mobile-launch-splash" role="status" aria-live="polite" aria-label="Opening BaudTide mobile companion">
     <div class="mobile-launch-content">
       <div class="mobile-launch-mark" aria-hidden="true"><svg viewBox="0 0 120 120"><defs><linearGradient id="mobile-launch-gradient" x1="31" y1="0" x2="91" y2="0" gradientUnits="userSpaceOnUse"><stop stop-color="#52e7a8"/><stop offset="1" stop-color="#19c9f1"/></linearGradient></defs><path class="mobile-launch-frame" d="M32 39 60 21l29 18v15M89 81v1L60 100 31 82l13-11"/><path class="mobile-launch-wave" d="M36 67h13c7 0 7-13 14-13s7 13 14 13h7c7 0 7-13 14-13"/><circle class="mobile-launch-node" cx="36" cy="67" r="5"/><circle class="mobile-launch-node" cx="91" cy="54" r="5"/></svg></div>
@@ -3989,7 +4041,9 @@ fn mobile_workspace_share_page() -> &'static str {
     </header>
     <div class="layout">
       <section class="panel"><div class="panel-head"><h2>Shared terminals</h2><p id="scope">Waiting for the shared session list…</p></div><div id="sessions" class="sessions"></div></section>
-      <section class="panel stream-panel"><div class="stream-head"><div><h2 id="stream-title">Choose a terminal</h2><p id="stream-meta">No stream selected</p></div><span id="stream-state" class="stream-state">Waiting</span></div><pre id="stream" aria-live="polite">The dashboard will show live output after it connects.</pre><div id="detail">Only sessions included when this link was created can appear here.</div></section>
+      <section class="panel stream-panel"><div class="stream-head"><div><h2 id="stream-title">Choose a terminal</h2><p id="stream-meta">No stream selected</p></div><span id="stream-state" class="stream-state">Waiting</span></div>
+        <!-- BAUDTIDE_MOBILE_TELEMETRY_PANEL -->
+        <pre id="stream" aria-live="polite">The dashboard will show live output after it connects.</pre><div id="detail">Only sessions included when this link was created can appear here.</div></section>
     </div>
     <div id="recovery-notice" class="notice" role="status" hidden></div>
     <div class="notice"><strong>Local and read-only.</strong> This link works only on the same local network. The phone automatically reconnects after a Wi-Fi handoff and asks for the bounded recent workspace tail. Output keeps the newest 240,000 characters per shared stream in this phone view; raw capture files stay on the desktop.</div>
@@ -4006,7 +4060,7 @@ fn mobile_workspace_share_page() -> &'static str {
     const stateLabel=(state)=>state==='storage-limit'?'Storage limit':state==='disconnected'?'Disconnected':state==='error'?'Error':state==='reconnecting'?'Reconnecting':state==='connected'?'Connected':state||'Unknown';
     const setFeed=(label,state)=>{feedEl.textContent=label;feedRoot.dataset.state=state||'live'};
     const setNotice=(message)=>{noticeEl.textContent=message||'';noticeEl.hidden=!message};
-    const select=(id)=>{if(!sessions.has(id))return;selectedId=id;render()};
+    const select=(id)=>{if(!sessions.has(id))return;selectedId=id;window.baudtideMobileSelectedSessionId=id;window.baudtideTelemetry?.setStream(id);render()};
     const render=()=>{
       sessionsEl.replaceChildren();
       for(const item of sessions.values()){
@@ -4022,6 +4076,7 @@ fn mobile_workspace_share_page() -> &'static str {
     const applySnapshot=(items)=>{
       sessions.clear();for(const item of items||[]){if(!item||typeof item.sessionId!=='string'||typeof item.sessionName!=='string'||typeof item.port!=='string')continue;sessions.set(item.sessionId,{...item})}
       if(!sessions.has(selectedId))selectedId=sessions.keys().next().value||'';
+      if(selectedId)window.baudtideMobileSelectedSessionId=selectedId;
       scopeEl.textContent=sessions.size+' terminal'+(sessions.size===1?'':'s')+' included in this link';render();
     };
     const acceptSequence=(item)=>{
@@ -4037,6 +4092,7 @@ fn mobile_workspace_share_page() -> &'static str {
       if(!acceptSequence(item))return;const event=item.event;
       if(!event||typeof event.sessionId!=='string'||!sessions.has(event.sessionId))return;
       const next=(logs.get(event.sessionId)||'')+(typeof event.text==='string'?event.text:'');logs.set(event.sessionId,next.length>MAX_LOG_CHARS?next.slice(-MAX_LOG_CHARS):next);
+      window.baudtideTelemetry?.push(event);
       if(event.sessionId===selectedId){streamEl.textContent=logs.get(event.sessionId)||'';streamEl.scrollTop=streamEl.scrollHeight}
     };
     const handleReplay=(item)=>{
@@ -4067,8 +4123,10 @@ fn mobile_workspace_share_page() -> &'static str {
     render();connect();
   })();
   </script>
+  <script>/* BAUDTIDE_MOBILE_TELEMETRY_SCRIPT */</script>
 </body>
-</html>"##
+</html>"##,
+    )
 }
 
 fn start_serial_session(

@@ -4,6 +4,7 @@ import '../tokens.css';
 import './styles.css';
 import App from './App';
 import './app-skin.css';
+import './terminal-workbench.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

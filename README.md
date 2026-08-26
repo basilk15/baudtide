@@ -112,7 +112,7 @@ npm run desktop:dist
 
 ## Mobile sharing
 
-Share an active terminal—or a read-only snapshot of multiple terminals—with a phone on the same local network. Create a link from the relevant **Mobile sharing** panel and scan its QR code. On the live terminal page, **Send logs** shares the raw capture through the iOS Share Sheet or Android Sharesheet when available; otherwise it keeps the existing download path (or shares the visible excerpt when only text sharing is supported).
+Share an active terminal—or a read-only snapshot of multiple terminals—with a phone on the same local network. Create a link from the relevant **Mobile sharing** panel and scan its QR code. When repeated numeric telemetry is detected, the phone shows a **Signal canvas** with selectable traces, latest readings, bounded history, and pause/resume controls; raw output remains available below it. On the live terminal page, **Send logs** shares the raw capture through the iOS Share Sheet or Android Sharesheet when available; otherwise it keeps the existing download path (or shares the visible excerpt when only text sharing is supported).
 
 Links are read-only by default. Remote control is an explicit opt-in for one active terminal; it can send text or hexadecimal bytes, is rate-limited, and can be disabled or revoked at any time.
 

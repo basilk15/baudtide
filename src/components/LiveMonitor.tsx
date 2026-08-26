@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useId, useImperativeHandle, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { AlertTriangle, Check, ChevronDown, ChevronsDown, CirclePause, CirclePlay, Copy, Eraser, LoaderCircle, PlugZap, RotateCw, Search, Send, SlidersHorizontal, TerminalSquare, WifiOff, X } from 'lucide-react';
 import { listenForSerialData, listenForSerialStatus, takePendingNativeSerialData, type SerialDataEvent } from '../lib/serial';
 import { liveTelemetryStore } from '../lib/telemetry';
@@ -342,6 +342,9 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   const renderFrameRef = useRef<number | null>(null);
   const autoScrollRef = useRef(true);
   const autoScrollFrameRef = useRef<number | null>(null);
+  const userScrollIntentRef = useRef(false);
+  const userScrollIntentFrameRef = useRef<number | null>(null);
+  const pointerScrollRef = useRef(false);
   const onConnectionStateChangeRef = useRef(onConnectionStateChange);
   const onNativeSessionEndedRef = useRef(onNativeSessionEnded);
   const onNativeStorageLimitRef = useRef(onNativeStorageLimit);
@@ -358,12 +361,58 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
     setAutoScroll(next);
   };
 
-  const scheduleAutoScroll = () => {
+  const cancelScheduledAutoScroll = () => {
+    if (autoScrollFrameRef.current === null) return;
+    window.cancelAnimationFrame(autoScrollFrameRef.current);
+    autoScrollFrameRef.current = null;
+  };
+
+  const clearUserScrollIntent = () => {
+    if (userScrollIntentFrameRef.current !== null) {
+      window.cancelAnimationFrame(userScrollIntentFrameRef.current);
+      userScrollIntentFrameRef.current = null;
+    }
+    userScrollIntentRef.current = false;
+  };
+
+  const noteUserScrollIntent = () => {
+    userScrollIntentRef.current = true;
+    if (pointerScrollRef.current) return;
+    if (userScrollIntentFrameRef.current !== null) window.cancelAnimationFrame(userScrollIntentFrameRef.current);
+    userScrollIntentFrameRef.current = window.requestAnimationFrame(() => {
+      userScrollIntentFrameRef.current = null;
+      userScrollIntentRef.current = false;
+    });
+  };
+
+  const beginPointerScroll = () => {
+    pointerScrollRef.current = true;
+    clearUserScrollIntent();
+    userScrollIntentRef.current = true;
+  };
+
+  const endPointerScroll = () => {
+    pointerScrollRef.current = false;
+    clearUserScrollIntent();
+  };
+
+  const scrollOutputToEnd = () => {
+    const output = outputRef.current;
+    if (!output) return;
+    const maximumScrollTop = Math.max(0, output.scrollHeight - output.clientHeight);
+    if (output.scrollTop >= maximumScrollTop - 1) {
+      return;
+    }
+    output.scrollTop = maximumScrollTop;
+  };
+
+  const scheduleAutoScroll = (force = false) => {
+    if (force) cancelScheduledAutoScroll();
     if (autoScrollFrameRef.current !== null) return;
     autoScrollFrameRef.current = window.requestAnimationFrame(() => {
       autoScrollFrameRef.current = null;
-      if (pausedRef.current || !autoScrollRef.current || !outputRef.current) return;
-      outputRef.current.scrollTop = outputRef.current.scrollHeight;
+      if (pausedRef.current || !autoScrollRef.current) return;
+      scrollOutputToEnd();
     });
   };
 
@@ -391,6 +440,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   useEffect(() => () => {
     if (capturePathCopyResetRef.current !== undefined) window.clearTimeout(capturePathCopyResetRef.current);
     if (autoScrollFrameRef.current !== null) window.cancelAnimationFrame(autoScrollFrameRef.current);
+    if (userScrollIntentFrameRef.current !== null) window.cancelAnimationFrame(userScrollIntentFrameRef.current);
   }, []);
 
   useEffect(() => {
@@ -807,8 +857,8 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
     else updateConnectionState('disconnected');
   }, [initialConnectionState, nativeSession]);
 
-  useEffect(() => {
-    if (!isPaused && autoScroll) scheduleAutoScroll();
+  useLayoutEffect(() => {
+    if (!isPaused && autoScroll) scrollOutputToEnd();
   }, [filteredLines, isPaused, autoScroll]);
 
   const toggleDisplayPause = () => {
@@ -817,6 +867,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
       setPaused(false);
       setPausedLines([]);
       setWaitingLines(0);
+      if (autoScrollRef.current) scheduleAutoScroll(true);
       return;
     }
     pausedRef.current = true;
@@ -825,13 +876,24 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
     setPaused(true);
   };
 
+  const toggleAutoScroll = (next: boolean) => {
+    setAutoScrollState(next);
+    if (!next) {
+      cancelScheduledAutoScroll();
+      return;
+    }
+    scrollOutputToEnd();
+    scheduleAutoScroll(true);
+  };
+
   const goToEnd = () => {
     pausedRef.current = false;
     setPaused(false);
     setPausedLines([]);
     setWaitingLines(0);
     setAutoScrollState(true);
-    scheduleAutoScroll();
+    scrollOutputToEnd();
+    scheduleAutoScroll(true);
   };
 
   const send = async (event: FormEvent) => {
@@ -1074,7 +1136,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
       <header className="sd-monitor-header">
         <div className="sd-monitor-heading">
           <div className="sd-monitor-mark"><TerminalSquare size={19} /></div>
-          <div><p className="sd-monitor-breadcrumb">Live terminal / Monitor</p><h1>{sessionName}</h1></div>
+          <div><h1>{sessionName}</h1></div>
         </div>
         <div className="sd-monitor-header-actions">
           <button type="button" className="sd-monitor-secondary" onClick={reconnect} disabled={connectionState === 'connected' || isReconnecting}><RotateCw className={isReconnecting ? 'sd-spin' : ''} size={15} /> Reconnect</button>
@@ -1129,9 +1191,20 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
         <div className="sd-terminal-toolbar">
           <div className="sd-terminal-title"><span className="sd-terminal-led" /> Incoming data <em>{lines.length} lines in display</em></div>
           <div className="sd-terminal-controls">
-            <label className="sd-autoscroll-toggle"><input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScrollState(event.target.checked)} /> Auto-scroll</label>
+            <button
+              className={`sd-autoscroll-toggle ${autoScroll ? 'is-on' : 'is-off'}`}
+              type="button"
+              role="switch"
+              aria-label="Auto-scroll"
+              aria-checked={autoScroll}
+              onClick={() => toggleAutoScroll(!autoScroll)}
+              title={autoScroll ? 'Auto-scroll is on. New output follows the latest line.' : 'Auto-scroll is off. Click to follow the latest line.'}
+            >
+              <span className="sd-autoscroll-switch" aria-hidden="true" />
+              <span className="sd-autoscroll-copy">Auto-scroll <strong>{autoScroll ? 'ON' : 'OFF'}</strong></span>
+            </button>
             {(!autoScroll || isPaused) && <button className="sd-monitor-secondary sd-go-to-end" type="button" onClick={goToEnd} title="Resume the display and jump to the newest data"><ChevronsDown size={15} /> Go to end</button>}
-            <button className={`sd-monitor-secondary ${isPaused ? 'active' : ''}`} type="button" onClick={toggleDisplayPause}>{isPaused ? <CirclePlay size={15} /> : <CirclePause size={15} />}{isPaused ? 'Resume display' : 'Pause display'}</button>
+            <button className={`sd-monitor-secondary ${isPaused ? 'active' : ''}`} type="button" onClick={toggleDisplayPause} aria-pressed={isPaused}>{isPaused ? <CirclePlay size={15} /> : <CirclePause size={15} />}{isPaused ? 'Resume display' : 'Pause display'}</button>
             <button
               ref={filterButtonRef}
               className={`sd-monitor-icon-button ${isFindOpen || filterIsActive ? 'active' : ''}`}
@@ -1201,9 +1274,15 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
             </div>
           </section>
         )}
-        <div className={`sd-terminal-output ${showTimestamps ? '' : 'no-timestamps'}`} ref={outputRef} onScroll={(event) => {
+        <div className={`sd-terminal-output ${showTimestamps ? '' : 'no-timestamps'}`} ref={outputRef} tabIndex={0} onWheel={noteUserScrollIntent} onTouchMove={noteUserScrollIntent} onPointerDown={beginPointerScroll} onPointerUp={endPointerScroll} onPointerCancel={endPointerScroll} onKeyDown={(event) => {
+          if (['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' ', 'Spacebar'].includes(event.key)) noteUserScrollIntent();
+        }} onScroll={(event) => {
           const target = event.currentTarget;
-          setAutoScrollState(target.scrollHeight - target.scrollTop - target.clientHeight < 32);
+          const isAtEnd = target.scrollHeight - target.scrollTop - target.clientHeight < 32;
+          if (!userScrollIntentRef.current) return;
+          clearUserScrollIntent();
+          if (!isAtEnd) cancelScheduledAutoScroll();
+          setAutoScrollState(isAtEnd);
         }} role="log" aria-live={isPaused ? 'off' : 'polite'} aria-relevant="additions text" aria-label={showTimestamps ? 'Timestamped serial output' : 'Serial output'}>
           {!visibleLines.length && <div className="sd-terminal-empty"><TerminalSquare size={23} /><strong>Display cleared</strong><span>New incoming bytes will appear here. The active log is still recording.</span></div>}
           {visibleLines.length > 0 && !filteredLines.length && <div className="sd-terminal-empty"><Search size={23} /><strong>No matching output</strong><span>Try a different filter or clear the search.</span></div>}

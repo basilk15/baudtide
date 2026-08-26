@@ -40,13 +40,13 @@
   --space-2xl: 3rem;
   --space-3xl: 4.5rem;
 
-  /* Readable UI scale: 12px metadata, 14px controls, 16px body copy. */
-  --text-xs: 0.75rem;
-  --text-sm: 0.875rem;
-  --text-md: 1rem;
-  --text-lg: 1.25rem;
-  --text-xl: 1.75rem;
-  --text-display: clamp(2.25rem, 3.2vw, 3.25rem);
+  /* Readable UI scale: 14px metadata, 16px controls, 18px body copy. */
+  --text-xs: 0.875rem;
+  --text-sm: 1rem;
+  --text-md: 1.125rem;
+  --text-lg: 1.5rem;
+  --text-xl: 2rem;
+  --text-display: clamp(2.75rem, 3.7vw, 3.75rem);
 
   --radius-control: 0.375rem;
   --radius-panel: 0.5rem;
