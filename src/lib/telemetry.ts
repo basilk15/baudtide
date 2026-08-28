@@ -63,6 +63,12 @@ export type TelemetryStoreOptions = {
   maxLineLength?: number;
 };
 
+export type RecordedTelemetryOptions = {
+  startedAt?: string;
+  endedAt?: string;
+  nativeSessionId?: string;
+};
+
 export const DEFAULT_MAX_TELEMETRY_SAMPLES = 10_000;
 export const DEFAULT_MAX_TELEMETRY_GAPS = 128;
 export const DEFAULT_MAX_TELEMETRY_SESSIONS = 32;
@@ -736,6 +742,42 @@ export class TelemetrySessionStore {
       this.emptySnapshots.delete(candidate);
     }
   }
+}
+
+/**
+ * Replays raw capture text through the same parser used by live sessions.
+ * Raw .log files intentionally contain only device bytes, so record times are
+ * reconstructed evenly across the capture metadata interval. When metadata is
+ * incomplete, a stable 100 ms cadence keeps relative comparison useful.
+ */
+export function telemetrySnapshotFromCapture(
+  sessionKey: string,
+  text: string,
+  options: RecordedTelemetryOptions = {},
+): TelemetrySessionSnapshot {
+  const store = new TelemetrySessionStore();
+  const lines = text.split(/\r\n|\r|\n/u);
+  const startCandidate = options.startedAt ? Date.parse(options.startedAt) : Number.NaN;
+  const endCandidate = options.endedAt ? Date.parse(options.endedAt) : Number.NaN;
+  const startMs = Number.isFinite(startCandidate) ? startCandidate : 0;
+  const durationMs = Number.isFinite(endCandidate) && endCandidate > startMs
+    ? endCandidate - startMs
+    : Math.max(1, lines.length - 1) * 100;
+  const nativeSessionId = options.nativeSessionId ?? `recorded:${sessionKey}`;
+  const encoder = new TextEncoder();
+
+  lines.forEach((line, index) => {
+    const progress = lines.length <= 1 ? 0 : index / (lines.length - 1);
+    store.ingestOrderedSerialEvent(sessionKey, {
+      sessionId: nativeSessionId,
+      port: 'saved-capture',
+      sequence: index + 1,
+      timestamp: new Date(startMs + durationMs * progress).toISOString(),
+      text: `${line}\n`,
+      bytes: [...encoder.encode(`${line}\n`)],
+    });
+  });
+  return store.getSnapshot(sessionKey);
 }
 
 function cloneValues(values: Readonly<Record<string, Readonly<TelemetryValue>>>): Readonly<Record<string, Readonly<TelemetryValue>>> {

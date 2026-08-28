@@ -1356,6 +1356,28 @@ fn read_saved_log(app: AppHandle, path: String) -> CommandResult<SavedLogContent
     })
 }
 
+fn read_saved_log_telemetry(app: AppHandle, path: String) -> CommandResult<SavedLogContent> {
+    let path = resolve_saved_log_path(&app, &path)?;
+    // Replay is intentionally larger than the raw preview while remaining
+    // bounded so an unusually large bench capture cannot exhaust renderer or
+    // sidecar memory. The UI makes truncation explicit.
+    const TELEMETRY_REPLAY_LIMIT: u64 = 16 * 1024 * 1024;
+    let metadata = path
+        .metadata()
+        .map_err(|error| format!("Could not inspect the saved log: {error}"))?;
+    let file =
+        File::open(&path).map_err(|error| format!("Could not open the saved log: {error}"))?;
+    let mut bytes = Vec::new();
+    file.take(TELEMETRY_REPLAY_LIMIT)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Could not read the saved log for telemetry: {error}"))?;
+    Ok(SavedLogContent {
+        path: path.display().to_string(),
+        text: String::from_utf8_lossy(&bytes).into_owned(),
+        truncated: metadata.len() > TELEMETRY_REPLAY_LIMIT,
+    })
+}
+
 fn delete_saved_log(
     app: AppHandle,
     state: State<'_, SerialState>,
@@ -7460,6 +7482,10 @@ fn dispatch_sidecar_request(
             required_protocol_param(&params, "searchId")?,
         )),
         "read_saved_log" => serialize_command_result(read_saved_log(
+            app,
+            required_protocol_param(&params, "path")?,
+        )),
+        "read_saved_log_telemetry" => serialize_command_result(read_saved_log_telemetry(
             app,
             required_protocol_param(&params, "path")?,
         )),
