@@ -102,7 +102,7 @@ function FieldRow({ field, index, checked, latest, disabled, onToggle }: {
  * events continue to be owned and ordered by LiveMonitor before entering the
  * shared telemetry store.
  */
-export function VisualizeScreen({ nativeEnabled, sessions, selectedSessionId, onSelectSession, onRequestConnection }: VisualizeScreenProps) {
+export function LegacyVisualizeScreen({ nativeEnabled, sessions, selectedSessionId, onSelectSession, onRequestConnection }: VisualizeScreenProps) {
   const activeSession = sessions.find((session) => session.id === selectedSessionId) ?? sessions[0] ?? null;
   const activeSessionKey = activeSession?.uiKey ?? EMPTY_SESSION_KEY;
   const subscribe = useCallback((listener: () => void) => {
@@ -272,3 +272,5 @@ export function VisualizeScreen({ nativeEnabled, sessions, selectedSessionId, on
     <p className="bt-visualize-notice" role="status" aria-live="polite">{notice}</p>
   </section>;
 }
+
+export { TelemetryAnalysisWorkspace as VisualizeScreen } from './TelemetryAnalysisWorkspace';

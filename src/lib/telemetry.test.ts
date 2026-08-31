@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TelemetryLineParser, TelemetrySessionStore, Utf8LineAssembler } from './telemetry';
+import { telemetrySnapshotFromCapture, TelemetryLineParser, TelemetrySessionStore, Utf8LineAssembler } from './telemetry';
 import type { SerialDataEvent } from './serial';
 
 const encoder = new TextEncoder();
@@ -227,5 +227,25 @@ describe('TelemetrySessionStore', () => {
     ]);
     expect(snapshot.fields.map((field) => field.key)).toEqual(['field2', 'field3', 'field4']);
     expect(snapshot.samples).toHaveLength(8);
+  });
+});
+
+describe('telemetrySnapshotFromCapture', () => {
+  it('uses the live parser and reconstructs a stable capture timeline', () => {
+    const snapshot = telemetrySnapshotFromCapture(
+      'recorded:bench-a',
+      'temperature=20 C\ntemperature=21 C\ntemperature=22 C\n',
+      {
+        startedAt: '2026-08-10T10:00:00.000Z',
+        endedAt: '2026-08-10T10:00:30.000Z',
+        nativeSessionId: 'saved-native-a',
+      },
+    );
+
+    expect(snapshot.samples.map((sample) => sample.values.temperature.value)).toEqual([20, 21, 22]);
+    expect(snapshot.fields).toEqual([expect.objectContaining({ key: 'temperature', unit: 'C' })]);
+    expect(snapshot.samples[0].timestamp).toBe('2026-08-10T10:00:00.000Z');
+    expect(Date.parse(snapshot.samples[2].timestamp)).toBeGreaterThan(Date.parse(snapshot.samples[0].timestamp));
+    expect(snapshot.samples.every((sample) => sample.nativeSessionId === 'saved-native-a')).toBe(true);
   });
 });

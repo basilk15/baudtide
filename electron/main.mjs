@@ -31,6 +31,7 @@ const allowedEvents = new Set(events);
 const electronOwnedCommands = new Set([
   'select_log_directory',
   'save_saved_log',
+  'export_telemetry_data',
   'toggle_menu_bar',
 ]);
 const APP_ID = 'com.basil.baudtide';
@@ -326,6 +327,37 @@ async function saveLogCopy(args) {
   });
 }
 
+async function exportTelemetryData(args) {
+  if (typeof args.contents !== 'string') {
+    throw new TypeError('Telemetry export contents must be text.');
+  }
+  if (Buffer.byteLength(args.contents, 'utf8') > 64 * 1024 * 1024) {
+    throw new Error('Telemetry exports are limited to 64 MB. Narrow the selected signals or display window and try again.');
+  }
+  const format = args.format === 'json' ? 'json' : 'csv';
+  const fallbackName = `baudtide-telemetry.${format}`;
+  const requestedName = typeof args.defaultName === 'string' ? path.basename(args.defaultName) : fallbackName;
+  const defaultName = requestedName && requestedName.length <= 160 ? requestedName : fallbackName;
+  const options = {
+    title: 'Export selected telemetry',
+    defaultPath: defaultName,
+    buttonLabel: 'Export data',
+    filters: format === 'json'
+      ? [{ name: 'JSON data', extensions: ['json'] }]
+      : [{ name: 'CSV data', extensions: ['csv'] }],
+    properties: ['showOverwriteConfirmation', 'createDirectory'],
+  };
+  const result = mainWindow
+    ? await dialog.showSaveDialog(mainWindow, options)
+    : await dialog.showSaveDialog(options);
+  if (result.canceled || !result.filePath) return null;
+  const destinationPath = path.extname(result.filePath)
+    ? result.filePath
+    : `${result.filePath}.${format}`;
+  await fs.promises.writeFile(destinationPath, args.contents, { encoding: 'utf8', flag: 'w' });
+  return path.resolve(destinationPath);
+}
+
 function toggleMenuBar(args) {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
   const visible = typeof args.visible === 'boolean'
@@ -370,6 +402,7 @@ ipcMain.handle(invokeChannel, async (event, command, args = {}) => {
   if (electronOwnedCommands.has(command)) {
     if (command === 'select_log_directory') return chooseLogDirectory();
     if (command === 'save_saved_log') return saveLogCopy(args);
+    if (command === 'export_telemetry_data') return exportTelemetryData(args);
     return toggleMenuBar(args);
   }
   return backend.invoke(command, args);

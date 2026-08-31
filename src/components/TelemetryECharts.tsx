@@ -37,6 +37,7 @@ export type TelemetryChartsProps = {
   selectedFieldKeys: readonly string[];
   windowMs: number;
   paused: boolean;
+  mode?: ChartMode;
 };
 
 type TooltipItem = {
@@ -52,7 +53,7 @@ type AxisPointerLabelParams = {
   value: string | number | Date;
 };
 
-type ChartMode = 'lanes' | 'compare';
+export type ChartMode = 'lanes' | 'compare';
 
 type NumericRange = {
   min: number;
@@ -567,7 +568,7 @@ function EChartsSurface({ option, structureKey, ariaLabel }: { option: EChartsOp
   return <div ref={hostRef} className="bt-telemetry-echarts" role="img" aria-label={ariaLabel} />;
 }
 
-export function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, windowMs, paused }: TelemetryChartsProps) {
+export function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, windowMs, paused, mode = 'lanes' }: TelemetryChartsProps) {
   const prepared = useMemo(() => prepareTelemetryCharts({
     samples,
     fields,
@@ -596,6 +597,16 @@ export function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, wind
     return { series, aligned: plotAligned, option };
   }), [fields, isLight, prepared.endMs, prepared.gaps, prepared.startMs, selectedSeries]);
   const chartablePlots = plots.filter((plot) => plot.option && plot.aligned.timestamps.length);
+  const overlayOption = useMemo(() => aligned.timestamps.length ? chartOption({
+    fields,
+    series: selectedSeries,
+    aligned,
+    gaps: prepared.gaps,
+    startMs: prepared.startMs,
+    endMs: prepared.endMs,
+    isLight,
+    mode: 'compare',
+  }) : null, [aligned, fields, isLight, prepared.endMs, prepared.gaps, prepared.startMs, selectedSeries]);
 
   if (!fields.length) {
     return <section className="bt-telemetry-view bt-telemetry-view-empty" role="status">
@@ -615,6 +626,26 @@ export function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, wind
     return <section className="bt-telemetry-view bt-telemetry-view-empty" role="status">
       <strong>No chartable points in this window</strong>
       <span>Keep the serial stream running or choose a longer display window.</span>
+    </section>;
+  }
+
+  if (mode === 'compare' && overlayOption) {
+    return <section className="bt-telemetry-view bt-telemetry-overlay" aria-label="Overlaid telemetry comparison" data-paused={paused || undefined}>
+      <header className="bt-telemetry-stack-header">
+        <div className="bt-telemetry-stack-title"><strong>Normalized overlay</strong><span>{chartablePlots.length} selected · each signal mapped to its own 0–100% range</span></div>
+        <span className="bt-telemetry-stack-hint">Hover for raw values</span>
+      </header>
+      <div className="bt-telemetry-plot-stack">
+        <article className="bt-telemetry-plot">
+          <div className="bt-telemetry-plot-canvas">
+            <EChartsSurface option={overlayOption} structureKey={`overlay\u0000${selectedSeries.map((series) => series.key).join('\u0000')}`} ariaLabel="Normalized overlay of selected telemetry signals" />
+          </div>
+        </article>
+      </div>
+      <footer className="bt-telemetry-view-footer">
+        <span><strong>{aligned.timestamps.length.toLocaleString()}</strong> aligned records</span>
+        <span>{chartablePlots.length} overlaid signals</span>
+      </footer>
     </section>;
   }
 

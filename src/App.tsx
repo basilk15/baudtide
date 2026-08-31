@@ -120,6 +120,7 @@ function App() {
   const [connectionDefaults, setConnectionDefaults] = useState<ConnectionDialogDefaults | null>(null);
   const [liveSessions, setLiveSessions] = useState<LiveSessions>({});
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [visualizeCapturePath, setVisualizeCapturePath] = useState<string | null>(null);
   const [theme, setTheme] = useState<AppTheme>('dark');
   const [preferences, setPreferences] = useState<BaudTidePreferences>(defaultPreferences);
   // Native discovery temporarily switches surviving sessions into bounded
@@ -807,9 +808,9 @@ function App() {
         <div hidden={page !== 'sessions'}><SessionsWorkspace workspaceVisible={page === 'sessions'} sessions={sessions} selectedSessionId={selectedSessionId} onSelect={setSelectedSessionId} onRequestConnection={openConnectionDialog} onDisconnect={disconnectSession} onReconnect={reconnectSession} onAutoReconnectChange={setSessionAutoReconnect} onClose={closeSession} onConnectionStateChange={updateSessionState} onNativeSessionEnded={markNativeSessionEnded} onNativeStorageLimit={markNativeStorageLimit} onNativeSessionStartupFailure={releaseNativeSessionAfterStartupFailure} onMonitorRef={(sessionId, monitor) => { monitorRefs.current[sessionId] = monitor; }} /></div>
         {page !== 'sessions' && (page === 'preferences' ? <PreferencesScreen preferences={preferences} nativeEnabled={nativeRuntime} onSave={saveAppPreferences} onThemePreview={setTheme} onChooseLogDirectory={chooseLogDirectory} />
           : page === 'help' ? <HelpFeedbackPanel nativeEnabled={nativeRuntime} openSessionCount={sessions.length} activeSessionCount={sessions.filter((session) => session.native && session.connectionState === 'connected').length} />
-            : page === 'logs' ? <SavedLogsScreen nativeEnabled={nativeRuntime} activeLogPath={activeLogPath} onRequestConnection={openConnectionDialog} onReconnectWithSettings={openReconnectSetup} />
+            : page === 'logs' ? <SavedLogsScreen nativeEnabled={nativeRuntime} activeLogPath={activeLogPath} onRequestConnection={openConnectionDialog} onReconnectWithSettings={openReconnectSetup} onOpenInVisualize={(log) => { setVisualizeCapturePath(log.path); navigate('visualize'); }} />
               : page === 'mobile' ? <MobileShareScreen nativeEnabled={nativeRuntime} sessions={sessions.map<MobileShareSession>((session) => ({ id: session.id, sessionName: session.sessionName, port: session.port, native: session.native, connectionState: session.connectionState }))} selectedSessionId={selectedSessionId} onSelectSession={setSelectedSessionId} />
-              : page === 'visualize' ? <VisualizeScreen nativeEnabled={nativeRuntime} sessions={sessions.map<VisualizeSession>((session) => ({ id: session.id, uiKey: session.uiKey, sessionName: session.sessionName, port: session.port, connectionState: session.connectionState }))} selectedSessionId={selectedSessionId} onSelectSession={setSelectedSessionId} onRequestConnection={openConnectionDialog} />
+              : page === 'visualize' ? <VisualizeScreen nativeEnabled={nativeRuntime} sessions={sessions.map<VisualizeSession>((session) => ({ id: session.id, uiKey: session.uiKey, sessionName: session.sessionName, port: session.port, connectionState: session.connectionState }))} selectedSessionId={selectedSessionId} onSelectSession={setSelectedSessionId} onRequestConnection={openConnectionDialog} requestedCapturePath={visualizeCapturePath} onRequestedCaptureOpened={() => setVisualizeCapturePath(null)} />
               : isWelcomeVisible ? <WelcomeScreen nativeEnabled={nativeRuntime} onConnect={openConnectionDialog} onExplore={() => setWelcomeVisible(false)} />
                 : <PortDiscoveryDashboard nativeEnabled={nativeRuntime} onScan={listNativeSerialPorts} onConnect={openConnectionDialog} onRequestConnection={openConnectionDialog} />)}
       </div>

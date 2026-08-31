@@ -288,6 +288,17 @@ export async function readNativeSavedLog(path: string) {
   return invokeDesktop<SavedLogContent>('read_saved_log', { path });
 }
 
+/** Reads a larger, still bounded capture window for telemetry replay. */
+export async function readNativeTelemetryLog(path: string) {
+  ensureNativeRuntime();
+  return invokeDesktop<SavedLogContent>('read_saved_log_telemetry', { path });
+}
+
+export async function exportNativeTelemetryData(contents: string, format: 'csv' | 'json', defaultName: string) {
+  ensureNativeRuntime();
+  return invokeDesktop<string | null>('export_telemetry_data', { contents, format, defaultName });
+}
+
 export async function deleteNativeSavedLog(path: string) {
   ensureNativeRuntime();
   return invokeDesktop<void>('delete_saved_log', { path });
