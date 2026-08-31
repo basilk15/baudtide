@@ -97,7 +97,7 @@
   display: grid;
   grid-template-columns: 146px minmax(0, 1fr);
   min-height: 74px;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--bt-analysis-rule);
   border-radius: 8px 8px 0 0;
   background: var(--bt-analysis-panel);
@@ -105,20 +105,32 @@
 
 .bt-analysis-ruler-label {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-content: center;
   gap: 7px;
+  min-width: 0;
   padding: 12px;
   border-right: 1px solid var(--bt-analysis-rule);
+  border-top-left-radius: 7px;
   background: var(--bt-analysis-raised);
 }
 
-.bt-analysis-ruler-label .sd-themed-select { width: 100%; }
+.bt-analysis-ruler-label .sd-themed-select {
+  width: 100%;
+  min-width: 0;
+}
+
+.bt-analysis-ruler-label .sd-themed-select-trigger {
+  gap: 6px;
+  padding-inline: 6px;
+}
 
 .bt-analysis-source-track {
   display: flex;
   align-items: stretch;
   min-width: 0;
   overflow-x: auto;
+  border-top-right-radius: 7px;
   scrollbar-color: #425c6b transparent;
 }
 
@@ -322,6 +334,7 @@
 .bt-analysis-actions { display: flex; align-items: flex-end; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .bt-analysis-compact-select { display: grid; width: 112px; gap: 6px; }
 .bt-analysis-compact-select .sd-themed-select { width: 100%; }
+.bt-analysis-actions > .bt-visualize-control { min-height: 44px; }
 
 .bt-analysis-replay {
   display: grid;

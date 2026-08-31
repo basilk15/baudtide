@@ -563,6 +563,7 @@ button:disabled,
 
 .sd-sidebar-status {
   margin: auto var(--space-sm) 0;
+  max-height: var(--space-2xl);
   padding-block-start: var(--space-md);
   border-block-start: 1px solid var(--color-border-subtle);
 }
