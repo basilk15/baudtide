@@ -1,6 +1,56 @@
 /* The restore control is a sibling of the compact sidebar so it never sits beneath the main panel. */
 .sd-sidebar.is-compact .sd-sidebar-brand .sd-icon-control { display: none; }
 
+/* The brand is also the reliable path back to the landing workspace. */
+.sd-sidebar-home {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+}
+
+.sd-sidebar-home:hover {
+  color: var(--color-ink);
+}
+
+.sd-sidebar-home > span {
+  display: inline-block;
+  overflow: hidden;
+  max-width: 180px;
+  white-space: nowrap;
+  transition: opacity .18s ease, visibility .18s ease, max-width .3s cubic-bezier(.22, .75, .24, 1), transform .24s cubic-bezier(.22, .75, .24, 1);
+}
+
+.sd-sidebar-home > span span {
+  color: var(--color-accent);
+}
+
+.sd-sidebar.is-compact .sd-sidebar-home > span {
+  max-width: 0;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(-8px);
+}
+
+.sd-drawer-heading .sd-sidebar-home {
+  color: var(--color-ink);
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+.sd-drawer-heading .sd-sidebar-home > span {
+  color: var(--color-ink);
+}
+
 .sd-sidebar-expand-tab {
   position: fixed;
   z-index: 40;

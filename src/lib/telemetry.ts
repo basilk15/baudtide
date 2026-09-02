@@ -1,7 +1,12 @@
 import type { SerialDataEvent } from './serial';
+import {
+  cloneTelemetryDecoderProfile,
+  parseCustomTelemetryLine,
+  type TelemetryDecoderProfile,
+} from './telemetryDecoders';
 
 /** The serial formats understood by the live telemetry foundation. */
-export type TelemetryFormat = 'json' | 'pairs' | 'csv' | 'tsv';
+export type TelemetryFormat = 'json' | 'pairs' | 'csv' | 'tsv' | 'custom';
 
 export type TelemetryValue = {
   value: number;
@@ -42,6 +47,8 @@ export type TelemetrySessionSnapshot = {
   samples: readonly TelemetrySample[];
   fields: readonly TelemetryField[];
   gaps: readonly TelemetryGap[];
+  /** The explicitly selected decoder, when automatic detection is overridden. */
+  decoderProfile?: TelemetryDecoderProfile;
   detectedSchemas: readonly { format: TelemetryFormat; schemaId: string }[];
   receivedCompleteLineCount: number;
   acceptedSampleCount: number;
@@ -61,12 +68,15 @@ export type TelemetryStoreOptions = {
   maxFieldsPerSession?: number;
   /** A single un-delimited serial line must not grow without a bound. */
   maxLineLength?: number;
+  /** Optional user-defined line decoder. Automatic detection remains the default. */
+  decoderProfile?: TelemetryDecoderProfile;
 };
 
 export type RecordedTelemetryOptions = {
   startedAt?: string;
   endedAt?: string;
   nativeSessionId?: string;
+  decoderProfile?: TelemetryDecoderProfile;
 };
 
 export const DEFAULT_MAX_TELEMETRY_SAMPLES = 10_000;
@@ -458,12 +468,25 @@ export class TelemetryLineParser {
   private readonly detectedSchemaIds = new Set<string>();
   private delimitedHeader: DelimitedHeader | null = null;
   private readonly maxDetectedSchemas: number;
+  private customDecoderProfile?: TelemetryDecoderProfile;
 
-  constructor(options: { maxDetectedSchemas?: number } = {}) {
+  constructor(options: { maxDetectedSchemas?: number; decoderProfile?: TelemetryDecoderProfile } = {}) {
     this.maxDetectedSchemas = positiveInteger(options.maxDetectedSchemas, DEFAULT_MAX_DETECTED_TELEMETRY_SCHEMAS);
+    this.customDecoderProfile = options.decoderProfile;
   }
 
   pushLine(line: string, metadata: LineMetadata): ParsedRecord[] {
+    if (this.customDecoderProfile) {
+      const values = parseCustomTelemetryLine(line, this.customDecoderProfile);
+      return values
+        ? this.accept({
+            ...metadata,
+            format: 'custom',
+            schemaId: buildSchemaId('custom', values),
+            values,
+          })
+        : [];
+    }
     const json = parseJsonLine(line);
     if (json.matched) return json.records.flatMap((record) => this.accept({ ...metadata, ...record }));
 
@@ -483,6 +506,16 @@ export class TelemetryLineParser {
   resetForStreamBoundary() {
     this.pendingBySchema.clear();
     this.delimitedHeader = null;
+  }
+
+  setDecoderProfile(profile?: TelemetryDecoderProfile) {
+    this.customDecoderProfile = profile;
+    this.detectedSchemaIds.clear();
+    this.resetForStreamBoundary();
+  }
+
+  decoderProfile() {
+    return this.customDecoderProfile;
   }
 
   detectedSchemas() {
@@ -550,6 +583,7 @@ export class TelemetrySessionStore {
   private readonly maxDetectedSchemasPerSession: number;
   private readonly maxFieldsPerSession: number;
   private readonly maxLineLength: number;
+  private readonly decoderProfile?: TelemetryDecoderProfile;
   private readonly sessions = new Map<string, InternalSession>();
   private readonly subscribers = new Map<string, Set<() => void>>();
   /** Cached empty snapshots are bounded except for active external subscribers. */
@@ -562,6 +596,7 @@ export class TelemetrySessionStore {
     this.maxDetectedSchemasPerSession = positiveInteger(options.maxDetectedSchemasPerSession, DEFAULT_MAX_DETECTED_TELEMETRY_SCHEMAS);
     this.maxFieldsPerSession = positiveInteger(options.maxFieldsPerSession, DEFAULT_MAX_TELEMETRY_FIELDS);
     this.maxLineLength = positiveInteger(options.maxLineLength, DEFAULT_MAX_TELEMETRY_LINE_LENGTH);
+    this.decoderProfile = options.decoderProfile;
   }
 
   /** Ingest one event after LiveMonitor has placed it in native sequence order. */
@@ -628,6 +663,20 @@ export class TelemetrySessionStore {
     return session.snapshot;
   }
 
+  /** Replace the decoder for one stable session and rebuild its chart cache. */
+  setDecoderProfile(sessionKey: string, profile?: TelemetryDecoderProfile) {
+    if (!sessionKey) return;
+    const session = this.ensureSession(sessionKey);
+    session.assembler.reset();
+    session.parser.setDecoderProfile(profile);
+    session.samples = [];
+    session.sampleWriteIndex = 0;
+    session.fields.clear();
+    session.acceptedSampleCount = 0;
+    this.invalidateSnapshot(session);
+    this.emit(sessionKey);
+  }
+
   /** Release a closed UI session explicitly when a future owner no longer needs it. */
   removeSession(sessionKey: string) {
     this.sessions.delete(sessionKey);
@@ -653,7 +702,10 @@ export class TelemetrySessionStore {
     }
     const created: InternalSession = {
       assembler: new Utf8LineAssembler({ maxLineLength: this.maxLineLength }),
-      parser: new TelemetryLineParser({ maxDetectedSchemas: this.maxDetectedSchemasPerSession }),
+      parser: new TelemetryLineParser({
+        maxDetectedSchemas: this.maxDetectedSchemasPerSession,
+        decoderProfile: this.decoderProfile,
+      }),
       samples: [],
       sampleWriteIndex: 0,
       maxSamplesPerSession: this.maxSamplesPerSession,
@@ -755,7 +807,7 @@ export function telemetrySnapshotFromCapture(
   text: string,
   options: RecordedTelemetryOptions = {},
 ): TelemetrySessionSnapshot {
-  const store = new TelemetrySessionStore();
+  const store = new TelemetrySessionStore({ decoderProfile: options.decoderProfile });
   const lines = text.split(/\r\n|\r|\n/u);
   const startCandidate = options.startedAt ? Date.parse(options.startedAt) : Number.NaN;
   const endCandidate = options.endedAt ? Date.parse(options.endedAt) : Number.NaN;
@@ -806,6 +858,7 @@ function createSnapshot(sessionKey: string, session: InternalSession): Telemetry
       formats: Object.freeze([...field.formats]),
     }))),
     gaps: Object.freeze(session.gaps.map((gap) => Object.freeze({ ...gap }))),
+    decoderProfile: cloneTelemetryDecoderProfile(session.parser.decoderProfile()),
     detectedSchemas: Object.freeze(session.parser.detectedSchemas().map((schema) => Object.freeze({ ...schema }))),
     receivedCompleteLineCount: session.receivedCompleteLineCount,
     acceptedSampleCount: session.acceptedSampleCount,
@@ -819,6 +872,7 @@ function emptySnapshot(sessionKey: string): TelemetrySessionSnapshot {
     samples: Object.freeze([]),
     fields: Object.freeze([]),
     gaps: Object.freeze([]),
+    decoderProfile: undefined,
     detectedSchemas: Object.freeze([]),
     receivedCompleteLineCount: 0,
     acceptedSampleCount: 0,

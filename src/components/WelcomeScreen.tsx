@@ -1,32 +1,122 @@
+import { useEffect, useState } from 'react';
 import { Activity, ArrowRight, Radio, ShieldCheck, Sparkles } from 'lucide-react';
-import './welcome-screen.css';
+import './home-screen.css';
 import './welcome-motion.css';
 
 type WelcomeScreenProps = { nativeEnabled: boolean; onConnect: () => void; onExplore: () => void };
 
+type ChartPoint = { x: number; y: number };
+
+const chartBounds = { left: 24, right: 656, top: 16, bottom: 292 };
+const sampleCount = 40;
+
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+/** A deterministic, shifting signal is clearer than a motionless empty-state chart. */
+function makeTelemetryPoints(frame: number, channel: 'primary' | 'secondary') {
+  return Array.from({ length: sampleCount }, (_, index) => {
+    const progress = index / (sampleCount - 1);
+    const sample = frame * 0.31 + index * 0.42;
+    const primary = .52
+      + .155 * Math.sin(sample * 1.16)
+      + .11 * Math.sin(sample * .43 + 1.2)
+      + .053 * Math.sin(sample * 2.37 - .5)
+      + .021 * Math.sin(sample * 4.7);
+    const secondary = .46
+      + .09 * Math.sin(sample * .67 + .85)
+      + .046 * Math.sin(sample * 1.47 - .2)
+      + .018 * Math.sin(sample * 3.08 + .5);
+    const value = clamp(channel === 'primary' ? primary : secondary, .09, .91);
+    return {
+      x: chartBounds.left + progress * (chartBounds.right - chartBounds.left),
+      y: chartBounds.bottom - value * (chartBounds.bottom - chartBounds.top),
+    };
+  });
+}
+
+function smoothPath(points: ChartPoint[]) {
+  if (!points.length) return '';
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+  let path = `M ${points[0].x} ${points[0].y}`;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const previous = points[index - 1] ?? points[index];
+    const current = points[index];
+    const next = points[index + 1];
+    const afterNext = points[index + 2] ?? next;
+    const controlOneX = current.x + (next.x - previous.x) / 6;
+    const controlOneY = current.y + (next.y - previous.y) / 6;
+    const controlTwoX = next.x - (afterNext.x - current.x) / 6;
+    const controlTwoY = next.y - (afterNext.y - current.y) / 6;
+    path += ` C ${controlOneX} ${controlOneY}, ${controlTwoX} ${controlTwoY}, ${next.x} ${next.y}`;
+  }
+  return path;
+}
+
 /** The first-run surface; connection setup itself stays in the shared dialog. */
 export function WelcomeScreen({ nativeEnabled, onConnect, onExplore }: WelcomeScreenProps) {
-  return <section className="sd-welcome" aria-labelledby="welcome-title">
-    <div className="sd-welcome-copy">
-      <p className="sd-welcome-eyebrow"><Sparkles size={13} /> SERIAL MONITORING, MADE CALM</p>
-      <h1 id="welcome-title">A clear view of every byte in motion.</h1>
-      <p className="sd-welcome-intro">Connect a board, open a terminal, and keep the signal in focus. BaudTide is ready when your device is.</p>
-      <div className="sd-welcome-actions"><button className="sd-welcome-primary" type="button" onClick={onConnect}><Radio size={17} /> Connect a serial device <ArrowRight size={16} /></button><button className="sd-welcome-secondary" type="button" onClick={onExplore}>Explore device discovery</button></div>
-      <p className="sd-welcome-runtime"><span className={nativeEnabled ? 'is-ready' : ''} />{nativeEnabled ? 'Desktop serial backend is ready' : 'Preview mode — connect in the desktop app'}</p>
-    </div>
-    <div className="sd-welcome-visual" aria-hidden="true">
-      <div className="sd-welcome-instrument">
-        <div className="sd-welcome-instrument-heading"><span>Illustrative trace</span><span>3 fields · 30 s window</span></div>
-        <svg className="sd-welcome-trace" viewBox="0 0 620 300" role="img" aria-label="Illustrative telemetry trace">
-          <path className="sd-welcome-trace-grid" d="M16 34H604M16 92H604M16 150H604M16 208H604M16 266H604M52 14V286M156 14V286M260 14V286M364 14V286M468 14V286M572 14V286" />
-          <path className="sd-welcome-trace-secondary" d="M16 205C47 198 54 188 79 195S118 224 145 211S188 171 214 180S248 209 276 199S321 163 347 171S390 221 418 206S463 161 489 176S532 216 558 199S585 174 604 181" />
-          <path className="sd-welcome-trace-primary" d="M16 168C35 168 40 112 61 128S82 185 104 161S123 96 146 111S171 215 192 195S218 123 239 144S260 182 281 159S308 68 332 96S356 236 379 211S407 130 430 150S452 184 474 162S503 86 526 111S554 199 575 177S593 142 604 147" />
-          <circle className="sd-welcome-trace-point" cx="526" cy="111" r="5" />
-        </svg>
-        <div className="sd-welcome-instrument-footer"><span><i className="is-live" /> Signal ready to inspect</span><span className="sd-welcome-instrument-unit"><Activity size={14} /> voltage / temperature / current</span></div>
+  const [signalFrame, setSignalFrame] = useState(0);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setSignalFrame((frame) => frame + 1), 650);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const runtimeLabel = nativeEnabled ? 'Desktop bridge online' : 'Preview mode';
+  const primaryPoints = makeTelemetryPoints(signalFrame, 'primary');
+  const secondaryPoints = makeTelemetryPoints(signalFrame, 'secondary');
+  const primaryPath = smoothPath(primaryPoints);
+  const secondaryPath = smoothPath(secondaryPoints);
+  const lastPrimaryPoint = primaryPoints[primaryPoints.length - 1];
+  const pulse = 48.2 + Math.sin(signalFrame * .47) * .7 + Math.sin(signalFrame * .19) * .25;
+  const throughput = 1.18 + Math.sin(signalFrame * .3) * .12 + Math.sin(signalFrame * .81) * .04;
+
+  return <section className="bt-home" aria-labelledby="welcome-title">
+    <div className="bt-home-main">
+      <div className="bt-home-copy">
+        <div className="bt-home-kicker"><span><Sparkles size={14} /> BaudTide workspace</span><span className={`bt-home-kicker-status ${nativeEnabled ? 'is-ready' : ''}`}><i />{runtimeLabel}</span></div>
+        <h1 id="welcome-title" className="bt-home-title">Bring every <em>signal</em> into focus.</h1>
+        <p className="bt-home-intro">A calm, precise place to connect hardware, read the stream, and understand what your device is saying—one byte at a time.</p>
+        <div className="bt-home-actions">
+          <button className="bt-home-primary" type="button" onClick={onConnect}><Radio size={18} /> Connect a device <ArrowRight size={17} /></button>
+          <button className="bt-home-secondary" type="button" onClick={onExplore}>Browse available ports</button>
+        </div>
+        <div className="bt-home-runtime"><span className={nativeEnabled ? 'is-ready' : ''} />{nativeEnabled ? 'Your desktop serial backend is ready to receive a connection.' : 'Open BaudTide on desktop to connect a local serial device.'}</div>
       </div>
-      <div className="sd-welcome-float sd-welcome-float-status"><ShieldCheck size={17} /><span><small>SESSION</small><strong>Ready to inspect</strong></span></div>
+
+      <div className="bt-home-visual" aria-hidden="true">
+        <div className="bt-home-console">
+          <div className="bt-home-console-header">
+            <div className="bt-home-console-source"><span className="bt-home-console-mark"><Activity size={15} /></span><span><small>TELEMETRY PREVIEW</small><strong>Rolling signal simulation</strong></span></div>
+            <span className="bt-home-live-badge"><i /> sampling</span>
+          </div>
+          <div className="bt-home-chart">
+            <div className="bt-home-chart-label"><span>Signal view</span><span>rolling 30.0 s</span></div>
+            <svg viewBox="0 0 680 314" focusable="false">
+              <defs>
+                <linearGradient id="bt-home-trace-fill" x1="0" x2="0" y1="0" y2="1">
+                  <stop offset="0" stopColor="currentColor" stopOpacity=".24" />
+                  <stop offset="1" stopColor="currentColor" stopOpacity="0" />
+                </linearGradient>
+              </defs>
+              <path className="bt-home-grid" d="M24 38H656M24 100H656M24 162H656M24 224H656M24 286H656M104 16V292M224 16V292M344 16V292M464 16V292M584 16V292" />
+              <path className="bt-home-fill" d={`${primaryPath} L ${chartBounds.right} ${chartBounds.bottom} L ${chartBounds.left} ${chartBounds.bottom} Z`} />
+              <path className="bt-home-trace-secondary" d={secondaryPath} />
+              <path className="bt-home-trace-primary" d={primaryPath} />
+              <circle className="bt-home-trace-point" cx={lastPrimaryPoint.x} cy={lastPrimaryPoint.y} r="6" />
+            </svg>
+            <div className="bt-home-readout"><span><i /> RX {throughput.toFixed(2)} kB/s</span><span>{pulse.toFixed(1)} Hz · 3 channels</span></div>
+          </div>
+          <div className="bt-home-console-footer"><span><small>PORT</small><strong>Choose a device to begin</strong></span><span><small>ENCODING</small><strong>UTF-8</strong></span><span><small>CAPTURE</small><strong>Local only</strong></span></div>
+        </div>
+      </div>
     </div>
-    <div className="sd-welcome-features"><article><span><Radio size={17} /></span><div><strong>Device-first setup</strong><p>Pick a detected port or enter one manually.</p></div></article><article><span><Activity size={17} /></span><div><strong>Focused live terminals</strong><p>Keep each device in its own monitor tab.</p></div></article><article><span><ShieldCheck size={17} /></span><div><strong>Local by design</strong><p>Your device traffic stays on this machine.</p></div></article></div>
+
+    <div className="bt-home-paths">
+      <article><span><b>01</b><Radio size={17} /></span><div><strong>Connect with confidence</strong><p>Choose a detected port or enter one directly.</p></div></article>
+      <article><span><b>02</b><Activity size={17} /></span><div><strong>Watch the stream</strong><p>Keep each device in its own focused terminal.</p></div></article>
+      <article><span><b>03</b><ShieldCheck size={17} /></span><div><strong>Keep it yours</strong><p>Device traffic and captures stay on this machine.</p></div></article>
+    </div>
   </section>;
 }

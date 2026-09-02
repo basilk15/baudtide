@@ -21,6 +21,7 @@ BaudTide is an open-source serial terminal and monitor built for embedded develo
 - Find available serial ports automatically, or enter a port path yourself.
 - Open several devices at once in tabs or side-by-side terminal views.
 - Detect structured telemetry from live serial output and visualize selected sessions.
+- Define reusable custom line decoder profiles for delimiter-separated numeric telemetry.
 - Send text or hexadecimal data and keep connection settings separate for each device.
 - Pause or filter noisy output without losing the raw log.
 - Save named terminal layouts and return to them later.
@@ -45,7 +46,11 @@ numeric records from these common shapes:
 BaudTide waits for two records with the same field schema before plotting, so
 ordinary diagnostic lines containing an isolated number do not become signals.
 Delimiter-free numeric columns without a header, binary packets, and arbitrary
-non-numeric text still need a device-specific decoder.
+non-numeric text still need a device-specific decoder. For delimiter-separated
+numeric lines, open **Visualize → Decoder** to map columns to named signals,
+optionally match a literal line prefix, and save the profile locally for reuse.
+The decoder only changes the analysis view; terminal output and raw captures
+remain unchanged.
 
 ## Quick start
 
@@ -86,6 +91,17 @@ python3 scripts/test-monitor.py
 Copy the printed `/dev/pts/N` path into the connection dialog and use 115200
 baud. The helper also prints bytes sent back from BaudTide. If the installed
 `baudtide-demo-data` command is available, it can be used in the same way.
+
+For anonymous numeric columns that require a custom decoder profile, run mode
+2 instead:
+
+```bash
+python3 scripts/test-monitor.py 2
+```
+
+It streams comma-separated temperature, humidity, voltage, RPM, and tick
+values with no prefix or header. In **Visualize → Decoder**, choose **Comma**
+and map columns 1–5 to those signals.
 
 To exercise every supported telemetry shape through a virtual serial port:
 

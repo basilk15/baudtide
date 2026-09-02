@@ -20,6 +20,7 @@ import { defaultPreferences, loadPreferences, savePreferences, type BaudTidePref
 import { stableTerminalSessionIdentity, type SavedSessionWorkspace, type TerminalLayout } from './lib/sessionWorkspaces';
 import { isDesktopRuntime } from './lib/desktop';
 import { Moon, Radio, Sun, TerminalSquare, X } from 'lucide-react';
+import baudTideMark from './assets/signaldeck-mark.png';
 import './light-theme.css';
 import './components/theme-toggle.css';
 import {
@@ -204,6 +205,11 @@ function App() {
       setPage(nextPage);
     }
     if (nextPage !== 'dashboard') setWelcomeVisible(false);
+  };
+  const showHome = () => {
+    mainScrollRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    setWelcomeVisible(true);
+    setPage('dashboard');
   };
   const selectedMonitor = () => selectedSessionId ? monitorRefs.current[selectedSessionId] : null;
   const commandActions = useMemo<CommandPaletteAction[]>(() => [
@@ -797,9 +803,13 @@ function App() {
   const closeStartup = useCallback(() => setStartupVisible(false), []);
   if (isStartupVisible) return <AppStartupScreen onComplete={closeStartup} />;
   return <div ref={shellRef} className={`signaldeck-shell theme-${theme} zoom-${Math.round(zoomRef.current * 100)}`} style={{ zoom: zoomRef.current }}>
-    <SidebarNavigation activePage={page} onNavigate={navigate} onPreferences={() => navigate('preferences')} onHelp={() => navigate('help')} />
+    <SidebarNavigation activePage={page} onNavigate={navigate} onHome={showHome} onPreferences={() => navigate('preferences')} onHelp={() => navigate('help')} />
     <section ref={mainScrollRef} className="signaldeck-main">
       <header className="signaldeck-topbar">
+        <div className="sd-mobile-brand" aria-label="BaudTide">
+          <img src={baudTideMark} alt="" />
+          <span>baud<span>tide</span></span>
+        </div>
         <div className="signaldeck-breadcrumb"><span>BaudTide</span><b>/</b><strong>{page === 'sessions' && selectedSession ? selectedSession.sessionName : pageNames[page]}</strong></div>
         <div className={`signaldeck-preview-label ${nativeRuntime ? 'native' : ''}`}>{nativeRuntime ? 'Desktop mode · serial backend ready' : 'Browser preview · no serial backend'}</div>
         <div className="signaldeck-topbar-actions"><CommandPalette actions={commandActions} onAction={runCommand} /><TopThemeToggle theme={theme} onThemeChange={(nextTheme) => { setTheme(nextTheme); void saveAppPreferences({ ...preferences, appearance: { theme: nextTheme } }); }} /><NotificationsPanel notifications={notifications} onMarkRead={markRead} onMarkAllRead={markAllRead} /><WorkspaceProfileMenu onPreferences={() => navigate('preferences')} /></div>

@@ -40,6 +40,9 @@ const DEVELOPMENT_RESTART_EXIT_CODE = 86;
 const APPLICATION_SCHEME = 'baudtide';
 const APPLICATION_HOST = 'app';
 const PRODUCTION_CSP = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; media-src 'none'; worker-src 'none'";
+const WINDOW_ICON_PATH = app.isPackaged
+  ? path.join(process.resourcesPath, 'icons', 'icon.png')
+  : path.join(projectRoot, 'build', 'icons', 'icon.png');
 
 protocol.registerSchemesAsPrivileged([{
   scheme: APPLICATION_SCHEME,
@@ -61,6 +64,7 @@ function linuxBackendDataPath() {
 
 app.setName(APP_NAME);
 app.setAppUserModelId(APP_ID);
+if (process.platform === 'linux') app.setDesktopName(`${APP_ID}.desktop`);
 
 // Keep Rust captures and preferences in the established Linux app-data path.
 // Chromium cookies, cache, and session state remain isolated in Electron's own
@@ -577,6 +581,7 @@ function registerPackagedApplicationProtocol() {
 async function createMainWindow() {
   const window = new BrowserWindow({
     title: APP_NAME,
+    icon: WINDOW_ICON_PATH,
     width: 1320,
     height: 850,
     minWidth: 900,

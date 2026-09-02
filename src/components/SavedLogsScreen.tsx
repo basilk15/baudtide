@@ -441,9 +441,9 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
 
     <section className="sd-saved-logs-toolbar">
       <label className="sd-saved-logs-search"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search metadata and captured content" /></label>
-      <label className="sd-saved-logs-search-scope"><input type="checkbox" checked={fullSearch} onChange={(event) => setFullSearch(event.target.checked)} /> Search complete captures</label>
+      <label className="sd-saved-logs-search-scope"><input type="checkbox" checked={fullSearch} onChange={(event) => setFullSearch(event.target.checked)} /><span>Search complete captures</span></label>
       {isSearching && fullSearch && <button className="sd-secondary-button" type="button" onClick={cancelCompleteSearch}>Cancel search</button>}
-      <span>{isSearching ? 'Searching…' : `${organizedLogs.length} ${organizedLogs.length === 1 ? 'log' : 'logs'}`}</span>
+      <span className="sd-saved-logs-count">{isSearching ? 'Searching…' : `${organizedLogs.length} ${organizedLogs.length === 1 ? 'log' : 'logs'}`}</span>
     </section>
 
     <section className="sd-saved-log-organizer" aria-label="Organize saved logs">
