@@ -79,7 +79,8 @@ export function ConnectionDialog({
   const titleId = useId();
   const descriptionId = useId();
   const dialogRef = useRef<HTMLElement>(null);
-  const sessionNameRef = useRef<HTMLInputElement>(null);
+  const dialogScrollRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [ports, setPorts] = useState(initialPorts);
   const [scanState, setScanState] = useState<PortScanState>(initialScanState);
   const [port, setPort] = useState(initialPort ?? initialPorts[0]?.path ?? '');
@@ -109,7 +110,16 @@ export function ConnectionDialog({
     setErrors({});
     setSubmitError('');
     setSubmitting(false);
-    window.setTimeout(() => sessionNameRef.current?.focus(), 0);
+
+    // Keep the opening context visible. Focusing a field lower in the form
+    // makes the browser scroll the dialog past its title and recent presets.
+    const resetOpeningPosition = () => {
+      dialogScrollRef.current?.scrollTo({ top: 0 });
+      closeButtonRef.current?.focus({ preventScroll: true });
+    };
+    resetOpeningPosition();
+    const animationFrame = window.requestAnimationFrame(resetOpeningPosition);
+    return () => window.cancelAnimationFrame(animationFrame);
   }, [isOpen, initialPorts, initialPort, initialBaudRate, initialSessionName, initialSettings, initialScanState]);
 
   useEffect(() => {
@@ -258,9 +268,11 @@ export function ConnectionDialog({
         onKeyDown={trapFocus}
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <button className="sd-dialog-close" type="button" onClick={onClose} aria-label="Close connection dialog"><X size={18} /></button>
-        <div className="sd-dialog-scroll">
-          <div className="sd-dialog-icon"><Radio size={21} /></div>
+        <div ref={dialogScrollRef} className="sd-dialog-scroll">
+          <div className="sd-dialog-heading-row">
+            <div className="sd-dialog-icon"><Radio size={21} /></div>
+            <button ref={closeButtonRef} className="sd-dialog-close" type="button" onClick={onClose} aria-label="Close connection dialog"><X size={18} /></button>
+          </div>
           <p className="sd-dialog-eyebrow">NEW LIVE TERMINAL</p>
           <h2 id={titleId}>Connect a device</h2>
           <p id={descriptionId} className="sd-dialog-subtitle">{nativeEnabled ? 'Choose a port and name the session. BaudTide will open it and start a raw local log immediately.' : 'Choose a port, name the session, and start monitoring. This browser preview does not open devices.'}</p>
@@ -300,7 +312,7 @@ export function ConnectionDialog({
               {errors.port && <small className="sd-field-error">{errors.port}</small>}
             </label>
             {manualPort && <label className="sd-form-field sd-full-width">Manual port path
-              <input autoComplete="off" value={port} onChange={(event) => { setPort(event.target.value); setErrors((current) => ({ ...current, port: undefined })); }} placeholder="e.g. /dev/ttyUSB0" aria-invalid={Boolean(errors.port)} />
+              <input className="sd-port-path-input" autoComplete="off" value={port} onChange={(event) => { setPort(event.target.value); setErrors((current) => ({ ...current, port: undefined })); }} placeholder="e.g. /dev/ttyUSB0" aria-invalid={Boolean(errors.port)} />
             </label>}
             <label className="sd-form-field">Baud rate
               <ThemedSelect label="Baud rate" value={customBaud ? '__custom__' : baudRate} placeholder="Select a baud rate" invalid={Boolean(errors.baudRate)} onChange={(value) => {
@@ -311,7 +323,7 @@ export function ConnectionDialog({
               {errors.baudRate && <small className="sd-field-error">{errors.baudRate}</small>}
             </label>
             <label className="sd-form-field">Session name
-              <input ref={sessionNameRef} autoComplete="off" value={sessionName} onChange={(event) => { setSessionName(event.target.value); setErrors((current) => ({ ...current, sessionName: undefined })); }} placeholder="e.g. Main controller" aria-invalid={Boolean(errors.sessionName)} />
+              <input autoComplete="off" value={sessionName} onChange={(event) => { setSessionName(event.target.value); setErrors((current) => ({ ...current, sessionName: undefined })); }} placeholder="e.g. Main controller" aria-invalid={Boolean(errors.sessionName)} />
               {errors.sessionName && <small className="sd-field-error">{errors.sessionName}</small>}
             </label>
             <fieldset className="sd-serial-settings sd-full-width">

@@ -145,6 +145,10 @@ textarea,
   gap: var(--space-xs);
 }
 
+.sd-mobile-brand {
+  display: none;
+}
+
 .signaldeck-content {
   width: min(100%, 1440px);
   min-height: calc(100dvh - 64px);
@@ -1653,11 +1657,40 @@ button:disabled,
 @media (max-width: 760px) {
   .signaldeck-topbar {
     min-height: 58px;
-    padding-inline: var(--space-md);
+    padding-inline: calc(var(--space-md) + 3.25rem) var(--space-md);
   }
 
   .signaldeck-topbar-actions {
     margin-inline-start: auto;
+  }
+
+  .sd-mobile-brand {
+    position: fixed;
+    z-index: 31;
+    top: calc(var(--space-sm) + 6px);
+    inset-inline-start: calc(var(--space-sm) + 3.25rem);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    color: var(--color-ink);
+    font-family: var(--font-display);
+    font-size: var(--text-lg);
+    font-weight: 700;
+    letter-spacing: -0.04em;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .sd-mobile-brand img {
+    display: block;
+    width: 28px;
+    height: 28px;
+    flex: 0 0 auto;
+    object-fit: contain;
+  }
+
+  .sd-mobile-brand span span {
+    color: var(--color-accent);
   }
 
   .sd-mobile-menu-button,
@@ -1730,6 +1763,12 @@ button:disabled,
   .sd-port-row,
   .sd-saved-log-row {
     min-width: 0;
+  }
+}
+
+@media (max-width: 460px) {
+  .sd-mobile-brand > span {
+    display: none;
   }
 }
 

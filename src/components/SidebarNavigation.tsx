@@ -29,6 +29,7 @@ type SidebarNavigationProps = {
   activePage?: SignalDeckPage;
   items?: NavigationItem[];
   onNavigate?: (page: SignalDeckPage) => void;
+  onHome?: () => void;
   onPreferences?: () => void;
   onHelp?: () => void;
 };
@@ -38,6 +39,7 @@ export function SidebarNavigation({
   activePage = 'dashboard',
   items = defaultItems,
   onNavigate,
+  onHome,
   onPreferences,
   onHelp,
 }: SidebarNavigationProps) {
@@ -57,6 +59,11 @@ export function SidebarNavigation({
 
   const visit = (page: SignalDeckPage) => {
     onNavigate?.(page);
+    setDrawerOpen(false);
+  };
+
+  const goHome = () => {
+    onHome?.();
     setDrawerOpen(false);
   };
 
@@ -90,7 +97,9 @@ export function SidebarNavigation({
     <>
       <aside className={`sd-sidebar ${isCompact ? 'is-compact' : ''}`} aria-label="BaudTide sidebar">
         <div className="sd-sidebar-brand">
-          <img className="sd-brand-mark" src={baudTideMark} alt="BaudTide" /><span>baud<span>tide</span></span>
+          <button className="sd-sidebar-home" type="button" onClick={goHome} aria-label="Go to BaudTide home" title="BaudTide home">
+            <img className="sd-brand-mark" src={baudTideMark} alt="" /><span>baud<span>tide</span></span>
+          </button>
           <button className="sd-icon-control" onClick={() => setCompact(true)} aria-label="Collapse sidebar" title="Collapse sidebar">
             <PanelLeftClose size={18} />
           </button>
@@ -116,7 +125,7 @@ export function SidebarNavigation({
       {isDrawerMounted && (
         <div className={`sd-drawer-backdrop ${isDrawerOpen ? 'is-open' : 'is-closing'}`} aria-hidden={!isDrawerOpen} inert={!isDrawerOpen} onMouseDown={() => setDrawerOpen(false)}>
           <aside className={`sd-mobile-drawer ${isDrawerOpen ? 'is-open' : 'is-closing'}`} aria-label="Mobile navigation" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="sd-drawer-heading"><strong><img className="sd-brand-mark" src={baudTideMark} alt="BaudTide" />baud<span>tide</span></strong><button className="sd-icon-control" onClick={() => setDrawerOpen(false)} aria-label="Close navigation"><X size={19} /></button></div>
+            <div className="sd-drawer-heading"><button className="sd-sidebar-home" type="button" onClick={goHome} aria-label="Go to BaudTide home"><img className="sd-brand-mark" src={baudTideMark} alt="" /><span>baud<span>tide</span></span></button><button className="sd-icon-control" onClick={() => setDrawerOpen(false)} aria-label="Close navigation"><X size={19} /></button></div>
             {menu(true)}
             <p className="sd-sidebar-status">Local workspace</p>
           </aside>

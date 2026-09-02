@@ -4,6 +4,9 @@
 The script uses only the Python standard library. Run it, copy the printed
 ``/dev/pts/N`` path into BaudTide, and stop it with Ctrl-C when finished.
 Anything BaudTide sends back to the virtual device is printed to the terminal.
+
+Pass ``2`` to emit anonymous, comma-separated numeric columns. That mode is
+intended for testing BaudTide custom decoder profiles.
 """
 
 from __future__ import annotations
@@ -25,7 +28,14 @@ from threading import Event
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Stream dummy JSON telemetry through a virtual serial port."
+        description="Stream dummy telemetry through a virtual serial port."
+    )
+    parser.add_argument(
+        "mode",
+        nargs="?",
+        choices=("1", "2"),
+        default="1",
+        help="1: named JSON telemetry (default); 2: anonymous numeric columns for custom decoder testing",
     )
     parser.add_argument(
         "--interval",
@@ -36,14 +46,25 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def sample(tick: int, elapsed: float) -> bytes:
-    values = {
+def sample_values(tick: int, elapsed: float) -> dict[str, float | int]:
+    return {
         "temperature": round(23.5 + 2.8 * math.sin(elapsed / 8.0), 2),
         "humidity": round(44.0 + 8.5 * math.sin(elapsed / 11.0 + 0.7), 2),
         "voltage": round(3.30 + 0.08 * math.sin(elapsed / 5.0 + 1.1), 3),
         "rpm": round(1000 + 125 * math.sin(elapsed / 4.5), 1),
         "tick": tick,
     }
+
+
+def sample(tick: int, elapsed: float, mode: str) -> bytes:
+    values = sample_values(tick, elapsed)
+    if mode == "2":
+        # Deliberately emit no prefix or header. Automatic detection ignores
+        # these anonymous columns; a custom comma decoder can map columns 1–5.
+        return (
+            f"{values['temperature']},{values['humidity']},{values['voltage']},"
+            f"{values['rpm']},{values['tick']}\n"
+        ).encode()
     return (json.dumps(values, separators=(",", ":")) + "\n").encode()
 
 
@@ -89,7 +110,14 @@ def main() -> int:
 
     print(f"BAUDTIDE_PORT={port}", flush=True)
     print(f"Open {port} at 115200 baud in BaudTide.", flush=True)
-    print("Streaming temperature, humidity, voltage, rpm, and tick. Ctrl-C stops it.", flush=True)
+    if args.mode == "2":
+        print(
+            "Streaming anonymous comma-separated columns: temperature, humidity, voltage, rpm, tick. "
+            "Use a custom decoder with comma separation and columns 1–5. Ctrl-C stops it.",
+            flush=True,
+        )
+    else:
+        print("Streaming JSON temperature, humidity, voltage, rpm, and tick. Ctrl-C stops it.", flush=True)
 
     started = time.monotonic()
     next_sample = started
@@ -109,7 +137,7 @@ def main() -> int:
 
             now = time.monotonic()
             if now >= next_sample:
-                if not write_all(master_fd, sample(tick, now - started), stop):
+                if not write_all(master_fd, sample(tick, now - started, args.mode), stop):
                     break
                 tick += 1
                 next_sample += args.interval

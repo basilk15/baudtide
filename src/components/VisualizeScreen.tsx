@@ -76,7 +76,7 @@ function formatSummary(snapshot: TelemetrySessionSnapshot) {
   const formats = new Set(snapshot.detectedSchemas.map((schema) => schema.format));
   if (!formats.size) snapshot.fields.forEach((field) => field.formats.forEach((format) => formats.add(format)));
   if (!formats.size) return 'No stable format detected';
-  const labels = [...formats].map((format) => ({ json: 'JSON', pairs: 'Key/value', csv: 'CSV', tsv: 'TSV' })[format]);
+  const labels = [...formats].map((format) => ({ json: 'JSON', pairs: 'Key/value', csv: 'CSV', tsv: 'TSV', custom: 'Custom' })[format]);
   return labels.join(' · ');
 }
 

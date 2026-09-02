@@ -13,6 +13,8 @@ files:
 extraResources:
   - from: src-native/target/release/baudtide-backend
     to: bin/baudtide-backend
+  - from: build/icons/icon.png
+    to: icons/icon.png
 linux:
   category: Development
   icon: icon.png

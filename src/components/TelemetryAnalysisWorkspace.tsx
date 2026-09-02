@@ -25,8 +25,10 @@ import {
   type TelemetrySessionSnapshot,
   type TelemetryValue,
 } from '../lib/telemetry';
+import type { TelemetryDecoderProfile } from '../lib/telemetryDecoders';
 import { TELEMETRY_SERIES_COLORS } from '../lib/telemetryChart';
 import { TelemetryCharts, type ChartMode } from './TelemetryECharts';
+import { TelemetryDecoderPanel, type TelemetryDecoderSource } from './TelemetryDecoderPanel';
 import { ThemedSelect } from './ThemedSelect';
 import type { VisualizeScreenProps, VisualizeSession } from './VisualizeScreen';
 import './telemetry-analysis-workspace.css';
@@ -41,7 +43,9 @@ type RecordedSource = {
   detail: string;
   log: SavedLog;
   snapshot: TelemetrySessionSnapshot;
+  rawText: string;
   truncated: boolean;
+  decoderProfile?: TelemetryDecoderProfile;
 };
 
 type LiveSource = {
@@ -252,6 +256,7 @@ export function TelemetryAnalysisWorkspace({
         detail: log.port ?? log.fileName,
         log,
         snapshot,
+        rawText: content.text,
         truncated: content.truncated,
       };
       setRecordedSources((current) => ({ ...current, [id]: source }));
@@ -319,6 +324,74 @@ export function TelemetryAnalysisWorkspace({
     }
     const log = logs.find((candidate) => recordedSourceId(candidate.path) === sourceChoice);
     if (log) void loadCapture(log).then(() => setSourceChoice(''));
+  };
+
+  const applyDecoder = (sourceId: string, profile?: TelemetryDecoderProfile) => {
+    const source = sourcesById.get(sourceId);
+    if (!source) return;
+    if (source.kind === 'live') {
+      // The live store remains the sole ordered telemetry observer. Selecting a
+      // profile only swaps its optional parser; terminal display and raw
+      // capture continue through the existing LiveMonitor path unchanged.
+      liveTelemetryStore.setDecoderProfile(source.session.uiKey, profile);
+    } else {
+      const snapshot = telemetrySnapshotFromCapture(source.id, source.rawText, {
+        startedAt: source.log.startedAt ?? source.log.modifiedAt,
+        endedAt: source.log.endedAt,
+        nativeSessionId: source.log.sessionId,
+        decoderProfile: profile,
+      });
+      setRecordedSources((current) => {
+        const currentSource = current[source.id];
+        if (!currentSource) return current;
+        return {
+          ...current,
+          [source.id]: { ...currentSource, snapshot, decoderProfile: profile },
+        };
+      });
+    }
+    frozenLiveSnapshots.current = {};
+    setDisplayPaused(false);
+    setReplayPlaying(false);
+    setFieldsConfigured(false);
+    setSelectedFields([]);
+    setNotice(profile
+      ? `Applied “${profile.name}” to ${source.name}. Raw capture is unchanged.`
+      : `Automatic detection restored for ${source.name}. Raw capture is unchanged.`);
+  };
+
+  const removeDeletedDecoderProfile = (profile: TelemetryDecoderProfile) => {
+    const affectedLiveSources = liveSources.filter((source) => source.snapshot.decoderProfile?.id === profile.id);
+    const affectedRecordedSources = Object.values(recordedSources)
+      .filter((source) => source.decoderProfile?.id === profile.id);
+    if (!affectedLiveSources.length && !affectedRecordedSources.length) return;
+
+    affectedLiveSources.forEach((source) => liveTelemetryStore.setDecoderProfile(source.session.uiKey));
+    if (affectedRecordedSources.length) {
+      setRecordedSources((current) => {
+        const next = { ...current };
+        affectedRecordedSources.forEach((source) => {
+          const currentSource = current[source.id];
+          if (!currentSource || currentSource.decoderProfile?.id !== profile.id) return;
+          next[source.id] = {
+            ...currentSource,
+            snapshot: telemetrySnapshotFromCapture(source.id, currentSource.rawText, {
+              startedAt: currentSource.log.startedAt ?? currentSource.log.modifiedAt,
+              endedAt: currentSource.log.endedAt,
+              nativeSessionId: currentSource.log.sessionId,
+            }),
+            decoderProfile: undefined,
+          };
+        });
+        return next;
+      });
+    }
+    frozenLiveSnapshots.current = {};
+    setDisplayPaused(false);
+    setReplayPlaying(false);
+    setFieldsConfigured(false);
+    setSelectedFields([]);
+    setNotice(`Deleted “${profile.name}” and restored automatic detection for ${affectedLiveSources.length + affectedRecordedSources.length} loaded source${affectedLiveSources.length + affectedRecordedSources.length === 1 ? '' : 's'}.`);
   };
 
   const removeSource = (source: AnalysisSource) => {
@@ -510,6 +583,20 @@ export function TelemetryAnalysisWorkspace({
         <div><ThemedSelect value={sourceChoice} options={sourceOptions} placeholder={sourceOptions.length ? 'Choose a live session or capture' : 'No other sources available'} label="Source to add" onChange={setSourceChoice} /><button className="sd-primary-button" type="button" disabled={!sourceChoice || Boolean(loadingPath)} onClick={addChosenSource}>{loadingPath ? <LoaderCircle className="sd-spin" size={16} /> : <Plus size={16} />} Add source</button></div>
       </div>
     </header>
+
+    <TelemetryDecoderPanel
+      sources={activeSources.map<TelemetryDecoderSource>((source) => ({
+        id: source.id,
+        name: source.name,
+        detail: source.detail,
+        kind: source.kind,
+        receivedCompleteLineCount: source.snapshot.receivedCompleteLineCount,
+        detectedFieldCount: source.snapshot.fields.length,
+        appliedProfile: source.kind === 'live' ? source.snapshot.decoderProfile : source.decoderProfile,
+      }))}
+      onApply={applyDecoder}
+      onProfileDeleted={removeDeletedDecoderProfile}
+    />
 
     {libraryError ? <div className="bt-analysis-message is-error" role="alert"><AlertTriangle size={16} /><span>{libraryError}</span><button type="button" onClick={() => setLibraryError('')} aria-label="Dismiss error"><X size={15} /></button></div> : null}
     {truncatedSources.length ? <div className="bt-analysis-message is-warning" role="status"><AlertTriangle size={16} /><span>{truncatedSources.map((source) => source.name).join(', ')} exceeded the 16 MB replay window. The original capture is untouched; this canvas uses its first 16 MB.</span></div> : null}
