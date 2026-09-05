@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 const STORAGE_KEY = 'baudtide.notifications.v1';
 const MAX_NOTIFICATIONS = 60;
 
-export type NotificationKind = 'connection' | 'error' | 'export';
+export type NotificationKind = 'connection' | 'error' | 'export' | 'alert';
 
 export type AppNotification = {
   id: string;
@@ -25,7 +25,7 @@ function loadNotifications(): AppNotification[] {
       && typeof item.id === 'string' && typeof item.title === 'string'
       && typeof item.detail === 'string' && typeof item.createdAt === 'string'
       && typeof item.read === 'boolean'
-      && (item.kind === 'connection' || item.kind === 'error' || item.kind === 'export')
+      && (item.kind === 'connection' || item.kind === 'error' || item.kind === 'export' || item.kind === 'alert')
     )).slice(0, MAX_NOTIFICATIONS);
   } catch {
     return [];

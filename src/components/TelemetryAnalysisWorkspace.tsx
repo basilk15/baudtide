@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
   AlertTriangle,
+  BellRing,
   CirclePause,
   CirclePlay,
   Download,
@@ -9,6 +10,7 @@ import {
   Plus,
   Radio,
   RotateCcw,
+  Trash2,
   X,
 } from 'lucide-react';
 import {
@@ -25,6 +27,12 @@ import {
   type TelemetrySessionSnapshot,
   type TelemetryValue,
 } from '../lib/telemetry';
+import {
+  evaluateTelemetryAlerts,
+  type TelemetryAlertCondition,
+  type TelemetryAlertEvent,
+  type TelemetryAlertRule,
+} from '../lib/telemetryAlerts';
 import type { TelemetryDecoderProfile } from '../lib/telemetryDecoders';
 import { TELEMETRY_SERIES_COLORS } from '../lib/telemetryChart';
 import { TelemetryCharts, type ChartMode } from './TelemetryECharts';
@@ -69,7 +77,14 @@ type DisplayField = {
   colorIndex: number;
 };
 
+type WatchEventRow = TelemetryAlertEvent & {
+  id: string;
+  sourceName: string;
+  occurrence: number;
+};
+
 const MAX_SELECTED_FIELDS = 8;
+const MAX_WATCH_EVENTS = 100;
 const ANALYSIS_EPOCH_MS = Date.UTC(2000, 0, 1);
 const WINDOW_OPTIONS = [
   { value: 0, label: 'All data' },
@@ -78,6 +93,27 @@ const WINDOW_OPTIONS = [
   { value: 60_000, label: '1 minute' },
   { value: 5 * 60_000, label: '5 minutes' },
 ] as const;
+const CUSTOM_WINDOW_VALUE = 'custom';
+const CUSTOM_WINDOW_UNITS = [
+  { value: 'minutes', label: 'Minutes' },
+  { value: 'hours', label: 'Hours' },
+] as const;
+
+type CustomWindowUnit = (typeof CUSTOM_WINDOW_UNITS)[number]['value'];
+type CustomWindow = Readonly<{ amount: number; unit: CustomWindowUnit }>;
+
+// The app unmounts the visualization surface when navigating to another
+// workspace. Keep an explicit user selection alive for that short-lived view
+// transition without persisting transient device state beyond the app session.
+let signalSelectionMemory: Readonly<{ configured: boolean; fieldIds: readonly string[] }> = { configured: false, fieldIds: [] };
+
+function rememberSignalSelection(fieldIds: readonly string[]) {
+  signalSelectionMemory = { configured: true, fieldIds: [...fieldIds] };
+}
+
+function forgetSignalSelection() {
+  signalSelectionMemory = { configured: false, fieldIds: [] };
+}
 
 function recordedSourceId(path: string) {
   return `recorded:${path}`;
@@ -108,12 +144,67 @@ function formatFieldValue(value: TelemetryValue | undefined) {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 5 }).format(value.value);
 }
 
+function formatWatchTimestamp(timestamp: string) {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return 'Just now';
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(date);
+}
+
+function formatWatchTarget(rule: Pick<TelemetryAlertRule, 'condition' | 'threshold' | 'min' | 'max' | 'unit'>) {
+  const unit = rule.unit ? ` ${rule.unit}` : '';
+  if (rule.condition === 'above') return `above ${formatFieldValue({ value: typeof rule.threshold === 'number' ? rule.threshold : Number.NaN })}${unit}`;
+  if (rule.condition === 'below') return `below ${formatFieldValue({ value: typeof rule.threshold === 'number' ? rule.threshold : Number.NaN })}${unit}`;
+  return `outside ${formatFieldValue({ value: rule.min ?? Number.NaN })}–${formatFieldValue({ value: rule.max ?? Number.NaN })}${unit}`;
+}
+
+function formatWatchRule(rule: Pick<TelemetryAlertRule, 'fieldKey' | 'condition' | 'threshold' | 'min' | 'max' | 'unit'>) {
+  return `${rule.fieldKey} · ${formatWatchTarget(rule)}`;
+}
+
+function formatWatchEvent(event: TelemetryAlertEvent) {
+  const unit = event.unit ? ` ${event.unit}` : '';
+  const observed = `${formatFieldValue({ value: event.value })}${unit}`;
+  if (event.condition === 'above') return `${observed} is above ${formatFieldValue({ value: event.threshold ?? Number.NaN })}${unit}`;
+  if (event.condition === 'below') return `${observed} is below ${formatFieldValue({ value: event.threshold ?? Number.NaN })}${unit}`;
+  return `${observed} is outside ${formatFieldValue({ value: event.min ?? Number.NaN })}–${formatFieldValue({ value: event.max ?? Number.NaN })}${unit}`;
+}
+
+function freshWatchId() {
+  return globalThis.crypto?.randomUUID?.() ?? `watch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function watchStateChanged(left: ReadonlyMap<string, boolean>, right: ReadonlyMap<string, boolean>) {
+  if (left.size !== right.size) return true;
+  for (const [id, active] of left) {
+    if (right.get(id) !== active) return true;
+  }
+  return false;
+}
+
 function formatDuration(milliseconds: number) {
   if (!Number.isFinite(milliseconds) || milliseconds <= 0) return '0s';
   if (milliseconds < 60_000) return `${Math.max(1, Math.round(milliseconds / 1_000))}s`;
   const minutes = Math.floor(milliseconds / 60_000);
   const seconds = Math.round((milliseconds % 60_000) / 1_000);
   return `${minutes}m ${seconds}s`;
+}
+
+function customWindowMilliseconds(amount: number, unit: CustomWindowUnit) {
+  return amount * (unit === 'hours' ? 60 * 60_000 : 60_000);
+}
+
+function formatCustomWindow({ amount, unit }: CustomWindow) {
+  const quantity = new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 }).format(amount);
+  const singular = amount === 1;
+  return `${quantity} ${unit === 'hours' ? singular ? 'hour' : 'hours' : singular ? 'minute' : 'minutes'}`;
+}
+
+function customWindowValidation(value: string, unit: CustomWindowUnit) {
+  if (!value.trim()) return 'Enter a duration greater than zero.';
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) return 'Enter a duration greater than zero.';
+  if (!Number.isSafeInteger(customWindowMilliseconds(amount, unit))) return 'Enter a smaller duration.';
+  return '';
 }
 
 function sourceRange(snapshot: TelemetrySessionSnapshot) {
@@ -166,6 +257,7 @@ export function TelemetryAnalysisWorkspace({
   selectedSessionId,
   onSelectSession,
   onRequestConnection,
+  onTelemetryAlert,
   requestedCapturePath,
   onRequestedCaptureOpened,
 }: TelemetryAnalysisWorkspaceProps) {
@@ -180,7 +272,13 @@ export function TelemetryAnalysisWorkspace({
   const [selectedFields, setSelectedFields] = useState<string[]>([]);
   const [fieldsConfigured, setFieldsConfigured] = useState(false);
   const [alignment, setAlignment] = useState<AlignmentMode>('elapsed');
-  const [windowMs, setWindowMs] = useState<(typeof WINDOW_OPTIONS)[number]['value']>(0);
+  const [windowMs, setWindowMs] = useState(0);
+  const [customWindow, setCustomWindow] = useState<CustomWindow | null>(null);
+  const [customWindowOpen, setCustomWindowOpen] = useState(false);
+  const [customWindowAmount, setCustomWindowAmount] = useState('15');
+  const [customWindowUnit, setCustomWindowUnit] = useState<CustomWindowUnit>('minutes');
+  const [customWindowError, setCustomWindowError] = useState('');
+  const customWindowInputRef = useRef<HTMLInputElement>(null);
   const [chartMode, setChartMode] = useState<ChartMode>('compare');
   const [displayPaused, setDisplayPaused] = useState(false);
   const frozenLiveSnapshots = useRef<Record<string, TelemetrySessionSnapshot>>({});
@@ -189,7 +287,28 @@ export function TelemetryAnalysisWorkspace({
   const [replayRate, setReplayRate] = useState(1);
   const [exportFormat, setExportFormat] = useState<ExportFormat>('csv');
   const [exporting, setExporting] = useState(false);
+  const [watchOpen, setWatchOpen] = useState(false);
+  const [watchRules, setWatchRules] = useState<TelemetryAlertRule[]>([]);
+  const [watchEvents, setWatchEvents] = useState<WatchEventRow[]>([]);
+  const [watchBreachCounts, setWatchBreachCounts] = useState<Record<string, number>>({});
+  const [activeBreach, setActiveBreach] = useState<WatchEventRow | null>(null);
+  const [watchFieldId, setWatchFieldId] = useState('');
+  const [watchCondition, setWatchCondition] = useState<TelemetryAlertCondition>('above');
+  const [watchThreshold, setWatchThreshold] = useState('');
+  const [watchMinimum, setWatchMinimum] = useState('');
+  const [watchMaximum, setWatchMaximum] = useState('');
+  const [watchFormError, setWatchFormError] = useState('');
+  const [watchStateRevision, setWatchStateRevision] = useState(0);
+  const [watchRevision, setWatchRevision] = useState(0);
   const requestedCaptureHandled = useRef<string | null>(null);
+  const watchedAcceptedCounts = useRef<Record<string, number | undefined>>({});
+  const watchActiveStates = useRef(new Map<string, boolean>());
+  const watchBreachCountsRef = useRef(new Map<string, number>());
+  const onTelemetryAlertRef = useRef(onTelemetryAlert);
+
+  useEffect(() => {
+    onTelemetryAlertRef.current = onTelemetryAlert;
+  }, [onTelemetryAlert]);
 
   useEffect(() => {
     if (!nativeEnabled) return undefined;
@@ -351,8 +470,12 @@ export function TelemetryAnalysisWorkspace({
       });
     }
     frozenLiveSnapshots.current = {};
+    watchedAcceptedCounts.current = {};
+    watchActiveStates.current = new Map();
+    setWatchStateRevision((current) => current + 1);
     setDisplayPaused(false);
     setReplayPlaying(false);
+    forgetSignalSelection();
     setFieldsConfigured(false);
     setSelectedFields([]);
     setNotice(profile
@@ -387,8 +510,12 @@ export function TelemetryAnalysisWorkspace({
       });
     }
     frozenLiveSnapshots.current = {};
+    watchedAcceptedCounts.current = {};
+    watchActiveStates.current = new Map();
+    setWatchStateRevision((current) => current + 1);
     setDisplayPaused(false);
     setReplayPlaying(false);
+    forgetSignalSelection();
     setFieldsConfigured(false);
     setSelectedFields([]);
     setNotice(`Deleted “${profile.name}” and restored automatic detection for ${affectedLiveSources.length + affectedRecordedSources.length} loaded source${affectedLiveSources.length + affectedRecordedSources.length === 1 ? '' : 's'}.`);
@@ -396,7 +523,14 @@ export function TelemetryAnalysisWorkspace({
 
   const removeSource = (source: AnalysisSource) => {
     setActiveSourceIds((current) => current.filter((id) => id !== source.id));
-    setSelectedFields((current) => current.filter((id) => !id.startsWith(`${source.id}\u0000`)));
+    setSelectedFields((current) => {
+      const next = current.filter((id) => !id.startsWith(`${source.id}\u0000`));
+      rememberSignalSelection(next);
+      return next;
+    });
+    if (source.kind === 'live') {
+      setWatchRules((current) => current.filter((rule) => rule.sessionKey !== source.session.uiKey));
+    }
     setFieldsConfigured(true);
     setNotice(`${source.name} removed from the canvas.`);
   };
@@ -430,11 +564,168 @@ export function TelemetryAnalysisWorkspace({
     setSelectedFields((current) => {
       const retained = current.filter((id) => available.has(id));
       if (retained.length || fieldsConfigured || !displayFields.length) return retained;
+      if (signalSelectionMemory.configured) {
+        const remembered = signalSelectionMemory.fieldIds.filter((id) => available.has(id));
+        if (remembered.length || signalSelectionMemory.fieldIds.length === 0) return remembered;
+      }
       return displayFields.slice(0, 3).map((field) => field.id);
     });
   }, [displayFields, fieldsConfigured]);
 
   const selectedFieldSet = useMemo(() => new Set(selectedFields), [selectedFields]);
+  const watchableFields = useMemo(() => displayFields.filter((field) => sourcesById.get(field.sourceId)?.kind === 'live'), [displayFields, sourcesById]);
+  const watchFieldsById = useMemo(() => new Map(watchableFields.map((field) => [field.id, field])), [watchableFields]);
+  const activeWatchRuleIds = useMemo(() => {
+    void watchStateRevision;
+    return new Set([...watchActiveStates.current].filter(([, active]) => active).map(([id]) => id));
+  }, [watchRules, watchStateRevision]);
+  const watchBreachTotal = useMemo(() => Object.values(watchBreachCounts).reduce((total, count) => total + count, 0), [watchBreachCounts]);
+  const watchSources = useMemo(() => activeSources
+    .filter((source): source is LiveSource => source.kind === 'live')
+    .map((source) => ({ id: source.id, name: source.name, sessionKey: source.session.uiKey })), [activeSources]);
+  const liveSourceNames = useMemo(() => new Map(watchSources.map((source) => [source.sessionKey, source.name])), [watchSources]);
+
+  useEffect(() => {
+    if (watchFieldId && watchFieldsById.has(watchFieldId)) return;
+    setWatchFieldId(watchableFields[0]?.id ?? '');
+  }, [watchFieldId, watchFieldsById, watchableFields]);
+
+  useEffect(() => {
+    if (!activeBreach) return undefined;
+    const timer = window.setTimeout(() => setActiveBreach(null), 4_000);
+    return () => window.clearTimeout(timer);
+  }, [activeBreach]);
+
+  useEffect(() => {
+    if (!watchSources.length) return undefined;
+    let timer: number | undefined;
+    const notify = () => {
+      if (timer !== undefined) return;
+      timer = window.setTimeout(() => {
+        timer = undefined;
+        setWatchRevision((current) => current + 1);
+      }, 120);
+    };
+    const unsubscribers = watchSources.map((source) => liveTelemetryStore.subscribe(source.sessionKey, notify));
+    return () => {
+      unsubscribers.forEach((unsubscribe) => unsubscribe());
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [watchSources]);
+
+  useEffect(() => {
+    const availableSourceIds = new Set(watchSources.map((source) => source.id));
+    Object.keys(watchedAcceptedCounts.current).forEach((sourceId) => {
+      if (!availableSourceIds.has(sourceId)) delete watchedAcceptedCounts.current[sourceId];
+    });
+
+    const newBatches = watchSources.map((source) => {
+      const snapshot = liveTelemetryStore.getSnapshot(source.sessionKey);
+      const previousCount = watchedAcceptedCounts.current[source.id];
+      watchedAcceptedCounts.current[source.id] = snapshot.acceptedSampleCount;
+      // The first snapshot is existing history. Watches begin with the next
+      // ordered sample, never a pre-existing point from the visualizer.
+      if (previousCount === undefined || snapshot.acceptedSampleCount < previousCount) return { source, samples: [] as readonly TelemetrySample[] };
+      const addedCount = snapshot.acceptedSampleCount - previousCount;
+      // A bounded telemetry store cannot prove which records arrived if it
+      // overwrote its whole retained slice between checks. Skip that interval
+      // rather than raising a false historical alert.
+      if (addedCount <= 0 || addedCount > snapshot.samples.length) return { source, samples: [] as readonly TelemetrySample[] };
+      return { source, samples: snapshot.samples.slice(-addedCount) };
+    });
+
+    if (!watchRules.length || !newBatches.some((batch) => batch.samples.length)) return;
+    let nextActiveStates = new Map(watchActiveStates.current);
+    const nextEvents: WatchEventRow[] = [];
+    newBatches.forEach(({ source, samples }) => {
+      if (!samples.length) return;
+      const evaluation = evaluateTelemetryAlerts(source.sessionKey, samples, watchRules, nextActiveStates);
+      nextActiveStates = new Map(evaluation.activeStates);
+      evaluation.events.forEach((event) => {
+        const occurrence = (watchBreachCountsRef.current.get(event.ruleId) ?? 0) + 1;
+        watchBreachCountsRef.current.set(event.ruleId, occurrence);
+        nextEvents.push({ ...event, id: `${event.ruleId}:${event.sampleId}`, sourceName: source.name, occurrence });
+      });
+    });
+
+    const stateChanged = watchStateChanged(watchActiveStates.current, nextActiveStates);
+    watchActiveStates.current = nextActiveStates;
+    if (stateChanged) setWatchStateRevision((current) => current + 1);
+    if (!nextEvents.length) return;
+
+    const newestEvents = [...nextEvents].sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp));
+    setWatchEvents((current) => [...newestEvents, ...current].slice(0, MAX_WATCH_EVENTS));
+    setWatchBreachCounts(Object.fromEntries(watchBreachCountsRef.current));
+    setActiveBreach(newestEvents[0]);
+    nextEvents.forEach((event) => {
+      onTelemetryAlertRef.current?.({
+        title: `Watch triggered · ${event.fieldKey}`,
+        detail: `${event.sourceName} · ${formatWatchEvent(event)}.`,
+      });
+    });
+    setNotice(`${nextEvents.length === 1 ? 'A live signal crossed its watch boundary.' : `${nextEvents.length} live signals crossed watch boundaries.`}`);
+  }, [watchRevision, watchRules, watchSources]);
+
+  const addWatch = () => {
+    const field = watchFieldsById.get(watchFieldId);
+    const source = field ? sourcesById.get(field.sourceId) : undefined;
+    if (!field || !source || source.kind !== 'live') {
+      setWatchFormError('Choose a live signal before adding a watch.');
+      return;
+    }
+    if (watchRules.some((rule) => rule.sessionKey === source.session.uiKey && rule.fieldKey === field.field.key)) {
+      setWatchFormError('This signal already has a watch. Remove it before setting a new boundary.');
+      return;
+    }
+    const unit = field.latest?.unit ?? field.field.unit;
+    const threshold = Number(watchThreshold);
+    const minimum = Number(watchMinimum);
+    const maximum = Number(watchMaximum);
+    let rule: TelemetryAlertRule;
+    if (watchCondition === 'outsideRange') {
+      if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || minimum >= maximum) {
+        setWatchFormError('Enter a lower value and a higher value for the expected range.');
+        return;
+      }
+      rule = {
+        id: freshWatchId(),
+        sessionKey: source.session.uiKey,
+        fieldKey: field.field.key,
+        ...(unit ? { unit } : {}),
+        condition: 'outsideRange',
+        min: minimum,
+        max: maximum,
+        enabled: true,
+      };
+    } else {
+      if (!Number.isFinite(threshold)) {
+        setWatchFormError('Enter a numeric boundary for this watch.');
+        return;
+      }
+      rule = {
+        id: freshWatchId(),
+        sessionKey: source.session.uiKey,
+        fieldKey: field.field.key,
+        ...(unit ? { unit } : {}),
+        condition: watchCondition,
+        threshold,
+        enabled: true,
+      };
+    }
+    setWatchRules((current) => [...current, rule]);
+    setWatchFormError('');
+    setWatchThreshold('');
+    setWatchMinimum('');
+    setWatchMaximum('');
+    setWatchOpen(true);
+    setNotice(`Watching ${field.field.key} from ${source.name}.`);
+  };
+
+  const removeWatch = (rule: TelemetryAlertRule) => {
+    setWatchRules((current) => current.filter((candidate) => candidate.id !== rule.id));
+    setNotice(`Stopped watching ${rule.fieldKey}.`);
+  };
+
   const toggleField = (field: DisplayField) => {
     const selected = selectedFieldSet.has(field.id);
     if (!selected && selectedFields.length >= MAX_SELECTED_FIELDS) {
@@ -442,7 +733,11 @@ export function TelemetryAnalysisWorkspace({
       return;
     }
     setFieldsConfigured(true);
-    setSelectedFields((current) => selected ? current.filter((id) => id !== field.id) : [...current, field.id]);
+    setSelectedFields((current) => {
+      const next = selected ? current.filter((id) => id !== field.id) : [...current, field.id];
+      rememberSignalSelection(next);
+      return next;
+    });
   };
 
   const recordedDuration = useMemo(() => Math.max(0, ...activeSources
@@ -467,6 +762,12 @@ export function TelemetryAnalysisWorkspace({
     }, 80);
     return () => window.clearInterval(timer);
   }, [recordedDuration, replayPlaying, replayRate]);
+
+  useEffect(() => {
+    if (!customWindowOpen) return undefined;
+    const focusTimer = window.setTimeout(() => customWindowInputRef.current?.focus(), 0);
+    return () => window.clearTimeout(focusTimer);
+  }, [customWindowOpen]);
 
   const combined = useMemo(() => {
     const fields: TelemetryField[] = [];
@@ -519,13 +820,50 @@ export function TelemetryAnalysisWorkspace({
   const resetView = () => {
     setAlignment('elapsed');
     setWindowMs(0);
+    setCustomWindow(null);
+    setCustomWindowOpen(false);
+    setCustomWindowError('');
     setChartMode('compare');
     setReplayProgress(1);
     setReplayPlaying(false);
+    forgetSignalSelection();
     setFieldsConfigured(false);
     setSelectedFields(displayFields.slice(0, 3).map((field) => field.id));
     setNotice('Analysis view reset. Source data is unchanged.');
   };
+
+  const chooseWindow = (value: string) => {
+    if (value === CUSTOM_WINDOW_VALUE) {
+      setCustomWindowOpen(true);
+      setCustomWindowError('');
+      return;
+    }
+    setWindowMs(Number(value));
+    setCustomWindow(null);
+    setCustomWindowOpen(false);
+    setCustomWindowError('');
+  };
+
+  const applyCustomWindow = () => {
+    const error = customWindowValidation(customWindowAmount, customWindowUnit);
+    if (error) {
+      setCustomWindowError(error);
+      customWindowInputRef.current?.focus();
+      return;
+    }
+    const nextCustomWindow = { amount: Number(customWindowAmount), unit: customWindowUnit } satisfies CustomWindow;
+    setWindowMs(customWindowMilliseconds(nextCustomWindow.amount, nextCustomWindow.unit));
+    setCustomWindow(nextCustomWindow);
+    setCustomWindowOpen(false);
+    setCustomWindowError('');
+    setNotice(`Showing the last ${formatCustomWindow(nextCustomWindow)} of retained data.`);
+  };
+
+  const windowOptions = [
+    ...WINDOW_OPTIONS.map((option) => ({ value: String(option.value), label: option.label })),
+    { value: CUSTOM_WINDOW_VALUE, label: customWindow ? `Custom · ${formatCustomWindow(customWindow)}` : 'Custom…' },
+  ];
+  const selectedWindowValue = customWindow ? CUSTOM_WINDOW_VALUE : String(windowMs);
 
   const exportData = async () => {
     if (!combined.selectedChartKeys.length || !combined.samples.length) return;
@@ -584,6 +922,12 @@ export function TelemetryAnalysisWorkspace({
       </div>
     </header>
 
+    {activeBreach ? <aside className="bt-analysis-breach-toast" role="alert" aria-label={`Watch breach for ${activeBreach.fieldKey}`}>
+      <AlertTriangle size={18} aria-hidden="true" />
+      <div><strong>Watch breach · {activeBreach.fieldKey}</strong><span>{activeBreach.sourceName} · {formatWatchEvent(activeBreach)}</span><time dateTime={activeBreach.timestamp}>Breach {activeBreach.occurrence} · {formatWatchTimestamp(activeBreach.timestamp)}</time></div>
+      <button type="button" onClick={() => setActiveBreach(null)} aria-label="Dismiss breach alert" title="Dismiss breach alert"><X size={16} /></button>
+    </aside> : null}
+
     <TelemetryDecoderPanel
       sources={activeSources.map<TelemetryDecoderSource>((source) => ({
         id: source.id,
@@ -637,11 +981,46 @@ export function TelemetryAnalysisWorkspace({
           <div><h2>{hasRecordedSource ? 'Aligned comparison' : displayPaused ? 'Paused live traces' : 'Live traces'}</h2><span>{combined.selectedChartKeys.length ? `${combined.selectedChartKeys.length} selected signals · ${alignment === 'elapsed' ? 'starts aligned' : 'clock aligned'}` : 'Select signals from the rail'}</span></div>
           <div className="bt-analysis-actions">
             <div className="bt-analysis-compact-select"><span>View</span><ThemedSelect compact value={chartMode} options={[{ value: 'compare', label: 'Overlay' }, { value: 'lanes', label: 'Separate plots' }]} placeholder="Overlay" label="Chart presentation" onChange={(value) => setChartMode(value as ChartMode)} /></div>
-            <div className="bt-analysis-compact-select"><span>Window</span><ThemedSelect compact value={String(windowMs)} options={WINDOW_OPTIONS.map((option) => ({ value: String(option.value), label: option.label }))} placeholder="All data" label="Chart time window" onChange={(value) => setWindowMs(Number(value) as typeof windowMs)} /></div>
+            <div className="bt-analysis-compact-select"><span>Window</span><ThemedSelect compact value={selectedWindowValue} options={windowOptions} placeholder="All data" label="Chart time window" onChange={chooseWindow} /></div>
+            {watchableFields.length ? <button className={`bt-visualize-control bt-analysis-watch-toggle ${watchOpen ? 'is-active' : ''} ${activeWatchRuleIds.size ? 'has-breach' : ''}`} type="button" onClick={() => setWatchOpen((current) => !current)} aria-expanded={watchOpen} aria-controls="signal-watch-panel"><BellRing size={15} />{watchRules.length ? `Watches · ${watchRules.length}` : 'Watch signals'}</button> : null}
             {liveSources.length ? <button className={`bt-visualize-control ${displayPaused ? 'is-active' : ''}`} type="button" onClick={toggleDisplayPause}>{displayPaused ? <CirclePlay size={15} /> : <CirclePause size={15} />}{displayPaused ? 'Resume live' : 'Pause live'}</button> : null}
             <button className="bt-visualize-control" type="button" onClick={resetView}><RotateCcw size={15} /> Reset view</button>
           </div>
         </header>
+
+        {customWindowOpen ? <section className="bt-analysis-custom-window" aria-labelledby="custom-window-heading">
+          <form onSubmit={(event) => { event.preventDefault(); applyCustomWindow(); }}>
+            <div className="bt-analysis-custom-window-intro"><h3 id="custom-window-heading">Custom time window</h3><p>Show only the newest portion of the retained telemetry.</p></div>
+            <label className="bt-analysis-custom-window-field" htmlFor="custom-window-duration"><span>Duration</span><input ref={customWindowInputRef} id="custom-window-duration" inputMode="decimal" type="number" min="0" step="any" value={customWindowAmount} onChange={(event) => { setCustomWindowAmount(event.target.value); setCustomWindowError(''); }} onBlur={() => setCustomWindowError(customWindowValidation(customWindowAmount, customWindowUnit))} aria-invalid={customWindowError ? true : undefined} aria-describedby={customWindowError ? 'custom-window-error' : undefined} /></label>
+            <div className="bt-analysis-custom-window-field"><span>Unit</span><ThemedSelect value={customWindowUnit} options={CUSTOM_WINDOW_UNITS.map((unit) => ({ value: unit.value, label: unit.label }))} placeholder="Minutes" label="Custom time window unit" onChange={(value) => { setCustomWindowUnit(value as CustomWindowUnit); setCustomWindowError(''); }} /></div>
+            <div className="bt-analysis-custom-window-actions"><button className="sd-primary-button" type="submit">Apply window</button><button className="sd-secondary-button" type="button" onClick={() => { setCustomWindowOpen(false); setCustomWindowError(''); }}>Cancel</button></div>
+          </form>
+          {customWindowError ? <p className="bt-analysis-custom-window-error" id="custom-window-error" role="alert">{customWindowError}</p> : null}
+        </section> : null}
+
+        {watchOpen ? <section className="bt-analysis-watch" id="signal-watch-panel" aria-labelledby="signal-watch-heading">
+          <div className="bt-analysis-watch-setup">
+            <header><div><h3 id="signal-watch-heading">Signal watch</h3><p>Alert when a live value crosses its boundary. Raw captures and device control stay unchanged.</p></div><span>{watchRules.length ? `${watchRules.length} armed` : 'No watches armed'}</span></header>
+            <div className="bt-analysis-watch-form">
+              <div className="bt-analysis-watch-field"><span>Live signal</span><ThemedSelect value={watchFieldId} options={watchableFields.map((field) => ({ value: field.id, label: `${field.sourceName} · ${field.field.key}${field.latest?.unit ?? field.field.unit ? ` (${field.latest?.unit ?? field.field.unit})` : ''}` }))} placeholder="Choose a signal" label="Live signal to watch" onChange={(value) => { setWatchFieldId(value); setWatchFormError(''); }} /></div>
+              <div className="bt-analysis-watch-field bt-analysis-watch-condition"><span>Boundary</span><ThemedSelect value={watchCondition} options={[{ value: 'above', label: 'Above limit' }, { value: 'below', label: 'Below limit' }, { value: 'outsideRange', label: 'Outside range' }]} placeholder="Above limit" label="Watch boundary" onChange={(value) => { setWatchCondition(value as TelemetryAlertCondition); setWatchFormError(''); }} /></div>
+              {watchCondition === 'outsideRange' ? <div className="bt-analysis-watch-range"><label className="bt-analysis-watch-field"><span>Lower value</span><input inputMode="decimal" type="number" value={watchMinimum} onChange={(event) => { setWatchMinimum(event.target.value); setWatchFormError(''); }} aria-invalid={watchFormError ? true : undefined} /></label><label className="bt-analysis-watch-field"><span>Upper value</span><input inputMode="decimal" type="number" value={watchMaximum} onChange={(event) => { setWatchMaximum(event.target.value); setWatchFormError(''); }} aria-invalid={watchFormError ? true : undefined} /></label></div> : <label className="bt-analysis-watch-field bt-analysis-watch-limit"><span>Limit</span><input inputMode="decimal" type="number" value={watchThreshold} onChange={(event) => { setWatchThreshold(event.target.value); setWatchFormError(''); }} aria-invalid={watchFormError ? true : undefined} /></label>}
+              <button className="sd-primary-button bt-analysis-add-watch" type="button" onClick={addWatch} disabled={!watchFieldId}><BellRing size={15} /> Add watch</button>
+            </div>
+            {watchFormError ? <p className="bt-analysis-watch-error" role="alert">{watchFormError}</p> : null}
+          </div>
+          <div className="bt-analysis-watch-ledger">
+            <section aria-label="Armed signal watches"><header><h3>Armed watches</h3><span>{activeWatchRuleIds.size ? `${activeWatchRuleIds.size} breached` : watchRules.length ? 'Monitoring' : 'Waiting for setup'}</span></header>
+              {watchRules.length ? <div className="bt-analysis-watch-rule-list">{watchRules.map((rule) => {
+                const breachCount = watchBreachCounts[rule.id] ?? 0;
+                return <div className={`bt-analysis-watch-rule ${activeWatchRuleIds.has(rule.id) ? 'is-breached' : ''}`} key={rule.id}><BellRing size={14} aria-hidden="true" /><span><strong>{formatWatchRule(rule)}</strong><small>{liveSourceNames.get(rule.sessionKey) ?? 'Source removed'} · {breachCount ? `${breachCount} breach${breachCount === 1 ? '' : 'es'} logged` : 'No breaches logged'}</small></span><em>{activeWatchRuleIds.has(rule.id) ? 'BREACH' : 'LIVE'}</em><button type="button" onClick={() => removeWatch(rule)} aria-label={`Remove watch for ${rule.fieldKey}`} title={`Remove watch for ${rule.fieldKey}`}><Trash2 size={14} /></button></div>;
+              })}</div> : <p className="bt-analysis-watch-empty">Choose a live signal and set one clear boundary.</p>}
+            </section>
+            <section className="bt-analysis-watch-events" aria-label="Breach history"><header><h3>Breach history</h3><span>{watchEvents.length ? `${watchEvents.length} shown · ${watchBreachTotal} logged` : 'No breaches logged'}</span></header>
+              {watchEvents.length ? <div>{watchEvents.map((event) => <article key={event.id}><AlertTriangle size={14} aria-hidden="true" /><span><strong>{event.sourceName} · {event.fieldKey}</strong><small>{formatWatchEvent(event)} · Breach {event.occurrence}</small><time dateTime={event.timestamp}>{formatWatchTimestamp(event.timestamp)}</time></span></article>)}</div> : <p className="bt-analysis-watch-empty">Every future re-armed breach will be recorded here.</p>}
+            </section>
+          </div>
+        </section> : null}
 
         {hasRecordedSource ? <section className="bt-analysis-replay" aria-label="Capture replay controls">
           <button type="button" className="bt-analysis-replay-button" onClick={() => {

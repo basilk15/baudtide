@@ -20,6 +20,8 @@ export type VisualizeScreenProps = {
   selectedSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
   onRequestConnection: () => void;
+  /** Lets the app shell retain a live telemetry watch event in its notification inbox. */
+  onTelemetryAlert?: (alert: { title: string; detail: string }) => void;
 };
 
 const EMPTY_SESSION_KEY = '__baudtide-visualize-empty__';
