@@ -93,6 +93,38 @@
 .bt-analysis-message button { display: grid; padding: 5px; border: 0; background: transparent; color: currentColor; place-items: center; }
 .bt-analysis-message button:focus-visible { outline: 2px solid var(--bt-analysis-aqua); outline-offset: 2px; }
 
+.bt-analysis-breach-toast {
+  position: fixed;
+  z-index: 120;
+  top: max(16px, env(safe-area-inset-top));
+  right: 20px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  width: min(420px, calc(100vw - 40px));
+  gap: 10px;
+  padding: 11px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-warning) 18%, var(--bt-analysis-panel));
+  box-shadow: 0 14px 30px #050a10a8;
+  color: var(--bt-analysis-ink);
+  animation: bt-analysis-breach-toast-in 180ms cubic-bezier(.2, .8, .2, 1) both;
+}
+
+.bt-analysis-breach-toast > svg { margin-top: 2px; color: var(--color-warning); }
+.bt-analysis-breach-toast > div { display: grid; min-width: 0; gap: 2px; }
+.bt-analysis-breach-toast strong { overflow: hidden; color: var(--bt-analysis-ink); font: 650 var(--text-sm)/1.25 var(--font-display); text-overflow: ellipsis; white-space: nowrap; }
+.bt-analysis-breach-toast span { overflow: hidden; color: var(--bt-analysis-soft); font-size: var(--text-xs); line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.bt-analysis-breach-toast time { color: var(--bt-analysis-muted); font: 500 var(--text-xs)/1.35 var(--font-data); font-variant-numeric: tabular-nums; }
+.bt-analysis-breach-toast button { display: grid; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--bt-analysis-soft); place-items: center; }
+.bt-analysis-breach-toast button:hover { background: color-mix(in srgb, var(--color-warning) 18%, transparent); color: var(--bt-analysis-ink); }
+.bt-analysis-breach-toast button:focus-visible { outline: 2px solid var(--bt-analysis-aqua); outline-offset: 2px; }
+
+@keyframes bt-analysis-breach-toast-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .bt-analysis-source-ruler {
   display: grid;
   grid-template-columns: 146px minmax(0, 1fr);
@@ -300,11 +332,11 @@
 
 .bt-analysis-field-label,
 .bt-analysis-field-value { display: grid; min-width: 0; gap: 3px; }
-.bt-analysis-field-label strong { overflow: hidden; color: var(--bt-analysis-soft); font: 600 10px 'Ubuntu Mono', 'Noto Sans Mono', monospace; text-overflow: ellipsis; white-space: nowrap; }
-.bt-analysis-field-label small { color: var(--bt-analysis-muted); font: 9px 'Ubuntu Mono', 'Noto Sans Mono', monospace; }
+.bt-analysis-field-label strong { overflow: hidden; color: var(--bt-analysis-ink); font: 650 var(--text-sm)/1.25 var(--font-display); letter-spacing: -.012em; text-overflow: ellipsis; white-space: nowrap; }
+.bt-analysis-field-label small { color: var(--bt-analysis-muted); font: 500 var(--text-xs)/1.25 var(--font-data); }
 .bt-analysis-field-value { justify-items: end; }
-.bt-analysis-field-value strong { color: var(--bt-analysis-ink); font: 600 10px 'Ubuntu Mono', 'Noto Sans Mono', monospace; }
-.bt-analysis-field-value small { color: #75b7a4; font: 9px 'Ubuntu Mono', 'Noto Sans Mono', monospace; }
+.bt-analysis-field-value strong { color: var(--bt-analysis-ink); font: 600 var(--text-sm)/1.25 var(--font-data); font-variant-numeric: tabular-nums; }
+.bt-analysis-field-value small { color: #75b7a4; font: 500 var(--text-xs)/1.25 var(--font-data); }
 
 .bt-analysis-fields-empty {
   display: grid;
@@ -321,7 +353,7 @@
 .bt-analysis-fields-empty span { max-width: 30ch; font-size: var(--text-xs); line-height: 1.5; }
 .bt-analysis-fields-empty button { margin-top: 6px; }
 
-.bt-analysis-canvas { display: flex; min-width: 0; min-height: 620px; flex-direction: column; background: var(--bt-analysis-bench); }
+.bt-analysis-canvas { display: flex; min-width: 0; min-height: 620px; flex-direction: column; container-type: inline-size; background: var(--bt-analysis-bench); }
 
 .bt-analysis-toolbar {
   display: flex;
@@ -341,6 +373,52 @@
 .bt-analysis-watch-toggle.has-breach { border-color: color-mix(in srgb, var(--color-warning) 56%, var(--bt-analysis-rule)); background: color-mix(in srgb, var(--color-warning) 13%, var(--bt-analysis-raised)); color: var(--color-warning); }
 .bt-analysis-watch-toggle.has-breach svg { color: currentColor; }
 
+.bt-analysis-custom-window {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--bt-analysis-rule);
+  background: var(--bt-analysis-raised);
+}
+
+.bt-analysis-custom-window form {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) minmax(118px, .42fr) 118px auto;
+  align-items: end;
+  gap: 8px 12px;
+}
+
+.bt-analysis-custom-window-intro { align-self: center; }
+.bt-analysis-custom-window h3 { margin: 0; color: var(--bt-analysis-ink); font: 650 var(--text-sm)/1.2 var(--font-display); letter-spacing: -.018em; }
+.bt-analysis-custom-window p { max-width: 44ch; margin: 4px 0 0; color: var(--bt-analysis-muted); font-size: var(--text-xs); line-height: 1.45; }
+
+.bt-analysis-custom-window-field { display: grid; min-width: 0; gap: 6px; }
+.bt-analysis-custom-window-field > span { color: var(--bt-analysis-muted); font-size: var(--text-xs); font-weight: 650; }
+.bt-analysis-custom-window-field .sd-themed-select { min-width: 0; width: 100%; }
+.bt-analysis-custom-window-field .sd-themed-select-trigger,
+.bt-analysis-custom-window-field input,
+.bt-analysis-custom-window-actions button {
+  box-sizing: border-box;
+  height: 40px;
+  min-height: 40px;
+}
+.bt-analysis-custom-window-field input {
+  width: 100%;
+  padding: 0 10px;
+  border: 1px solid var(--bt-analysis-rule);
+  border-radius: 6px;
+  outline: 0;
+  background: var(--bt-analysis-bench);
+  color: var(--bt-analysis-ink);
+  font: 600 var(--text-sm)/1 var(--font-data);
+  font-variant-numeric: tabular-nums;
+}
+
+.bt-analysis-custom-window-field input:hover { border-color: color-mix(in srgb, var(--bt-analysis-aqua) 42%, var(--bt-analysis-rule)); }
+.bt-analysis-custom-window-field input:focus-visible { border-color: var(--bt-analysis-aqua); box-shadow: 0 0 0 3px color-mix(in srgb, var(--bt-analysis-aqua) 18%, transparent); }
+.bt-analysis-custom-window-field input[aria-invalid="true"] { border-color: var(--color-danger); }
+.bt-analysis-custom-window-actions { display: flex; align-items: end; gap: 8px; }
+.bt-analysis-custom-window-actions button { white-space: nowrap; }
+.bt-analysis-custom-window-error { margin: 8px 0 0; color: var(--color-danger); font-size: var(--text-xs); line-height: 1.45; }
+
 .bt-analysis-watch {
   display: grid;
   grid-template-columns: minmax(0, 1.18fr) minmax(300px, .82fr);
@@ -358,12 +436,12 @@
 }
 
 .bt-analysis-watch h3 { margin: 0; color: var(--bt-analysis-ink); font: 650 var(--text-sm)/1.2 var(--font-display); letter-spacing: -.018em; }
-.bt-analysis-watch-setup p { max-width: 58ch; margin: 5px 0 0; color: var(--bt-analysis-muted); font-size: 11px; line-height: 1.45; }
+.bt-analysis-watch-setup p { max-width: 58ch; margin: 5px 0 0; color: var(--bt-analysis-muted); font-size: var(--text-xs); line-height: 1.5; }
 .bt-analysis-watch-setup > header > span,
 .bt-analysis-watch-ledger > section > header > span {
   flex: 0 0 auto;
   color: var(--bt-analysis-muted);
-  font: 600 10px/1.3 var(--font-data);
+  font: 600 var(--text-xs)/1.35 var(--font-data);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
@@ -377,8 +455,13 @@
 }
 
 .bt-analysis-watch-field { display: grid; min-width: 0; gap: 6px; }
-.bt-analysis-watch-field > span { color: var(--bt-analysis-muted); font-size: 10px; font-weight: 650; }
+.bt-analysis-watch-field > span { color: var(--bt-analysis-muted); font-size: var(--text-xs); font-weight: 650; }
 .bt-analysis-watch-field .sd-themed-select { min-width: 0; width: 100%; }
+.bt-analysis-watch-field .sd-themed-select-trigger {
+  box-sizing: border-box;
+  height: 40px;
+  min-height: 40px;
+}
 .bt-analysis-watch-field input {
   box-sizing: border-box;
   width: 100%;
@@ -389,7 +472,7 @@
   outline: 0;
   background: var(--bt-analysis-bench);
   color: var(--bt-analysis-ink);
-  font: 600 12px/1 var(--font-data);
+  font: 600 var(--text-sm)/1 var(--font-data);
   font-variant-numeric: tabular-nums;
 }
 
@@ -398,13 +481,13 @@
 .bt-analysis-watch-field input[aria-invalid="true"] { border-color: var(--color-danger); }
 .bt-analysis-watch-range { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
 .bt-analysis-add-watch { min-height: 40px; white-space: nowrap; }
-.bt-analysis-watch-error { margin: 9px 0 0; color: var(--color-danger); font-size: 10px; line-height: 1.4; }
+.bt-analysis-watch-error { margin: 9px 0 0; color: var(--color-danger); font-size: var(--text-xs); line-height: 1.45; }
 
 .bt-analysis-watch-ledger { min-width: 0; background: var(--bt-analysis-panel); }
 .bt-analysis-watch-ledger > section { padding: 14px 16px; }
 .bt-analysis-watch-ledger > section + section { border-top: 1px solid var(--bt-analysis-rule-soft); }
-.bt-analysis-watch-ledger h3 { font-size: 12px; }
-.bt-analysis-watch-empty { margin: 10px 0 0; color: var(--bt-analysis-muted); font-size: 10px; line-height: 1.45; }
+.bt-analysis-watch-ledger h3 { font-size: var(--text-sm); }
+.bt-analysis-watch-empty { margin: 10px 0 0; color: var(--bt-analysis-muted); font-size: var(--text-xs); line-height: 1.5; }
 .bt-analysis-watch-rule-list,
 .bt-analysis-watch-events > div { display: grid; margin-top: 10px; border: 1px solid var(--bt-analysis-rule-soft); border-radius: 6px; overflow: hidden; }
 
@@ -435,7 +518,7 @@
 
 .bt-analysis-watch-events article {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: start;
   gap: 8px;
   min-width: 0;
@@ -448,9 +531,10 @@
 .bt-analysis-watch-events article > span { display: grid; min-width: 0; gap: 2px; }
 .bt-analysis-watch-events article strong,
 .bt-analysis-watch-events article small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bt-analysis-watch-events article strong { color: var(--bt-analysis-soft); font: 600 10px/1.3 var(--font-data); }
-.bt-analysis-watch-events article small { color: var(--bt-analysis-muted); font: 9px/1.35 var(--font-data); }
-.bt-analysis-watch-events article time { color: var(--bt-analysis-muted); font: 9px/1.3 var(--font-data); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bt-analysis-watch-events article strong { color: var(--bt-analysis-soft); font: 600 var(--text-xs)/1.35 var(--font-data); }
+.bt-analysis-watch-events article small { color: var(--bt-analysis-muted); font: 500 var(--text-xs)/1.4 var(--font-data); }
+.bt-analysis-watch-events article time { color: var(--bt-analysis-muted); font: 500 var(--text-xs)/1.35 var(--font-data); font-variant-numeric: tabular-nums; }
+.bt-analysis-watch-events > div { max-height: 300px; overflow-y: auto; scrollbar-color: #405767 transparent; }
 
 .bt-analysis-replay {
   display: grid;
@@ -515,6 +599,29 @@
 .bt-analysis-export .sd-primary-button { min-height: 36px; }
 
 .bt-analysis .bt-visualize-notice { margin-left: 2px; }
+
+/* The watch lives inside the chart column, which can be much narrower than the window. */
+@container (max-width: 900px) {
+  .bt-analysis-watch { grid-template-columns: 1fr; }
+  .bt-analysis-watch-setup { border-right: 0; border-bottom: 1px solid var(--bt-analysis-rule); }
+}
+
+@container (max-width: 620px) {
+  .bt-analysis-watch-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .bt-analysis-watch-field:first-child,
+  .bt-analysis-watch-limit,
+  .bt-analysis-watch-range,
+  .bt-analysis-add-watch { grid-column: 1 / -1; }
+}
+
+@container (max-width: 480px) {
+  .bt-analysis-watch-form,
+  .bt-analysis-watch-range { grid-template-columns: 1fr; }
+  .bt-analysis-watch-condition,
+  .bt-analysis-add-watch { grid-column: auto; }
+  .bt-analysis-watch-field input,
+  .bt-analysis-add-watch { min-height: 44px; }
+}
 
 .theme-light .bt-analysis {
   --bt-analysis-bench: #f8fbfc;
@@ -631,6 +738,58 @@
   .bt-analysis-watch-events article time { grid-column: 2; }
 }
 
+/*
+ * The watch is constrained by the canvas, not by the browser viewport. Keep
+ * these after the viewport fallbacks above so a narrow canvas cannot inherit
+ * a wider form grid and clip its final control.
+ */
+@container (max-width: 1040px) {
+  .bt-analysis-watch { grid-template-columns: minmax(0, 1fr); }
+  .bt-analysis-watch-setup { border-right: 0; border-bottom: 1px solid var(--bt-analysis-rule); }
+}
+
+@container (max-width: 720px) {
+  .bt-analysis-watch-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bt-analysis-watch-field:first-child,
+  .bt-analysis-watch-range,
+  .bt-analysis-add-watch { grid-column: 1 / -1; }
+  .bt-analysis-watch-limit { grid-column: auto; }
+}
+
+@container (max-width: 480px) {
+  .bt-analysis-watch-form,
+  .bt-analysis-watch-range { grid-template-columns: minmax(0, 1fr); }
+  .bt-analysis-watch-field:first-child,
+  .bt-analysis-watch-condition,
+  .bt-analysis-watch-limit,
+  .bt-analysis-watch-range,
+  .bt-analysis-add-watch { grid-column: auto; }
+  .bt-analysis-watch-field .sd-themed-select-trigger {
+    height: 44px;
+    min-height: 44px;
+  }
+  .bt-analysis-watch-field input,
+  .bt-analysis-add-watch { min-height: 44px; }
+}
+
+@media (max-width: 760px) {
+  .bt-analysis-custom-window form { grid-template-columns: minmax(0, 1fr) minmax(118px, .5fr) auto; }
+  .bt-analysis-custom-window-intro { grid-column: 1 / -1; }
+}
+
+@media (max-width: 460px) {
+  .bt-analysis-custom-window { padding: 14px; }
+  .bt-analysis-custom-window form { grid-template-columns: minmax(0, 1fr); }
+  .bt-analysis-custom-window-intro { grid-column: auto; }
+  .bt-analysis-custom-window-field .sd-themed-select-trigger,
+  .bt-analysis-custom-window-field input,
+  .bt-analysis-custom-window-actions button { height: 44px; min-height: 44px; }
+  .bt-analysis-custom-window-actions { width: 100%; }
+  .bt-analysis-custom-window-actions button { flex: 1; }
+  .bt-analysis-breach-toast { top: max(12px, env(safe-area-inset-top)); right: 12px; width: calc(100vw - 24px); }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .bt-analysis-field { transition: none; }
+  .bt-analysis-field,
+  .bt-analysis-breach-toast { transition: none; animation: none; }
 }
