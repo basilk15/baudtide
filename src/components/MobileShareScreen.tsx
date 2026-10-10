@@ -111,6 +111,7 @@ export function MobileShareScreen({ nativeEnabled, sessions, selectedSessionId, 
           </div>
 
           {selectedSession ? <MobileSharePanel
+            embedded
             sessionId={selectedSession.id}
             nativeSession={selectedSession.native}
             sessionConnected={selectedSession.connectionState === 'connected'}

@@ -42,6 +42,7 @@ struct TemporaryCapture {
 impl Drop for TemporaryCapture {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(crate::capture_timing::companion_path(&self.path));
     }
 }
 
@@ -168,6 +169,7 @@ fn capture_info(log_path: &Path) -> SessionInfo {
         log_path: log_path.display().to_string(),
         state: "connected",
         settings: SerialSettings::default(),
+        device_identity: None,
     }
 }
 
@@ -388,6 +390,7 @@ fn pty_capture_loop_persists_raw_bytes_and_replays_startup_events_in_order() {
         let terminal_status = run_serial_capture_loop(
             reader,
             log_file,
+            None,
             &reader_info,
             reader_stop.as_ref(),
             &reader_quota,
@@ -462,6 +465,7 @@ fn pty_capture_loop_truncates_a_quota_crossing_chunk_then_finalizes() {
         let terminal_status = run_serial_capture_loop(
             reader,
             log_file,
+            None,
             &reader_info,
             reader_stop.as_ref(),
             &reader_quota,
@@ -538,6 +542,7 @@ fn pty_capture_handoff_stays_ordered_across_a_frontend_reload() {
         let terminal_status = run_serial_capture_loop(
             reader,
             log_file,
+            None,
             &reader_info,
             reader_stop.as_ref(),
             &reader_quota,
@@ -648,6 +653,7 @@ fn pty_capture_loop_finalizes_then_reports_a_terminal_hangup() {
         let terminal_status = run_serial_capture_loop(
             reader,
             log_file,
+            None,
             &info,
             reader_stop.as_ref(),
             &reader_quota,
@@ -691,6 +697,7 @@ fn pty_capture_loop_user_stop_finalizes_multi_chunk_capture_without_terminal_err
         let terminal_status = run_serial_capture_loop(
             reader,
             log_file,
+            None,
             &reader_info,
             reader_stop.as_ref(),
             &reader_quota,
@@ -748,6 +755,7 @@ fn pty_reconnect_starts_a_new_capture_with_a_fresh_sequence_and_log() {
         let terminal_status = run_serial_capture_loop(
             first_reader,
             first_log_file,
+            None,
             &first_reader_info,
             first_reader_stop.as_ref(),
             &first_reader_quota,
@@ -789,6 +797,7 @@ fn pty_reconnect_starts_a_new_capture_with_a_fresh_sequence_and_log() {
         let terminal_status = run_serial_capture_loop(
             second_reader,
             second_log_file,
+            None,
             &second_reader_info,
             second_reader_stop.as_ref(),
             &second_reader_quota,
@@ -856,6 +865,7 @@ fn pty_event_delivery_replays_buffered_bytes_once_then_continues_live_across_rel
         let terminal_status = run_serial_capture_loop(
             reader,
             log_file,
+            None,
             &reader_info,
             reader_stop.as_ref(),
             &reader_quota,
@@ -987,6 +997,7 @@ fn pty_quota_terminal_status_arrives_after_the_last_admitted_event() {
         let terminal_status = run_serial_capture_loop(
             reader,
             log_file,
+            None,
             &reader_info,
             reader_stop.as_ref(),
             &reader_quota,
@@ -1017,4 +1028,112 @@ fn pty_quota_terminal_status_arrives_after_the_last_admitted_event() {
     );
     assert_eq!(std::fs::read(&log_path).unwrap(), expected_prefix);
     assert_eq!(quota.lock().unwrap().used_bytes, 10);
+}
+
+#[test]
+fn pty_timed_capture_preserves_raw_bytes_event_times_and_shared_quota() {
+    let mut pty = PtyPair::new();
+    let reader = open_serial(&pty, Duration::from_millis(50));
+    let mut capture = capture_file("timed-capture");
+    let info = capture_info(&capture.path);
+    let log_path = capture.path.clone();
+    let log_file = capture.file.take().unwrap();
+    let timing = crate::capture_timing::TimingWriter::create(&log_path).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let quota = Arc::new(Mutex::new(CaptureQuota {
+        used_bytes: crate::capture_timing::HEADER_BYTES,
+        limit_bytes: 4096,
+    }));
+    let (events_tx, events_rx) = mpsc::channel();
+    let reader_stop = Arc::clone(&stop);
+    let reader_quota = Arc::clone(&quota);
+    let reader_thread = thread::spawn(move || {
+        run_serial_capture_loop(
+            reader,
+            log_file,
+            Some(timing),
+            &info,
+            reader_stop.as_ref(),
+            &reader_quota,
+            |event| events_tx.send(event).unwrap(),
+        )
+    });
+    let payloads: &[&[u8]] = &[
+        b"{\"temperature\":20}\n",
+        b"{\"temperature\":21}\n",
+        &[0x00, 0xff, b'\n'],
+    ];
+    let mut events = Vec::new();
+    for payload in payloads {
+        pty.master.write_all(payload).unwrap();
+        let mut received = Vec::new();
+        while received.len() < payload.len() {
+            let event = events_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            received.extend_from_slice(&event.bytes);
+            events.push(event);
+        }
+        assert_eq!(received, *payload);
+        thread::sleep(Duration::from_millis(60));
+    }
+    stop.store(true, Ordering::Release);
+    assert_eq!(reader_thread.join().unwrap(), None);
+    let raw = std::fs::read(&log_path).unwrap();
+    assert_eq!(raw, payloads.concat());
+    let timing =
+        crate::capture_timing::read(&log_path, raw.len() as u64, raw.len() as u64).unwrap();
+    assert_eq!(timing.len(), events.len());
+    assert!(timing.last().unwrap().timestamp_ms - timing[0].timestamp_ms >= 100);
+    let mut offset = 0;
+    for (record, event) in timing.iter().zip(&events) {
+        offset += event.bytes.len() as u64;
+        assert_eq!(record.end_offset, offset);
+        assert_eq!(
+            record.timestamp_ms,
+            chrono::DateTime::parse_from_rfc3339(&event.timestamp)
+                .unwrap()
+                .timestamp_millis()
+        );
+    }
+    assert_eq!(
+        quota.lock().unwrap().used_bytes,
+        raw.len() as u64
+            + std::fs::metadata(crate::capture_timing::companion_path(&log_path))
+                .unwrap()
+                .len()
+    );
+}
+
+#[test]
+fn pty_timed_capture_never_exceeds_quota_or_blocks_remaining_raw_bytes() {
+    let mut pty = PtyPair::new();
+    let reader = open_serial(&pty, Duration::from_millis(50));
+    let mut capture = capture_file("timed-quota");
+    let info = capture_info(&capture.path);
+    let log_path = capture.path.clone();
+    let log_file = capture.file.take().unwrap();
+    let timing = crate::capture_timing::TimingWriter::create(&log_path).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    // After the header only 12 bytes remain: timing is disabled, raw still fits.
+    let quota = Arc::new(Mutex::new(CaptureQuota {
+        used_bytes: 8,
+        limit_bytes: 20,
+    }));
+    let reader_stop = Arc::clone(&stop);
+    let reader_quota = Arc::clone(&quota);
+    let reader_thread = thread::spawn(move || {
+        run_serial_capture_loop(
+            reader,
+            log_file,
+            Some(timing),
+            &info,
+            reader_stop.as_ref(),
+            &reader_quota,
+            |_| {},
+        )
+    });
+    pty.master.write_all(&[b'x'; 30]).unwrap();
+    assert_eq!(reader_thread.join().unwrap().unwrap().0, "storage-limit");
+    assert_eq!(std::fs::read(&log_path).unwrap(), vec![b'x'; 12]);
+    assert_eq!(quota.lock().unwrap().used_bytes, 20);
+    assert!(crate::capture_timing::read(&log_path, 12, 12).is_none());
 }

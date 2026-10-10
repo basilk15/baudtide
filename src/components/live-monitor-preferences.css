@@ -1,3 +1,25 @@
 .sd-terminal-output.no-timestamps .sd-terminal-line {
   grid-template-columns: minmax(0, 1fr);
 }
+
+.sd-device-recovery {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-warning);
+}
+.sd-device-recovery > svg { flex: 0 0 auto; }
+.sd-device-recovery > div { display: grid; flex: 1; min-width: 0; gap: var(--space-2xs); }
+.sd-device-recovery strong { font-size: var(--text-xs); }
+.sd-device-recovery span { color: var(--color-ink-soft); font-size: var(--text-xs); line-height: 1.5; overflow-wrap: anywhere; }
+.sd-device-recovery > button { flex: 0 0 auto; }
+@media (max-width: 760px) {
+  .sd-device-recovery { flex-wrap: wrap; }
+  .sd-device-recovery > div { flex-basis: calc(100% - 2rem); }
+  .sd-device-recovery > button { margin-left: calc(17px + var(--space-sm)); }
+}

@@ -15,6 +15,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::capture_timing::{self, ReceiveTiming, TimingWriter};
+use crate::device_identity::{self, DeviceIdentity};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serialport::{DataBits, FlowControl, Parity, SerialPort, SerialPortType, StopBits};
@@ -141,13 +143,14 @@ struct VerifiedSavedLogContentSearch {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AvailablePort {
-    path: String,
-    label: String,
-    manufacturer: Option<String>,
-    product: Option<String>,
-    serial_number: Option<String>,
-    transport: String,
+pub(crate) struct AvailablePort {
+    pub(crate) path: String,
+    pub(crate) label: String,
+    pub(crate) manufacturer: Option<String>,
+    pub(crate) product: Option<String>,
+    pub(crate) serial_number: Option<String>,
+    pub(crate) transport: String,
+    pub(crate) device_identity: Option<DeviceIdentity>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -159,6 +162,12 @@ struct StartSessionRequest {
     session_name: String,
     #[serde(default)]
     settings: SerialSettings,
+    #[serde(default)]
+    device_identity: Option<DeviceIdentity>,
+    #[serde(default)]
+    automatic_reconnect: bool,
+    #[serde(default)]
+    reviewed_port: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -326,6 +335,7 @@ struct SessionInfo {
     log_path: String,
     state: &'static str,
     settings: SerialSettings,
+    device_identity: Option<DeviceIdentity>,
 }
 
 #[derive(Clone, Serialize)]
@@ -604,6 +614,16 @@ struct SavedLogContent {
     truncated: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedTelemetryLogContent {
+    path: String,
+    text: String,
+    truncated: bool,
+    timing: Option<Vec<ReceiveTiming>>,
+    raw_base64: Option<String>,
+}
+
 /// One record is written before BaudTide opens a serial port. Index records are
 /// intentionally stored separately from raw captures, so capture files are
 /// never renamed, replaced, or otherwise disturbed by library bookkeeping.
@@ -709,6 +729,7 @@ struct ReaderContext {
     mobile_shares: Arc<Mutex<HashMap<String, ActiveMobileShare>>>,
     mobile_replay: Arc<Mutex<MobileReplayBuffer>>,
     mobile_workspace_share: Arc<Mutex<Option<ActiveMobileWorkspaceShare>>>,
+    timing: Option<TimingWriter>,
 }
 
 struct CaptureQuota {
@@ -727,6 +748,7 @@ impl Default for CaptureQuota {
 
 #[derive(Default)]
 struct SerialState {
+    capture_readers: Mutex<HashMap<String, crate::capture_reader::CaptureReader>>,
     sessions: Arc<Mutex<HashMap<String, ActiveSession>>>,
     closing_log_paths: Arc<Mutex<HashSet<String>>>,
     mobile_shares: Arc<Mutex<HashMap<String, ActiveMobileShare>>>,
@@ -1356,7 +1378,10 @@ fn read_saved_log(app: AppHandle, path: String) -> CommandResult<SavedLogContent
     })
 }
 
-fn read_saved_log_telemetry(app: AppHandle, path: String) -> CommandResult<SavedLogContent> {
+fn read_saved_log_telemetry(
+    app: AppHandle,
+    path: String,
+) -> CommandResult<SavedTelemetryLogContent> {
     let path = resolve_saved_log_path(&app, &path)?;
     // Replay is intentionally larger than the raw preview while remaining
     // bounded so an unusually large bench capture cannot exhaust renderer or
@@ -1371,10 +1396,14 @@ fn read_saved_log_telemetry(app: AppHandle, path: String) -> CommandResult<Saved
     file.take(TELEMETRY_REPLAY_LIMIT)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("Could not read the saved log for telemetry: {error}"))?;
-    Ok(SavedLogContent {
+    let timing = capture_timing::read(&path, bytes.len() as u64, metadata.len());
+    let raw_base64 = timing.as_ref().map(|_| base64_encode(&bytes));
+    Ok(SavedTelemetryLogContent {
         path: path.display().to_string(),
         text: String::from_utf8_lossy(&bytes).into_owned(),
         truncated: metadata.len() > TELEMETRY_REPLAY_LIMIT,
+        timing,
+        raw_base64,
     })
 }
 
@@ -1411,6 +1440,18 @@ fn delete_saved_log(
     std::fs::remove_file(&path)
         .map_err(|error| format!("Could not delete the saved log: {error}"))?;
     release_capture_quota(&mut quota, deleted_bytes);
+    // The existing confirmed Delete log action also owns its timing companion.
+    // A cleanup failure keeps those bytes accounted for and does not report
+    // that the already-completed raw deletion failed.
+    let timing_path = capture_timing::companion_path(&path);
+    if let Ok(metadata) = std::fs::symlink_metadata(&timing_path) {
+        if metadata.file_type().is_file() {
+            match std::fs::remove_file(timing_path) {
+                Ok(()) => release_capture_quota(&mut quota, metadata.len()),
+                Err(error) => eprintln!("Could not remove capture timing: {error}"),
+            }
+        }
+    }
     drop(quota);
     drop(sessions);
 
@@ -4154,9 +4195,41 @@ fn mobile_workspace_share_page() -> String {
 fn start_serial_session(
     app: AppHandle,
     state: State<'_, SerialState>,
-    request: StartSessionRequest,
+    mut request: StartSessionRequest,
 ) -> CommandResult<SessionInfo> {
     validate_request(&request)?;
+    if request.automatic_reconnect
+        && request.device_identity.is_none()
+        && (request.port.starts_with("/dev/ttyUSB")
+            || request.port.starts_with("/dev/ttyACM")
+            || request.port.starts_with("/dev/serial/by-id/")
+            || request.port.starts_with("/dev/serial/by-path/"))
+    {
+        return Err(format!("{} This USB port has no retained device identity. Check the device and reconnect manually, or choose its port in connection setup.", device_identity::REVIEW_PREFIX));
+    }
+    let ports = list_serial_ports();
+    if let Some(identity) = &request.device_identity {
+        let available = ports
+            .as_ref()
+            .map_err(|error| format!("Could not identify returning devices: {error}"))?;
+        request.port = if request.reviewed_port && !request.automatic_reconnect {
+            device_identity::resolve_reviewed_port(&request.port, identity, available)?
+        } else {
+            device_identity::resolve_device_port(
+                &request.port,
+                identity,
+                request.automatic_reconnect,
+                available,
+            )?
+        };
+        validate_request(&request)?;
+    }
+    let device_identity = ports.ok().and_then(|ports| {
+        ports
+            .into_iter()
+            .find(|port| device_identity::same_port(&port.path, &request.port))
+            .and_then(|port| port.device_identity)
+    });
     let configured_limit = load_application_settings(&app)?.storage.storage_limit_bytes;
     let current_library_bytes = capture_library_usage(&app)?;
 
@@ -4178,7 +4251,7 @@ fn start_serial_session(
     }
     if sessions
         .values()
-        .any(|session| session.info.port == request.port)
+        .any(|session| device_identity::same_port(&session.info.port, &request.port))
     {
         return Err(format!(
             "{} is already being monitored by BaudTide.",
@@ -4218,9 +4291,26 @@ fn start_serial_session(
         log_path: log_path.display().to_string(),
         state: "connected",
         settings: request.settings.clone(),
+        device_identity,
     };
     let mut index_record = LogIndexRecord::new(&info);
     let log_file = open_log_file(&log_path)?;
+    let timing = {
+        let mut quota = state.capture_quota.lock().map_err(lock_error)?;
+        if quota.limit_bytes.saturating_sub(quota.used_bytes) >= capture_timing::HEADER_BYTES {
+            let writer = TimingWriter::create(&log_path)
+                .map_err(|error| eprintln!("Capture timing unavailable: {error}"))
+                .ok();
+            quota.used_bytes = quota.used_bytes.saturating_add(
+                std::fs::metadata(capture_timing::companion_path(&log_path))
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0),
+            );
+            writer
+        } else {
+            None
+        }
+    };
     // The port is opened, but no reader has started. Report the metadata
     // failure directly rather than creating a misleading error capture.
     write_log_index_record(&app, &index_record)?;
@@ -4258,6 +4348,7 @@ fn start_serial_session(
                     mobile_shares: reader_mobile_shares,
                     mobile_replay: reader_mobile_replay,
                     mobile_workspace_share: reader_mobile_workspace_share,
+                    timing,
                 },
             )
         }) {
@@ -4434,6 +4525,7 @@ fn read_serial_loop(
     let terminal_status = run_serial_capture_loop(
         reader,
         log_file,
+        context.timing,
         &info,
         stop.as_ref(),
         &context.quota,
@@ -4470,6 +4562,7 @@ fn read_serial_loop(
 fn run_serial_capture_loop<F>(
     mut reader: Box<dyn SerialPort>,
     log_file: File,
+    mut timing: Option<TimingWriter>,
     info: &SessionInfo,
     stop: &AtomicBool,
     quota: &Arc<Mutex<CaptureQuota>>,
@@ -4489,12 +4582,31 @@ where
         match reader.read(&mut buffer) {
             Ok(0) => continue,
             Ok(count) => {
+                let received_at = Utc::now();
+                let timing_sync_due = capture_durability_sync_is_due(last_durable_sync.elapsed());
+                let timing_flush_due =
+                    timing_sync_due || last_flush.elapsed() >= CAPTURE_FLUSH_INTERVAL;
                 let bytes = &buffer[..count];
                 let allowed = match quota.lock() {
                     Ok(mut quota) if quota.used_bytes < quota.limit_bytes => {
+                        if timing.is_some()
+                            && quota.limit_bytes - quota.used_bytes <= capture_timing::RECORD_BYTES
+                        {
+                            // Timing must never prevent raw capture from using
+                            // the remaining quota. An incomplete index falls
+                            // back to approximate replay when read later.
+                            if let Some(mut writer) = timing.take() {
+                                let _ = writer.flush(true);
+                            }
+                        }
+                        let timing_bytes = if timing.is_some() {
+                            capture_timing::RECORD_BYTES
+                        } else {
+                            0
+                        };
                         let allowed = bytes
                             .len()
-                            .min((quota.limit_bytes - quota.used_bytes) as usize);
+                            .min((quota.limit_bytes - quota.used_bytes - timing_bytes) as usize);
                         if allowed == 0 {
                             terminal_status = Some((
                                 "storage-limit",
@@ -4515,15 +4627,18 @@ where
                                 if flush_due {
                                     last_flush = Instant::now();
                                 }
-                                quota.used_bytes = quota.used_bytes.saturating_add(allowed as u64);
+                                quota.used_bytes = quota
+                                    .used_bytes
+                                    .saturating_add(allowed as u64 + timing_bytes);
                                 allowed
                             }
                             Ok(()) => match log.get_ref().sync_data() {
                                 Ok(()) => {
                                     last_durable_sync = Instant::now();
                                     last_flush = Instant::now();
-                                    quota.used_bytes =
-                                        quota.used_bytes.saturating_add(allowed as u64);
+                                    quota.used_bytes = quota
+                                        .used_bytes
+                                        .saturating_add(allowed as u64 + timing_bytes);
                                     allowed
                                 }
                                 Err(error) => {
@@ -4570,6 +4685,21 @@ where
                     }
                 };
                 let bytes = &bytes[..allowed];
+                if let Some(writer) = &mut timing {
+                    if let Err(error) = writer
+                        .record(allowed, received_at.timestamp_millis())
+                        .and_then(|()| {
+                            if timing_flush_due {
+                                writer.flush(timing_sync_due)
+                            } else {
+                                Ok(())
+                            }
+                        })
+                    {
+                        eprintln!("Capture timing stopped; raw logging continues: {error}");
+                        timing = None;
+                    }
+                }
                 if allowed < count {
                     terminal_status = Some((
                         "storage-limit",
@@ -4587,7 +4717,7 @@ where
                     session_id: info.id.clone(),
                     port: info.port.clone(),
                     sequence: next_sequence,
-                    timestamp: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    timestamp: received_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                     text: String::from_utf8_lossy(bytes).into_owned(),
                     bytes: bytes.to_vec(),
                 };
@@ -4611,6 +4741,11 @@ where
     if let Err(error) = log.flush().and_then(|()| log.get_ref().sync_data()) {
         if !stop.load(Ordering::Acquire) && terminal_status.is_none() {
             terminal_status = Some(("error", format!("Could not finalize the raw log: {error}")));
+        }
+    }
+    if let Some(mut writer) = timing {
+        if let Err(error) = writer.flush(true) {
+            eprintln!("Could not finalize capture timing: {error}");
         }
     }
 
@@ -4796,6 +4931,7 @@ mod tests {
             log_path: "/tmp/bench.log".into(),
             state: "capturing",
             settings: SerialSettings::default(),
+            device_identity: None,
         }
     }
 
@@ -5030,6 +5166,18 @@ mod tests {
         assert_eq!(normalized.storage.log_directory, "");
         assert_eq!(normalized.storage.storage_limit_bytes, 10 * GIBIBYTE);
         assert_eq!(normalized.appearance.theme, "light");
+    }
+
+    #[test]
+    fn preference_normalization_preserves_sage_theme() {
+        let mut settings = ApplicationSettings::default();
+        settings.appearance.theme = "sage".into();
+        let serialized = serde_json::to_string(&settings).unwrap();
+        let restored = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(
+            normalize_application_settings(restored).appearance.theme,
+            "sage"
+        );
     }
 
     #[test]
@@ -6187,11 +6335,18 @@ fn port_metadata(port: serialport::SerialPortInfo) -> AvailablePort {
     let mut manufacturer = None;
     let mut product = None;
     let mut serial_number = None;
+    let mut device_identity = None;
     let transport = match port.port_type {
         SerialPortType::UsbPort(info) => {
             manufacturer = info.manufacturer;
             product = info.product;
             serial_number = info.serial_number;
+            device_identity = Some(DeviceIdentity {
+                vendor_id: info.vid,
+                product_id: info.pid,
+                serial_number: serial_number.clone().filter(|value| !value.is_empty()),
+                stable_path: device_identity::stable_device_path(&port.port_name),
+            });
             label = product
                 .clone()
                 .or(manufacturer.clone())
@@ -6209,10 +6364,14 @@ fn port_metadata(port: serialport::SerialPortInfo) -> AvailablePort {
         product,
         serial_number,
         transport: transport.into(),
+        device_identity,
     }
 }
 
 fn validate_request(request: &StartSessionRequest) -> CommandResult<()> {
+    if let Some(identity) = &request.device_identity {
+        device_identity::validate_identity(identity)?;
+    }
     let port = request.port.trim();
     if port.is_empty() {
         return Err("Choose a serial port first.".into());
@@ -6406,7 +6565,10 @@ fn normalize_application_settings(mut settings: ApplicationSettings) -> Applicat
     {
         settings.storage.storage_limit_bytes = defaults.storage.storage_limit_bytes;
     }
-    if !matches!(settings.appearance.theme.as_str(), "dark" | "light") {
+    if !matches!(
+        settings.appearance.theme.as_str(),
+        "dark" | "light" | "sage"
+    ) {
         settings.appearance.theme = defaults.appearance.theme;
     }
     settings
@@ -7255,7 +7417,10 @@ fn capture_library_usage(app: &AppHandle) -> CommandResult<u64> {
                 entry.map_err(|error| format!("Could not read a saved log entry: {error}"))?;
             let path = entry.path();
             if path.is_file()
-                && path.extension().and_then(|extension| extension.to_str()) == Some("log")
+                && (path.extension().and_then(|extension| extension.to_str()) == Some("log")
+                    || path
+                        .file_name()
+                        .is_some_and(|name| name.to_string_lossy().ends_with(".log.timing")))
             {
                 paths.insert(path_key(&path));
             }
@@ -7471,6 +7636,19 @@ fn dispatch_sidecar_request(
             no_protocol_params(&params)?;
             serialize_command_result(list_saved_logs(app, state))
         }
+        "get_capture_storage_usage" => {
+            no_protocol_params(&params)?;
+            // Include buffered reservations while a capture is active. The
+            // same session -> quota lock order is used by start and delete.
+            let sessions = state.sessions.lock().map_err(lock_error)?;
+            let on_disk = capture_library_usage(&app)?;
+            let used = if sessions.is_empty() {
+                on_disk
+            } else {
+                on_disk.max(state.capture_quota.lock().map_err(lock_error)?.used_bytes)
+            };
+            serialize_command_result(Ok(used))
+        }
         "search_saved_logs" => serialize_command_result(search_saved_logs_sidecar(
             app,
             state,
@@ -7489,6 +7667,41 @@ fn dispatch_sidecar_request(
             app,
             required_protocol_param(&params, "path")?,
         )),
+        "open_capture_analysis" => {
+            let path =
+                resolve_saved_log_path(&app, &required_protocol_param::<String>(&params, "path")?)?;
+            let mut readers = state.capture_readers.lock().map_err(lock_error)?;
+            if readers.len() >= 4 {
+                return Err("Finish or cancel a capture load before opening another.".into());
+            }
+            let reader = crate::capture_reader::CaptureReader::open(&path)
+                .map_err(|error| format!("Could not open the capture for analysis: {error}"))?;
+            let id = Uuid::new_v4().to_string();
+            let result = serde_json::json!({ "id": id, "totalBytes": reader.size(), "timingMode": if reader.recorded_timing() { "recorded" } else { "approximate" } });
+            readers.insert(id, reader);
+            Ok(result)
+        }
+        "read_capture_analysis_chunk" => {
+            let id: String = required_protocol_param(&params, "id")?;
+            let mut readers = state.capture_readers.lock().map_err(lock_error)?;
+            let reader = readers
+                .get_mut(&id)
+                .ok_or("That capture load is no longer open.")?;
+            serialize_command_result(
+                reader
+                    .next(base64_encode)
+                    .map_err(|error| format!("Could not read the capture: {error}")),
+            )
+        }
+        "close_capture_analysis" => {
+            let id: String = required_protocol_param(&params, "id")?;
+            state
+                .capture_readers
+                .lock()
+                .map_err(lock_error)?
+                .remove(&id);
+            Ok(serde_json::Value::Null)
+        }
         "delete_saved_log" => serialize_command_result(delete_saved_log(
             app,
             state,

@@ -152,13 +152,14 @@ export type MobileSharePanelState = {
 };
 
 type MobileSharePanelProps = {
+  embedded?: boolean;
   sessionId?: string;
   nativeSession: boolean;
   sessionConnected: boolean;
   onStateChange?: (state: MobileSharePanelState) => void;
 };
 
-export function MobileSharePanel({ sessionId, nativeSession, sessionConnected, onStateChange }: MobileSharePanelProps) {
+export function MobileSharePanel({ sessionId, nativeSession, sessionConnected, onStateChange, embedded = false }: MobileSharePanelProps) {
   const [share, setShare] = useState<MobileShareInfo | null>(null);
   const [isWorking, setWorking] = useState(false);
   const [message, setMessage] = useState<MobileShareNotice | null>(null);
@@ -291,9 +292,10 @@ export function MobileSharePanel({ sessionId, nativeSession, sessionConnected, o
     }
   };
 
+  const Container = embedded ? 'section' : 'details';
   return (
-    <details className="sd-mobile-share" aria-label="Mobile companion sharing">
-      <summary className="sd-mobile-share-summary">
+    <Container className="sd-mobile-share" aria-label="Mobile companion sharing">
+      {!embedded && <summary className="sd-mobile-share-summary">
         <div className="sd-mobile-share-heading">
         <div className="sd-mobile-share-icon"><Smartphone size={18} /></div>
         <div><p>Terminal link</p><h2>Share this terminal</h2></div>
@@ -301,7 +303,7 @@ export function MobileSharePanel({ sessionId, nativeSession, sessionConnected, o
         {share && <span className={`sd-mobile-share-permission ${share.controlEnabled ? 'enabled' : 'readonly'}`}>{share.controlEnabled ? 'Control enabled' : 'Read-only'}</span>}
         </div>
         <ChevronDown className="sd-mobile-share-chevron" size={17} aria-hidden="true" />
-      </summary>
+      </summary>}
       <div className="sd-mobile-share-content">
 
       {!nativeSession && <div className="sd-mobile-share-preview"><QrCode size={17} /><span>Available in the desktop app.</span></div>}
@@ -341,7 +343,7 @@ export function MobileSharePanel({ sessionId, nativeSession, sessionConnected, o
       </details>
       {message && <p className={`sd-mobile-share-message ${message.kind}`} role="status">{message.text}</p>}
       </div>
-    </details>
+    </Container>
   );
 }
 

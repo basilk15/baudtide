@@ -5,6 +5,7 @@ import { TELEMETRY_SERIES_COLORS } from '../lib/telemetryChart';
 import { TelemetryCharts } from './TelemetryECharts';
 import { ThemedSelect } from './ThemedSelect';
 import './visualize-screen.css';
+import type { SerialDeviceIdentity, SerialConnectionSettings } from '../lib/serial';
 
 export type VisualizeSession = {
   id: string;
@@ -12,9 +13,16 @@ export type VisualizeSession = {
   sessionName: string;
   port: string;
   connectionState: 'connected' | 'reconnecting' | 'disconnected' | 'error';
+  capturePath?: string;
+  identity?: string;
+  legacyIdentity?: string;
+  deviceIdentity?: SerialDeviceIdentity | null;
+  baudRate?: number;
+  settings?: SerialConnectionSettings;
 };
 
 export type VisualizeScreenProps = {
+  workspaceVisible?: boolean;
   nativeEnabled: boolean;
   sessions: VisualizeSession[];
   selectedSessionId: string | null;

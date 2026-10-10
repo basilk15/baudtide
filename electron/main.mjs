@@ -1,3 +1,5 @@
+import { TelemetryExportStreams, assertExportDestinationSafe } from './telemetry-export.mjs';
+import { CaptureAnalysisReaders } from './capture-analysis.mjs';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
@@ -32,6 +34,10 @@ const electronOwnedCommands = new Set([
   'select_log_directory',
   'save_saved_log',
   'export_telemetry_data',
+  'begin_telemetry_export',
+  'append_telemetry_export',
+  'finish_telemetry_export',
+  'cancel_telemetry_export',
   'toggle_menu_bar',
 ]);
 const APP_ID = 'com.basil.baudtide';
@@ -331,6 +337,24 @@ async function saveLogCopy(args) {
   });
 }
 
+async function validateTelemetryDestination(destination) {
+  const logs = await backend.invoke('list_saved_logs');
+  await assertExportDestinationSafe(destination, {
+    directories: [backendDataDirectory, app.getPath('userData')],
+    files: logs.flatMap((log) => [log.path, `${log.path}.timing`]),
+  });
+}
+const telemetryExports = new TelemetryExportStreams(validateTelemetryDestination);
+const captureAnalyses = new CaptureAnalysisReaders((command, args) => backend.invoke(command, args));
+
+async function disposeRendererResources() {
+  const results = await Promise.allSettled([telemetryExports.dispose(), captureAnalyses.dispose()]);
+  // Cleanup must not prevent backend shutdown when a native command fails.
+  for (const result of results) {
+    if (result.status === 'rejected') console.error('Could not clean up renderer resources:', errorMessage(result.reason));
+  }
+}
+
 async function exportTelemetryData(args) {
   if (typeof args.contents !== 'string') {
     throw new TypeError('Telemetry export contents must be text.');
@@ -338,6 +362,22 @@ async function exportTelemetryData(args) {
   if (Buffer.byteLength(args.contents, 'utf8') > 64 * 1024 * 1024) {
     throw new Error('Telemetry exports are limited to 64 MB. Narrow the selected signals or display window and try again.');
   }
+  const id = await telemetryExports.beginWithDestination(() => chooseTelemetryExportDestination(args));
+  if (!id) return null;
+  try {
+    // Preserve the legacy command while using the same atomic publication path.
+    let offset = 0;
+    while (offset < args.contents.length) {
+      let end = Math.min(args.contents.length, offset + 64 * 1024);
+      const last = args.contents.charCodeAt(end - 1);
+      if (end < args.contents.length && last >= 0xD800 && last <= 0xDBFF) end -= 1;
+      await telemetryExports.append(id, args.contents.slice(offset, end)); offset = end;
+    }
+    return await telemetryExports.finish(id);
+  } catch (error) { await telemetryExports.cancel(id).catch(() => undefined); throw error; }
+}
+
+async function chooseTelemetryExportDestination(args) {
   const format = args.format === 'json' ? 'json' : 'csv';
   const fallbackName = `baudtide-telemetry.${format}`;
   const requestedName = typeof args.defaultName === 'string' ? path.basename(args.defaultName) : fallbackName;
@@ -358,7 +398,6 @@ async function exportTelemetryData(args) {
   const destinationPath = path.extname(result.filePath)
     ? result.filePath
     : `${result.filePath}.${format}`;
-  await fs.promises.writeFile(destinationPath, args.contents, { encoding: 'utf8', flag: 'w' });
   return path.resolve(destinationPath);
 }
 
@@ -375,6 +414,7 @@ function toggleMenuBar(args) {
 async function forceReload() {
   if (shutdownStarted) return;
   shutdownStarted = true;
+  await disposeRendererResources();
   await backend.stop();
   shutdownComplete = true;
 
@@ -403,10 +443,20 @@ ipcMain.handle(invokeChannel, async (event, command, args = {}) => {
   }
   requirePlainArguments(args);
 
+  if (command === 'open_capture_analysis') return captureAnalyses.open(args);
+  if (command === 'read_capture_analysis_chunk') return captureAnalyses.read(args);
+  if (command === 'close_capture_analysis') return captureAnalyses.close(args);
+
   if (electronOwnedCommands.has(command)) {
     if (command === 'select_log_directory') return chooseLogDirectory();
     if (command === 'save_saved_log') return saveLogCopy(args);
     if (command === 'export_telemetry_data') return exportTelemetryData(args);
+    if (command === 'begin_telemetry_export') {
+      return telemetryExports.beginWithDestination(() => chooseTelemetryExportDestination(args));
+    }
+    if (command === 'append_telemetry_export') return telemetryExports.append(args.id, args.contents);
+    if (command === 'finish_telemetry_export') return telemetryExports.finish(args.id);
+    if (command === 'cancel_telemetry_export') return telemetryExports.cancel(args.id);
     return toggleMenuBar(args);
   }
   return backend.invoke(command, args);
@@ -611,6 +661,9 @@ async function createMainWindow() {
   window.webContents.on('will-navigate', (event, url) => {
     if (url !== window.webContents.getURL()) event.preventDefault();
   });
+  const cleanRendererResources = () => { void disposeRendererResources().catch((error) => console.error('Could not clean up renderer resources:', errorMessage(error))); };
+  window.webContents.on('render-process-gone', cleanRendererResources);
+  window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => { if (isMainFrame && !isInPlace) cleanRendererResources(); });
   window.once('ready-to-show', () => window.show());
   window.once('closed', () => {
     if (mainWindow === window) mainWindow = null;
@@ -627,6 +680,7 @@ async function createMainWindow() {
 async function beginShutdown() {
   if (shutdownStarted) return;
   shutdownStarted = true;
+  await disposeRendererResources();
   await backend.stop();
   shutdownComplete = true;
   app.quit();

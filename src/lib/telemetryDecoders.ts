@@ -86,7 +86,7 @@ export function validateTelemetryDecoderDraft(draft: TelemetryDecoderProfileDraf
   return null;
 }
 
-function normalizeProfile(value: unknown): TelemetryDecoderProfile | null {
+export function normalizeTelemetryDecoderProfile(value: unknown): TelemetryDecoderProfile | null {
   if (!value || typeof value !== 'object') return null;
   const candidate = value as Partial<TelemetryDecoderProfile>;
   if (candidate.version !== TELEMETRY_DECODER_PROFILE_VERSION || typeof candidate.id !== 'string' || !candidate.id.trim()) return null;
@@ -168,7 +168,7 @@ export function loadTelemetryDecoderProfiles(): TelemetryDecoderProfile[] {
     if (!Array.isArray(parsed)) return [];
     const seen = new Set<string>();
     return parsed
-      .map(normalizeProfile)
+      .map(normalizeTelemetryDecoderProfile)
       .filter((profile): profile is TelemetryDecoderProfile => {
         if (!profile || seen.has(profile.id)) return false;
         seen.add(profile.id);
@@ -187,7 +187,7 @@ export function saveTelemetryDecoderProfiles(profiles: readonly TelemetryDecoder
     const storage = window.localStorage;
     if (!storage) return { ok: false, error: 'storage-unavailable' };
     const normalized = profiles
-      .map(normalizeProfile)
+      .map(normalizeTelemetryDecoderProfile)
       .filter((profile): profile is TelemetryDecoderProfile => Boolean(profile))
       .slice(0, MAX_TELEMETRY_DECODER_PROFILES);
     storage.setItem(STORAGE_KEY, JSON.stringify(normalized));

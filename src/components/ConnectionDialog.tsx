@@ -4,6 +4,7 @@ import { ThemedSelect } from './ThemedSelect';
 import { defaultSerialConnectionSettings, type SerialConnectionSettings } from '../lib/serial';
 import { clearRecentConnections, loadRecentConnections, removeRecentConnection, saveRecentConnection, type RecentConnection } from '../lib/recentConnections';
 import './connection-dialog.css';
+import { PortScanGuard } from '../lib/portScan';
 
 export type SerialPortOption = {
   path: string;
@@ -76,6 +77,7 @@ export function ConnectionDialog({
   nativeEnabled = false,
   activePorts = noActivePorts,
 }: ConnectionDialogProps) {
+  const scanGuard = useRef(new PortScanGuard());
   const titleId = useId();
   const descriptionId = useId();
   const dialogRef = useRef<HTMLElement>(null);
@@ -84,6 +86,8 @@ export function ConnectionDialog({
   const [ports, setPorts] = useState(initialPorts);
   const [scanState, setScanState] = useState<PortScanState>(initialScanState);
   const [port, setPort] = useState(initialPort ?? initialPorts[0]?.path ?? '');
+  const portRef = useRef(port);
+  const updatePort = (value: string) => { portRef.current = value; setPort(value); };
   const [manualPort, setManualPort] = useState(false);
   const [baudRate, setBaudRate] = useState(String(initialBaudRate));
   const [customBaud, setCustomBaud] = useState(!baudRates.includes(initialBaudRate));
@@ -96,11 +100,12 @@ export function ConnectionDialog({
   const [submitError, setSubmitError] = useState('');
 
   useEffect(() => {
+    scanGuard.current.reset();
     if (!isOpen) return;
     setPorts(initialPorts);
     setScanState(initialScanState);
-    setPort(initialPort ?? initialPorts[0]?.path ?? '');
-    setManualPort(false);
+    updatePort(initialPort ?? initialPorts[0]?.path ?? '');
+    setManualPort(Boolean(initialPort && !initialPorts.some((item) => item.path === initialPort)));
     setBaudRate(String(initialBaudRate));
     setCustomBaud(!baudRates.includes(initialBaudRate));
     setSettings(initialSettings);
@@ -119,7 +124,7 @@ export function ConnectionDialog({
     };
     resetOpeningPosition();
     const animationFrame = window.requestAnimationFrame(resetOpeningPosition);
-    return () => window.cancelAnimationFrame(animationFrame);
+    return () => { window.cancelAnimationFrame(animationFrame); scanGuard.current.reset(); };
   }, [isOpen, initialPorts, initialPort, initialBaudRate, initialSessionName, initialSettings, initialScanState]);
 
   useEffect(() => {
@@ -158,18 +163,21 @@ export function ConnectionDialog({
   };
 
   async function scanPorts() {
-    if (scanState === 'loading') return;
+    const scan = scanGuard.current.begin();
     setScanState('loading');
     setSubmitError('');
     try {
       const found = onScan ? await onScan() : [];
+      if (!scanGuard.current.isCurrent(scan)) return;
       setPorts(found);
       setScanState(found.length ? 'ready' : 'empty');
-      if (found.length && !found.some((item) => item.path === port)) {
-        setPort(found[0].path);
-        if (!sessionName) setSessionName(nameForPort(found[0].path, found));
+      if (found.length && scanGuard.current.canSelect(scan)) {
+        const selectedPath = portRef.current || found[0].path;
+        updatePort(selectedPath);
+        setSessionName((current) => current || nameForPort(selectedPath, found));
       }
     } catch (error) {
+      if (!scanGuard.current.isCurrent(scan)) return;
       const message = errorMessage(error);
       setScanState(/permission|access|denied/i.test(message) ? 'permission-denied' : 'error');
       setSubmitError(`Could not scan serial ports: ${message}`);
@@ -177,14 +185,16 @@ export function ConnectionDialog({
   }
 
   const selectPort = (nextPort: string) => {
-    setPort(nextPort);
+    scanGuard.current.choose();
+    updatePort(nextPort);
     setManualPort(false);
     setErrors((current) => ({ ...current, port: undefined }));
     if (!sessionName.trim()) setSessionName(nameForPort(nextPort, ports));
   };
 
   const applyRecentConnection = (recent: RecentConnection) => {
-    setPort(recent.port);
+    scanGuard.current.choose();
+    updatePort(recent.port);
     setManualPort(!ports.some((item) => item.path === recent.port));
     setBaudRate(String(recent.baudRate));
     setCustomBaud(!baudRates.includes(recent.baudRate));
@@ -308,11 +318,11 @@ export function ConnectionDialog({
 
           <div className="sd-form-grid">
             <label className="sd-form-field sd-full-width">Port
-              <ThemedSelect label="Serial port" value={manualPort ? '__manual__' : port} placeholder="Enter a port path manually…" invalid={Boolean(errors.port)} onChange={(value) => value === '__manual__' ? setManualPort(true) : selectPort(value)} options={[...ports.map((item) => ({ value: item.path, label: `${item.path}${item.label ? ` · ${item.label}` : ''}` })), { value: '__manual__', label: 'Enter a port path manually…' }]} />
+              <ThemedSelect label="Serial port" value={manualPort ? '__manual__' : port} placeholder="Enter a port path manually…" invalid={Boolean(errors.port)} onChange={(value) => value === '__manual__' ? (scanGuard.current.choose(), setManualPort(true)) : selectPort(value)} options={[...(port && !manualPort && !ports.some((item) => item.path === port) ? [{ value: port, label: `${port} · not currently detected` }] : []), ...ports.map((item) => ({ value: item.path, label: `${item.path}${item.label ? ` · ${item.label}` : ''}` })), { value: '__manual__', label: 'Enter a port path manually…' }]} />
               {errors.port && <small className="sd-field-error">{errors.port}</small>}
             </label>
             {manualPort && <label className="sd-form-field sd-full-width">Manual port path
-              <input className="sd-port-path-input" autoComplete="off" value={port} onChange={(event) => { setPort(event.target.value); setErrors((current) => ({ ...current, port: undefined })); }} placeholder="e.g. /dev/ttyUSB0" aria-invalid={Boolean(errors.port)} />
+              <input className="sd-port-path-input" autoComplete="off" value={port} onChange={(event) => { scanGuard.current.choose(); updatePort(event.target.value); setErrors((current) => ({ ...current, port: undefined })); }} placeholder="e.g. /dev/ttyUSB0" aria-invalid={Boolean(errors.port)} />
             </label>}
             <label className="sd-form-field">Baud rate
               <ThemedSelect label="Baud rate" value={customBaud ? '__custom__' : baudRate} placeholder="Select a baud rate" invalid={Boolean(errors.baudRate)} onChange={(value) => {

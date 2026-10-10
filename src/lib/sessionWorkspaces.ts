@@ -1,4 +1,5 @@
-import type { SerialConnectionSettings } from './serial';
+import type { SerialConnectionSettings, SerialDeviceIdentity } from './serial';
+import { normalizeBenchConnection, type BenchConnectionPreset } from './benchSetup';
 
 const STORAGE_KEY = 'baudtide.session-workspaces.v1';
 const STORAGE_VERSION = 1;
@@ -14,6 +15,8 @@ export type SavedSessionWorkspace = {
   layout: TerminalLayout;
   sessionIdentities: string[];
   selectedSessionIdentity: string | null;
+  connections?: BenchConnectionPreset[];
+  analysisWorkspaceId?: string;
   createdAt: number;
   updatedAt: number;
 };
@@ -23,6 +26,8 @@ export type SessionWorkspaceSnapshot = {
   layout: TerminalLayout;
   sessionIdentities: string[];
   selectedSessionIdentity: string | null;
+  connections?: BenchConnectionPreset[];
+  analysisWorkspaceId?: string;
 };
 
 export type SessionWorkspaceLoadResult = {
@@ -108,7 +113,11 @@ function parseWorkspace(value: unknown): SavedSessionWorkspace | null {
   if (value.selectedSessionIdentity !== null && !selectedSessionIdentity) return null;
   if (selectedSessionIdentity && !sessionIdentities.includes(selectedSessionIdentity)) return null;
   if (!validTimestamp(value.createdAt) || !validTimestamp(value.updatedAt)) return null;
+  const connections = parseConnections(value.connections, sessionIdentities);
+  if (connections === null || (value.analysisWorkspaceId !== undefined && !validString(value.analysisWorkspaceId, 160))) return null;
   return {
+    ...(connections ? { connections } : {}),
+    ...(typeof value.analysisWorkspaceId === 'string' ? { analysisWorkspaceId: value.analysisWorkspaceId } : {}),
     id,
     name,
     layout: value.layout,
@@ -127,11 +136,15 @@ function parseWorkspace(value: unknown): SavedSessionWorkspace | null {
 export function stableTerminalSessionIdentity(connection: Pick<
   { port: string; baudRate: number; settings: SerialConnectionSettings },
   'port' | 'baudRate' | 'settings'
->): string {
+> & { deviceIdentity?: SerialDeviceIdentity | null }): string {
   const { port, baudRate, settings } = connection;
+  const device = connection.deviceIdentity;
+  const target = device?.stablePath
+    ? `usb-path=${device.vendorId},${device.productId},${device.stablePath}`
+    : device?.serialNumber ? `usb-serial=${device.vendorId},${device.productId},${device.serialNumber}` : port.trim();
   return [
     'serial',
-    encodeURIComponent(port.trim()),
+    encodeURIComponent(target),
     baudRate,
     settings.dataBits,
     settings.parity,
@@ -197,6 +210,15 @@ function createId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `workspace-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function parseConnections(value: unknown, identities: string[]): BenchConnectionPreset[] | undefined | null {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length !== identities.length) return null;
+  const connections = value.map(normalizeBenchConnection);
+  if (connections.some((p) => !p) || new Set(connections.map((p) => p?.identity)).size !== identities.length
+    || connections.some((p) => !identities.includes(p!.identity) || stableTerminalSessionIdentity(p!) !== p!.identity)) return null;
+  return connections as BenchConnectionPreset[];
+}
+
 function parseSnapshot(snapshot: SessionWorkspaceSnapshot): SessionWorkspaceSnapshot | null {
   const name = normalizeName(snapshot.name);
   const sessionIdentities = normalizeIdentities(snapshot.sessionIdentities);
@@ -206,7 +228,9 @@ function parseSnapshot(snapshot: SessionWorkspaceSnapshot): SessionWorkspaceSnap
     : validString(snapshot.selectedSessionIdentity, 8192) ? snapshot.selectedSessionIdentity.trim() : null;
   if (snapshot.selectedSessionIdentity !== null && !selectedSessionIdentity) return null;
   if (selectedSessionIdentity && !sessionIdentities.includes(selectedSessionIdentity)) return null;
-  return { ...snapshot, name, sessionIdentities, selectedSessionIdentity };
+  const connections = parseConnections(snapshot.connections, sessionIdentities);
+  if (connections === null || (snapshot.analysisWorkspaceId !== undefined && !validString(snapshot.analysisWorkspaceId, 160))) return null;
+  return { ...snapshot, ...(connections ? { connections } : {}), name, sessionIdentities, selectedSessionIdentity };
 }
 
 /** Load local-only saved layouts. Storage or JSON failures are intentionally non-fatal. */
@@ -261,4 +285,21 @@ export function deleteSessionWorkspace(id: string): SessionWorkspaceDeleteResult
   if (next.length === current.workspaces.length) return { ok: false, error: 'missing-workspace' };
   const writeResult = writeWorkspaces(storage.storage, next);
   return writeResult.ok ? { ok: true, workspaces: next } : { ok: false, error: writeResult.error };
+}
+
+/** Update a setup while retaining its saved ID and creation time. */
+export function updateSessionWorkspace(id: string, snapshot: SessionWorkspaceSnapshot): SessionWorkspaceUpdateResult {
+  const normalized = parseSnapshot(snapshot);
+  const storage = getStorage();
+  if (!validString(id, 160)) return { ok: false, error: 'invalid-id' };
+  if (!normalized) return { ok: false, error: 'invalid-name' };
+  if (!storage.ok) return { ok: false, error: storage.error };
+  const current = readWorkspaces(storage.storage);
+  if (current.error) return { ok: false, error: current.error };
+  const original = current.workspaces.find((workspace) => workspace.id === id);
+  if (!original) return { ok: false, error: 'missing-workspace' };
+  const workspace = { ...normalized, id, createdAt: original.createdAt, updatedAt: Date.now() };
+  const next = current.workspaces.map((candidate) => candidate.id === id ? workspace : candidate);
+  const result = writeWorkspaces(storage.storage, next);
+  return result.ok ? { ok: true, workspaces: next, workspace } : { ok: false, error: result.error };
 }

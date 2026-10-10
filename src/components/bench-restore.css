@@ -1,0 +1,17 @@
+.bt-bench-dialog { width: min(720px, calc(100% - 32px)); max-height: calc(100dvh - 48px); padding: 24px; border: 1px solid var(--sd-border, #344454); border-radius: 8px; background: var(--sd-surface, #131f2a); color: var(--sd-text, #edf4f7); overflow: auto; }
+.bt-bench-dialog::backdrop { background: #08121bc9; }
+.bt-bench-dialog header, .bt-bench-dialog footer { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.bt-bench-dialog h2 { margin: 0; font-size: 22px; }
+.bt-bench-dialog p { font-size: 13px; line-height: 1.5; }
+.bt-bench-rows { margin-block: 20px; border-block: 1px solid var(--sd-border, #344454); }
+.bt-bench-rows section { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, .7fr); align-items: center; gap: 20px; padding-block: 16px; }
+.bt-bench-rows section + section { border-top: 1px solid var(--sd-border, #344454); }
+.bt-bench-rows strong, .bt-bench-rows small { display: block; overflow-wrap: anywhere; }
+.bt-bench-rows small { margin-top: 6px; font: 12px 'Ubuntu Mono', monospace; }
+.bt-bench-rows p { margin-bottom: 0; }
+.bt-bench-rows .sd-themed-select { width: 100%; }
+.bt-bench-result { min-height: 20px; overflow-wrap: anywhere; }
+.bt-bench-dialog footer { justify-content: flex-end; flex-wrap: wrap; }
+.theme-light .bt-bench-dialog { background: #f7fafc; color: #26394e; border-color: #c4d3df; }
+.theme-light .bt-bench-rows, .theme-light .bt-bench-rows section + section { border-color: #c4d3df; }
+@media (max-width: 560px) { .bt-bench-dialog { padding: 16px; } .bt-bench-rows section { grid-template-columns: minmax(0, 1fr); gap: 12px; } .bt-bench-dialog footer button { min-height: 44px; } .bt-workspace-name-form { flex-wrap: wrap; } }

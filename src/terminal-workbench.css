@@ -881,3 +881,16 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* Bench actions need their own row before they squeeze the workspace heading. */
+@media (max-width: 1600px) {
+  .signaldeck-shell .sd-sessions-workspace-header {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-md);
+  }
+  .signaldeck-shell .sd-sessions-workspace-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    min-width: 0;
+  }
+}

@@ -1,6 +1,12 @@
 import type { TelemetryField, TelemetryGap, TelemetrySample } from './telemetry';
 
 export const TELEMETRY_SERIES_COLORS = ['#70d8bd', '#8e9fff', '#efb778', '#e985a2', '#69bde8', '#c28be8', '#adc979', '#f1a873'] as const;
+const LIGHT_TELEMETRY_SERIES_COLORS = ['#187d68', '#5358c8', '#995d1a', '#b14165', '#206e9a', '#8350b1', '#557423', '#a45125'] as const;
+
+export function telemetrySeriesColor(index: number, light = false) {
+  const colors = light ? LIGHT_TELEMETRY_SERIES_COLORS : TELEMETRY_SERIES_COLORS;
+  return colors[Math.max(0, index) % colors.length];
+}
 
 /** A timestamped scalar ready for plotting. Timestamps are milliseconds since Unix epoch. */
 export type TelemetryChartPoint = Readonly<{
@@ -35,6 +41,7 @@ export type TelemetryChartGapMarker = Readonly<{
   id: string;
   timestampMs: number;
   type: TelemetryGap['type'];
+  fieldKeys?: readonly string[];
 }>;
 
 export type TelemetryChartDomain = Readonly<{
@@ -277,7 +284,7 @@ function filteredGapMarkers(gaps: readonly TelemetryGap[], startMs?: number, end
     const timestampMs = finiteTimestamp(gap.timestamp);
     if (timestampMs === undefined) continue;
     if ((startMs !== undefined && timestampMs < startMs) || (endMs !== undefined && timestampMs > endMs)) continue;
-    markers.push({ id: gap.id, timestampMs, type: gap.type });
+    markers.push({ id: gap.id, timestampMs, type: gap.type, fieldKeys: gap.fieldKeys });
   }
   return markers.sort((left, right) => left.timestampMs - right.timestampMs || left.id.localeCompare(right.id));
 }

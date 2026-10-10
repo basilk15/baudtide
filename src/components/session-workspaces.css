@@ -272,3 +272,12 @@
     display: none;
   }
 }
+
+/* Bench actions share the existing toolbar and wrap before squeezing its title. */
+.bt-workspace-manager-controls { flex-wrap: wrap; }
+.bt-workspace-name-form { flex-wrap: wrap; }
+.bt-workspace-name-form .sd-themed-select { flex: 1 1 180px; min-width: 0; }
+@media (min-width: 1081px) and (max-width: 1600px) {
+  .signaldeck-shell .sd-sessions-workspace-header { grid-template-columns: minmax(0, 1fr); }
+  .signaldeck-shell .sd-sessions-workspace-actions { flex-wrap: wrap; }
+}

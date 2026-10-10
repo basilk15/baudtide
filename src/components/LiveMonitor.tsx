@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { forwardRef, memo, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { AlertTriangle, Check, ChevronDown, ChevronsDown, CirclePause, CirclePlay, Copy, Eraser, LoaderCircle, PlugZap, RotateCw, Search, Send, SlidersHorizontal, TerminalSquare, WifiOff, X } from 'lucide-react';
 import { listenForSerialData, listenForSerialStatus, takePendingNativeSerialData, type SerialDataEvent } from '../lib/serial';
 import { liveTelemetryStore } from '../lib/telemetry';
@@ -6,6 +6,10 @@ import { lineEndingText, type DisplayEncoding, type LineEnding } from '../lib/pr
 import { ThemedSelect } from './ThemedSelect';
 import './live-monitor.css';
 import './live-monitor-preferences.css';
+import { commandBytes, type SerialCommand } from '../lib/serialCommands';
+import { CommandPresetsPanel } from './CommandPresetsPanel';
+import { TerminalRowGroups } from '../lib/terminalRows';
+import { useDocumentVisible } from '../lib/useDocumentVisible';
 
 export type MonitorConnectionState = 'connected' | 'reconnecting' | 'disconnected' | 'error';
 export type AutoReconnectStatus = { attempt: number; nextRetryAt: number };
@@ -43,7 +47,6 @@ const MAX_PENDING_DISPLAY_EVENTS = 512;
 const MAX_PENDING_DISPLAY_BYTES = 2 * 1024 * 1024;
 const MAX_PENDING_SERIAL_EVENTS = 256;
 const MAX_COMMAND_HISTORY = 50;
-const MAX_SERIAL_WRITE_BYTES = 64 * 1024;
 const MAX_PERSISTED_HISTORY_CHARACTERS_PER_MODE = 32 * 1024;
 const COMPOSER_STORAGE_PREFIX = 'baudtide.serial-composer.';
 const ERROR_FILTER_SOURCE = String.raw`(?<![\p{L}\p{N}_])(?:error|err|fail(?:ed|ure)?|panic|fatal|exception|abort(?:ed)?)(?![\p{L}\p{N}_])`;
@@ -118,28 +121,6 @@ function persistComposerState(sessionId: string | undefined, state: PersistedCom
   }
 }
 
-function parseHexBytes(input: string): { bytes: number[] } | { error: string } {
-  const trimmed = input.trim();
-  if (!trimmed) return { error: 'Enter at least one byte, for example 48 65 6C 6C 6F.' };
-  // Commas and whitespace may be freely combined around one separator, but a
-  // comma can never stand in for a byte.
-  const normalizedSeparators = trimmed.replace(/\s*,\s*/g, ',');
-  if (normalizedSeparators.startsWith(',') || normalizedSeparators.endsWith(',') || normalizedSeparators.includes(',,')) {
-    return { error: 'Use one comma or whitespace separator between each byte.' };
-  }
-  const tokens = trimmed.split(/[\s,]+/);
-  if (tokens.length > MAX_SERIAL_WRITE_BYTES) {
-    return { error: `Hex sends are limited to ${MAX_SERIAL_WRITE_BYTES.toLocaleString()} bytes.` };
-  }
-  const bytes: number[] = [];
-  for (const token of tokens) {
-    if (!/^(?:0x)?[\da-f]{2}$/i.test(token)) {
-      return { error: `“${token}” is not a byte. Use two hex digits such as 7E or 0x7E.` };
-    }
-    bytes.push(Number.parseInt(token.replace(/^0x/i, ''), 16));
-  }
-  return { bytes };
-}
 
 function outputMatchPattern(preset: OutputFilterPreset, customFilter: string) {
   if (preset === 'errors') return ERROR_LINE_PATTERN;
@@ -177,6 +158,29 @@ function HighlightedOutput({ text, pattern }: { text: string; pattern: RegExp | 
   return <>{output}</>;
 }
 
+// Appending a reading leaves the other retained rows unchanged. Keep their
+// DOM and highlight work intact when the stream or surrounding controls update.
+const TerminalLine = memo(function TerminalLine({ line, showTimestamps, filtered, pattern }: {
+  line: MonitorLine;
+  showTimestamps: boolean;
+  filtered: boolean;
+  pattern: RegExp | null;
+}) {
+  return <div className={`sd-terminal-line ${line.kind ?? 'data'} ${filtered ? 'is-filtered' : ''}`}>
+    {showTimestamps && <time>{line.timestamp}</time>}
+    <code><HighlightedOutput text={line.text} pattern={pattern} /></code>
+  </div>;
+});
+
+const TerminalRowGroup = memo(function TerminalRowGroup({ rows, showTimestamps, filtered, pattern }: {
+  rows: readonly MonitorLine[];
+  showTimestamps: boolean;
+  filtered: boolean;
+  pattern: RegExp | null;
+}) {
+  return <>{rows.map((line) => <TerminalLine key={line.id} line={line} showTimestamps={showTimestamps} filtered={filtered} pattern={pattern} />)}</>;
+});
+
 function sliceWithoutSplittingSurrogatePair(text: string, maxLength: number) {
   let end = Math.min(text.length, maxLength);
   if (end > 0 && end < text.length) {
@@ -191,9 +195,12 @@ function sliceWithoutSplittingSurrogatePair(text: string, maxLength: number) {
 
 export type LiveMonitorProps = {
   sessionName: string;
+  commandIdentity?: string;
   port: string;
   baudRate: number;
   lineEnding?: LineEnding;
+  /** Report the current per-terminal choice for saved bench setups. */
+  onLineEndingChange?: (lineEnding: LineEnding) => void;
   displayEncoding?: DisplayEncoding;
   showTimestamps?: boolean;
   initialLines?: MonitorLine[];
@@ -204,7 +211,9 @@ export type LiveMonitorProps = {
   /** Per-session automatic reconnect is controlled by the workspace owner. */
   autoReconnectEnabled?: boolean;
   autoReconnectStatus?: AutoReconnectStatus;
-  autoReconnectBlockedReason?: 'storage-limit';
+  autoReconnectBlockedReason?: 'storage-limit' | 'device-identity';
+  autoReconnectBlockedDetail?: string;
+  onReconnectSetup?: () => void;
   onAutoReconnectChange?: (enabled: boolean) => void;
   onDisconnect?: () => void | Promise<void>;
   onClear?: () => void;
@@ -260,9 +269,11 @@ function displayTextForEvent(event: SerialDataEvent, encoding: DisplayEncoding, 
 
 export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(function LiveMonitor({
   sessionName,
+  commandIdentity,
   port,
   baudRate,
   lineEnding = 'lf',
+  onLineEndingChange,
   displayEncoding = 'utf8',
   showTimestamps = true,
   initialLines,
@@ -273,6 +284,8 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   autoReconnectEnabled = false,
   autoReconnectStatus,
   autoReconnectBlockedReason,
+  autoReconnectBlockedDetail,
+  onReconnectSetup,
   onAutoReconnectChange,
   onDisconnect,
   onClear,
@@ -287,6 +300,8 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   displayActive = true,
   capturePath,
 }: LiveMonitorProps, ref) {
+  const documentVisible = useDocumentVisible();
+  const renderActive = displayActive && documentVisible;
   const [initialComposerState] = useState(() => loadComposerState(sessionId, lineEnding));
   const [connectionState, setConnectionState] = useState<MonitorConnectionState>(nativeSession ? initialConnectionState : 'disconnected');
   const [lines, setLines] = useState<MonitorLine[]>(() => (initialLines ?? []).slice(-500));
@@ -301,9 +316,13 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   const [sendLineEnding, setSendLineEnding] = useState<LineEnding>(initialComposerState.lineEnding);
   const [commandHistory, setCommandHistory] = useState<CommandHistory>(initialComposerState.commandHistory);
   const [composerSessionId, setComposerSessionId] = useState(sessionId);
+  const onLineEndingChangeRef = useRef(onLineEndingChange);
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [isSending, setSending] = useState(false);
+  const [isRepeating, setRepeating] = useState(false);
+  const sendInFlightRef = useRef(false);
+  const stopRepeatingRef = useRef<(() => void) | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
   const [isReconnecting, setReconnecting] = useState(false);
@@ -332,7 +351,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   // events. Keep the visible, unfinished line separate from line termination.
   const currentDataLineRef = useRef<MonitorLine | null>(null);
   const skipNextLineFeedRef = useRef(false);
-  const displayActiveRef = useRef(displayActive);
+  const displayActiveRef = useRef(renderActive);
   const pendingDisplayEventsRef = useRef<SerialDataEvent[]>([]);
   const pendingDisplayBytesRef = useRef(0);
   const displayBacklogDroppedRef = useRef(false);
@@ -453,6 +472,13 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
     });
   }, [commandHistory, composerSessionId, sendLineEnding, sendMode, sessionId]);
 
+  useEffect(() => { onLineEndingChangeRef.current = onLineEndingChange; }, [onLineEndingChange]);
+  useEffect(() => {
+    // Wait for composer restoration when a reconnect replaces the native ID.
+    // Also report sessionStorage's choice when recovering after a renderer reload.
+    if (composerSessionId === sessionId) onLineEndingChangeRef.current?.(sendLineEnding);
+  }, [composerSessionId, sendLineEnding, sessionId]);
+
   useEffect(() => {
     onConnectionStateChangeRef.current = onConnectionStateChange;
   }, [onConnectionStateChange]);
@@ -482,6 +508,8 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   }, [filterPreset, matchPattern, visibleLines]);
   const highlightPattern = useMemo(() => outputHighlightPattern(filterPreset, normalizedOutputFilter), [filterPreset, normalizedOutputFilter]);
   const filterIsActive = filterPreset !== 'all' && (filterPreset !== 'custom' || Boolean(normalizedOutputFilter));
+  const [rowGroups] = useState(() => new TerminalRowGroups<MonitorLine>());
+  const groupedLines = useMemo(() => rowGroups.group(filteredLines), [filteredLines, rowGroups]);
 
   const applyQueuedDisplayChanges = () => {
     const batch = queuedChangesRef.current.splice(0);
@@ -670,8 +698,8 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
 
   useEffect(() => {
     const wasActive = displayActiveRef.current;
-    displayActiveRef.current = displayActive;
-    if (!displayActive) {
+    displayActiveRef.current = renderActive;
+    if (!renderActive) {
       if (renderFrameRef.current !== null) {
         window.cancelAnimationFrame(renderFrameRef.current);
         renderFrameRef.current = null;
@@ -682,7 +710,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
       flushDisplayChanges();
       replayInactiveDisplayEvents();
     }
-  }, [displayActive]);
+  }, [renderActive]);
 
   useEffect(() => {
     if (nativeSession && sessionId) {
@@ -896,43 +924,36 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
     scheduleAutoScroll(true);
   };
 
+  const transmitCommand = async (command: Pick<SerialCommand, 'payload' | 'mode' | 'lineEnding'>) => {
+    if (sendInFlightRef.current) throw new Error('A serial write is still in progress.');
+    if (!nativeSession || connectionState !== 'connected') throw new Error('Reconnect before sending a command.');
+    const bytes = commandBytes(command);
+    sendInFlightRef.current = true;
+    setSendError(null); setSending(true);
+    try {
+      if (command.mode === 'hex') {
+        if (!onSendBytes) throw new Error('Serial byte sending is unavailable.');
+        await onSendBytes(bytes);
+      } else {
+        if (!onSend) throw new Error('Serial text sending is unavailable.');
+        await onSend(command.payload + lineEndingText(command.lineEnding));
+      }
+      const preview = command.mode === 'hex' ? bytes.map((byte) => byte.toString(16).padStart(2, '0').toUpperCase()).join(' ') : command.payload;
+      appendDisplayLine({ id: `sent-${Date.now()}`, timestamp: currentTimestamp(), text: `> ${command.mode === 'hex' ? '[hex] ' : ''}${preview}`, kind: 'system' });
+      setCommandHistory((history) => {
+        const previous = history[command.mode];
+        return previous[previous.length - 1] === command.payload ? history : { ...history, [command.mode]: [...previous, command.payload].slice(-MAX_COMMAND_HISTORY) };
+      });
+    } finally { sendInFlightRef.current = false; setSending(false); }
+  };
+
   const send = async (event: FormEvent) => {
     event.preventDefault();
-    const payload = outgoing;
-    if (!payload.trim() || isSending || connectionState !== 'connected') return;
-    const hexPayload = sendMode === 'hex' ? parseHexBytes(payload) : null;
-    if (hexPayload && 'error' in hexPayload) {
-      setSendError(hexPayload.error);
-      return;
-    }
-    const hexBytes = hexPayload && 'bytes' in hexPayload ? hexPayload.bytes : [];
-    setSendError(null);
-    setSending(true);
+    if (!outgoing.trim() || isSending || isRepeating) return;
     try {
-      if (sendMode === 'hex') {
-        await onSendBytes?.(hexBytes);
-      } else {
-        await onSend?.(`${payload}${lineEndingText(sendLineEnding)}`);
-      }
-      const sentPreview = sendMode === 'hex'
-        ? hexBytes.map((byte) => byte.toString(16).padStart(2, '0').toUpperCase()).join(' ')
-        : payload;
-      appendDisplayLine({ id: `sent-${Date.now()}`, timestamp: currentTimestamp(), text: `> ${sendMode === 'hex' ? '[hex] ' : ''}${sentPreview}`, kind: 'system' });
-      setCommandHistory((history) => {
-        const currentHistory = history[sendMode];
-        if (currentHistory[currentHistory.length - 1] === payload) return history;
-        return { ...history, [sendMode]: [...currentHistory, payload].slice(-MAX_COMMAND_HISTORY) };
-      });
-      setOutgoing('');
-      setHistoryIndex(null);
-      historyDraftRef.current = '';
-      modeDraftsRef.current[sendMode] = '';
-    } catch (error) {
-      const message = error instanceof Error ? error.message : `Could not send serial ${sendMode === 'hex' ? 'bytes' : 'text'}.`;
-      appendDisplayLine({ id: `send-error-${Date.now()}`, timestamp: currentTimestamp(), text: message, kind: 'error' });
-    } finally {
-      setSending(false);
-    }
+      await transmitCommand({ payload: outgoing, mode: sendMode, lineEnding: sendLineEnding });
+      setOutgoing(''); setHistoryIndex(null); historyDraftRef.current = ''; modeDraftsRef.current[sendMode] = '';
+    } catch (error) { setSendError(error instanceof Error ? error.message : 'Could not send command.'); }
   };
 
   const changeOutgoing = (value: string) => {
@@ -1118,6 +1139,8 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
         title: 'Automatic reconnect unavailable',
         detail: 'Storage is full. Free space or raise the limit before reconnecting manually.',
       }
+    : autoReconnectBlockedReason === 'device-identity'
+      ? { title: 'Check the device before reconnecting', detail: autoReconnectBlockedDetail ?? 'Choose the intended device in connection setup.' }
     : autoReconnectEnabled
       ? autoReconnectStatus
         ? {
@@ -1150,6 +1173,12 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
         <div className="sd-monitor-chip"><span>{port}</span><i /> {baudRate.toLocaleString()} baud</div>
       </div>
 
+      {autoReconnectBlockedReason === 'device-identity' && <aside className="sd-device-recovery" role="status">
+        <AlertTriangle size={17} aria-hidden="true" />
+        <div><strong>Automatic reconnect paused</strong><span>{autoReconnectBlockedDetail ?? 'Check the intended device before reconnecting.'}</span></div>
+        {onReconnectSetup && <button type="button" className="sd-monitor-secondary" onClick={onReconnectSetup}>Connection setup</button>}
+      </aside>}
+
       {nativeSession && <details className={`sd-session-details ${connectionState}`} aria-label="Session details">
         <summary>
           <span className="sd-session-details-title"><SlidersHorizontal size={15} aria-hidden="true" /> Session details</span>
@@ -1179,7 +1208,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
               onClick={() => onAutoReconnectChange?.(!autoReconnectEnabled)}
               disabled={!onAutoReconnectChange || Boolean(autoReconnectBlockedReason)}
               aria-pressed={autoReconnectEnabled}
-              title={autoReconnectBlockedReason ? 'Automatic reconnect is disabled while the storage limit is reached' : autoReconnectEnabled ? 'Pause automatic reconnect attempts for this terminal' : 'Resume automatic reconnect attempts for this terminal'}
+              title={autoReconnectBlockedReason ? 'Automatic reconnect needs attention' : autoReconnectEnabled ? 'Pause automatic reconnect attempts for this terminal' : 'Resume automatic reconnect attempts for this terminal'}
             >
               <RotateCw size={14} aria-hidden="true" /> {autoReconnectEnabled ? 'Pause retries' : 'Resume retries'}
             </button>
@@ -1224,6 +1253,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
             <button className="sd-monitor-icon-button" type="button" onClick={() => setShowClearConfirm(true)} aria-label="Clear monitor display" title="Clear display"><Eraser size={16} /></button>
           </div>
         </div>
+        {isRepeating && <button type="button" className="sd-monitor-danger-button" onClick={() => stopRepeatingRef.current?.()}>Stop command repeat</button>}
         <div className={`sd-terminal-logging ${nativeSession ? connectionState : 'preview'}`}>
           {nativeSession ? <CaptureIcon className={connectionState === 'reconnecting' ? 'sd-spin' : ''} size={13} /> : <Check size={13} />}
           {nativeSession ? captureCopy.label : 'Browser preview — no local capture'}{isPaused ? <strong> · display paused</strong> : ''}
@@ -1286,7 +1316,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
         }} role="log" aria-live={isPaused ? 'off' : 'polite'} aria-relevant="additions text" aria-label={showTimestamps ? 'Timestamped serial output' : 'Serial output'}>
           {!visibleLines.length && <div className="sd-terminal-empty"><TerminalSquare size={23} /><strong>Display cleared</strong><span>New incoming bytes will appear here. The active log is still recording.</span></div>}
           {visibleLines.length > 0 && !filteredLines.length && <div className="sd-terminal-empty"><Search size={23} /><strong>No matching output</strong><span>Try a different filter or clear the search.</span></div>}
-          {filteredLines.map((line) => <div className={`sd-terminal-line ${line.kind ?? 'data'} ${filterIsActive ? 'is-filtered' : ''}`} key={line.id}>{showTimestamps && <time>{line.timestamp}</time>}<code><HighlightedOutput text={line.text} pattern={highlightPattern} /></code></div>)}
+          {groupedLines.map((rows, index) => <TerminalRowGroup key={index === 0 ? 'head' : rows[0].id} rows={rows} showTimestamps={showTimestamps} filtered={filterIsActive} pattern={highlightPattern} />)}
           {isPaused && <div className="sd-paused-note"><CirclePause size={15} /> Display paused. {waitingLines} {waitingLines === 1 ? 'new line is' : 'new lines are'} waiting.</div>}
         </div>
         <form className="sd-send-form" onSubmit={send}>
@@ -1302,11 +1332,11 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
               placeholder={connectionState === 'connected'
                 ? sendMode === 'hex' ? '48 65 6C 6C 6F or 0x48, 0x65…' : 'Type a command…'
                 : 'Reconnect to send a command'}
-              disabled={connectionState !== 'connected' || isSending}
+              disabled={connectionState !== 'connected' || isSending || isRepeating}
             />
-            <label className="sd-send-mode"><span>Mode</span><ThemedSelect compact label="Send mode" value={sendMode} placeholder="Choose mode" options={[{ value: 'text', label: 'Text' }, { value: 'hex', label: 'Hex' }]} onChange={(value) => changeSendMode(value as SendMode)} disabled={connectionState !== 'connected' || isSending} /></label>
-            {sendMode === 'text' && <label className="sd-send-ending"><span>Ending</span><ThemedSelect compact label="Line ending" value={sendLineEnding} placeholder="Choose ending" options={(['lf', 'crlf', 'cr', 'none'] as LineEnding[]).map((ending) => ({ value: ending, label: lineEndingLabel(ending) }))} onChange={(value) => setSendLineEnding(value as LineEnding)} disabled={connectionState !== 'connected' || isSending} /></label>}
-            <button className="sd-primary-button" type="submit" disabled={!outgoing.trim() || isSending || connectionState !== 'connected'}>{isSending ? <LoaderCircle className="sd-spin" size={16} /> : <Send size={16} />} Send</button>
+            <label className="sd-send-mode"><span>Mode</span><ThemedSelect compact label="Send mode" value={sendMode} placeholder="Choose mode" options={[{ value: 'text', label: 'Text' }, { value: 'hex', label: 'Hex' }]} onChange={(value) => changeSendMode(value as SendMode)} disabled={connectionState !== 'connected' || isSending || isRepeating} /></label>
+            {sendMode === 'text' && <label className="sd-send-ending"><span>Ending</span><ThemedSelect compact label="Line ending" value={sendLineEnding} placeholder="Choose ending" options={(['lf', 'crlf', 'cr', 'none'] as LineEnding[]).map((ending) => ({ value: ending, label: lineEndingLabel(ending) }))} onChange={(value) => setSendLineEnding(value as LineEnding)} disabled={connectionState !== 'connected' || isSending || isRepeating} /></label>}
+            <button className="sd-primary-button" type="submit" disabled={!outgoing.trim() || isSending || isRepeating || connectionState !== 'connected'}>{isSending ? <LoaderCircle className="sd-spin" size={16} /> : <Send size={16} />} Send</button>
           </div>
           {sendError && <span className="sd-send-error" id={sendErrorId} role="alert">{sendError}</span>}
           <span id={sendHintId}>{nativeSession
@@ -1317,6 +1347,9 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
               ? 'Browser preview only · hex payloads are not transmitted · use two-digit bytes separated by spaces or commas'
               : `Browser preview only · ${lineEndingLabel(sendLineEnding)} selected for desktop sends · ↑/↓ recalls text commands`}</span>
         </form>
+        <CommandPresetsPanel stopRef={stopRepeatingRef} identity={commandIdentity ?? telemetrySessionKey ?? sessionId ?? sessionName} sessionId={sessionId} enabled={nativeSession && connectionState === 'connected' && displayActive}
+          draft={{ payload: outgoing, mode: sendMode, lineEnding: sendLineEnding }} onSend={transmitCommand} onRepeatingChange={setRepeating}
+          onLoad={(command) => { setOutgoing(command.payload); setSendMode(command.mode); setSendLineEnding(command.lineEnding); setHistoryIndex(null); setSendError(null); }} />
       </article>
 
       {showClearConfirm && <div className="sd-inline-confirm" role="alertdialog" aria-label="Confirm clear display"><div><AlertTriangle size={18} /><p><strong>Clear this display?</strong><span>This only clears the visible panel. The session log is unaffected.</span></p></div><div><button className="sd-monitor-secondary" type="button" onClick={() => setShowClearConfirm(false)}>Cancel</button><button className="sd-monitor-danger-button" type="button" onClick={clear}>Clear</button></div></div>}

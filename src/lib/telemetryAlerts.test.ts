@@ -87,3 +87,19 @@ describe('evaluateTelemetryAlerts', () => {
     expect(evaluation.activeStates.get(malformedRange.id)).toBe(false);
   });
 });
+
+describe('watch recovery margins', () => {
+  it('uses the correct recovery direction for low limits and expected ranges', () => {
+    const low = rule({ condition: 'below', threshold: 10, hysteresis: 2 });
+    const lowResult = evaluateTelemetryAlerts('bench-a', [sample(1, { temperature: 9 }), sample(2, { temperature: 11 }), sample(3, { temperature: 9 }), sample(4, { temperature: 12 }), sample(5, { temperature: 9 })], [low]);
+    expect(lowResult.events.map((event) => event.sampleId)).toEqual(['sample-1', 'sample-5']);
+    const range = rule({ condition: 'outsideRange', min: 10, max: 20, hysteresis: 2 });
+    const rangeResult = evaluateTelemetryAlerts('bench-a', [sample(1, { temperature: 21 }), sample(2, { temperature: 19 }), sample(3, { temperature: 21 }), sample(4, { temperature: 18 }), sample(5, { temperature: 9 })], [range]);
+    expect(rangeResult.events.map((event) => event.sampleId)).toEqual(['sample-1', 'sample-5']);
+  });
+  it('ignores invalid margins, timeouts, and durations', () => {
+    for (const options of [{ hysteresis: -1 }, { staleAfterMs: 0 }, { sustainMs: NaN }, { condition: 'outsideRange' as const, min: 10, max: 20, hysteresis: 6 }]) {
+      expect(evaluateTelemetryAlerts('bench-a', [sample(1, { temperature: 99 })], [rule(options)]).events).toHaveLength(0);
+    }
+  });
+});

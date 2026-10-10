@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { telemetrySnapshotFromCapture, TelemetryLineParser, TelemetrySessionStore, Utf8LineAssembler } from './telemetry';
+import { hasRecordedCaptureTiming, telemetrySnapshotFromCapture, TelemetryLineParser, TelemetrySessionStore, Utf8LineAssembler } from './telemetry';
 import type { SerialDataEvent } from './serial';
 
 const encoder = new TextEncoder();
@@ -14,6 +14,41 @@ function event(sessionId: string, sequence: number, text: string): SerialDataEve
     bytes: [...encoder.encode(text)],
   };
 }
+
+describe('immutable telemetry snapshot reuse', () => {
+  it('reuses unchanged readings without changing prior snapshots as the ring advances', () => {
+    const store = new TelemetrySessionStore({ maxSamplesPerSession: 2 });
+    store.ingestOrderedSerialEvent('display', event('native', 1, 'temperature=19\ntemperature=20\n'));
+    const first = store.getSnapshot('display');
+    store.ingestOrderedSerialEvent('display', event('native', 2, 'temperature=21\n'));
+    const second = store.getSnapshot('display');
+    expect(second.samples[0]).toBe(first.samples[1]);
+    expect(second.samples[0].values).toBe(first.samples[1].values);
+    store.ingestOrderedSerialEvent('display', event('native', 3, 'temperature=22\n'));
+    const third = store.getSnapshot('display');
+    expect(third.samples[0]).toBe(second.samples[1]);
+    expect(first.samples.map((sample) => sample.values.temperature.value)).toEqual([19, 20]);
+    expect(second.samples.map((sample) => sample.values.temperature.value)).toEqual([20, 21]);
+    expect(third.samples.map((sample) => sample.values.temperature.value)).toEqual([21, 22]);
+  });
+
+  it('protects shared readings from mutation by record observers', () => {
+    const store = new TelemetrySessionStore();
+    const mutations: boolean[] = [];
+    store.subscribeRecords('display', (observation) => {
+      if (observation.type !== 'sample') return;
+      mutations.push(Reflect.set(observation.sample, 'timestamp', 'modified'));
+      mutations.push(Reflect.set(observation.sample.values.temperature, 'value', 999));
+    });
+    store.ingestOrderedSerialEvent('display', event('native', 1, 'temperature=20\ntemperature=21\n'));
+    expect(mutations).toEqual([false, false, false, false]);
+    const sample = store.getSnapshot('display').samples[0];
+    expect(sample.timestamp).toBe('2026-08-10T10:00:01.000Z');
+    expect(sample.values.temperature.value).toBe(20);
+    expect(Object.isFrozen(sample)).toBe(true);
+    expect(Object.isFrozen(sample.values)).toBe(true);
+  });
+});
 
 describe('Utf8LineAssembler', () => {
   it('preserves split UTF-8 characters and recognizes CR, LF, and split CRLF', () => {
@@ -247,5 +282,49 @@ describe('telemetrySnapshotFromCapture', () => {
     expect(snapshot.samples[0].timestamp).toBe('2026-08-10T10:00:00.000Z');
     expect(Date.parse(snapshot.samples[2].timestamp)).toBeGreaterThan(Date.parse(snapshot.samples[0].timestamp));
     expect(snapshot.samples.every((sample) => sample.nativeSessionId === 'saved-native-a')).toBe(true);
+  });
+});
+
+describe('recorded receive timing', () => {
+  it('preserves actual pauses and burst spacing rather than distributing lines evenly', () => {
+    const chunks = ['{"temperature":20}\n', '{"temperature":21}\n', '{"temperature":22}\n'];
+    const captureBytes = encoder.encode(chunks.join(''));
+    let endOffset = 0;
+    const receiveTiming = chunks.map((chunk, index) => ({ endOffset: endOffset += encoder.encode(chunk).length, timestampMs: [1000, 1010, 9000][index] }));
+    const snapshot = telemetrySnapshotFromCapture('timed', chunks.join(''), { captureBytes, receiveTiming, startedAt: '2020-01-01T00:00:00Z', endedAt: '2020-01-01T01:00:00Z' });
+    expect(snapshot.samples.map((sample) => Date.parse(sample.timestamp))).toEqual([1000, 1010, 9000]);
+    expect(snapshot.samples.map((sample) => sample.values.temperature.value)).toEqual([20, 21, 22]);
+  });
+
+  it('reassembles UTF-8 and CRLF split across timed chunks using their original byte offsets', () => {
+    const captureBytes = encoder.encode('temp=20°C\r\ntemp=21°C\r\n');
+    const degreeStart = captureBytes.indexOf(0xc2);
+    const firstLf = captureBytes.indexOf(10);
+    const receiveTiming = [degreeStart + 1, firstLf, firstLf + 1, captureBytes.length].map((endOffset, index) => ({ endOffset, timestampMs: 1000 + index * 1000 }));
+    const snapshot = telemetrySnapshotFromCapture('split', '', { captureBytes, receiveTiming });
+    expect(snapshot.samples.map((sample) => sample.values.temp)).toEqual([{ value: 20, unit: '°C' }, { value: 21, unit: '°C' }]);
+    expect(snapshot.samples.map((sample) => Date.parse(sample.timestamp))).toEqual([2000, 4000]);
+  });
+
+  it('retains decoder behavior and never invents a terminator for an unfinished timed line', () => {
+    const text = '20,40\n21,41\n22,42';
+    const captureBytes = encoder.encode(text);
+    const snapshot = telemetrySnapshotFromCapture('custom-timed', text, {
+      captureBytes, receiveTiming: [{ endOffset: captureBytes.length, timestampMs: 1234 }],
+      decoderProfile: { id: 'timed-csv', name: 'Sensor', version: 1, separator: 'comma', prefix: '', fields: [{ column: 1, name: 'temperature', unit: 'C' }, { column: 2, name: 'humidity', unit: '%' }], createdAt: 1, updatedAt: 1 },
+    });
+    expect(snapshot.samples).toHaveLength(2);
+    expect(snapshot.samples.every((sample) => Date.parse(sample.timestamp) === 1234)).toBe(true);
+  });
+
+  it('rejects incomplete or malformed timing and keeps old captures readable', () => {
+    const text = '{"value":1}\n{"value":2}\n';
+    const captureBytes = encoder.encode(text);
+    for (const receiveTiming of [[], [{ endOffset: 0, timestampMs: 0 }], [{ endOffset: captureBytes.length - 1, timestampMs: 0 }], [{ endOffset: captureBytes.length, timestampMs: Number.NaN }]]) {
+      expect(hasRecordedCaptureTiming({ captureBytes, receiveTiming })).toBe(false);
+      const snapshot = telemetrySnapshotFromCapture('legacy', text, { captureBytes, receiveTiming, startedAt: '2026-01-01T00:00:00Z', endedAt: '2026-01-01T00:00:02Z' });
+      expect(snapshot.samples).toHaveLength(2);
+      expect(Date.parse(snapshot.samples[0].timestamp)).toBe(Date.parse('2026-01-01T00:00:00Z'));
+    }
   });
 });

@@ -9,6 +9,11 @@ import { NotificationsPanel } from './components/NotificationsPanel';
 import { useNotifications } from './components/notifications';
 import { PreferencesScreen } from './components/PreferencesScreen';
 import { SavedLogsScreen } from './components/SavedLogsScreen';
+import { BenchRestoreDialog, type BenchRestoreChoice } from './components/BenchRestoreDialog';
+import { liveTelemetryStore } from './lib/telemetry';
+import { planBenchRestore, type BenchConnectionPreset } from './lib/benchSetup';
+import { CaptureStorageBanner } from './components/CaptureStorageBanner';
+import { saveCommandPresets } from './lib/serialCommands';
 import { SessionWorkspaceManager } from './components/SessionWorkspaceManager';
 import { PortDiscoveryDashboard } from './components/PortDiscoveryDashboard';
 import { SidebarNavigation } from './components/SidebarNavigation';
@@ -16,10 +21,11 @@ import { WelcomeScreen } from './components/WelcomeScreen';
 import { WorkspaceProfileMenu } from './components/WorkspaceProfileMenu';
 import { VisualizeScreen, type VisualizeSession } from './components/VisualizeScreen';
 import type { SignalDeckPage } from './components/phase3Types';
-import { defaultPreferences, loadPreferences, savePreferences, type BaudTidePreferences, type DisplayEncoding, type LineEnding } from './lib/preferences';
+import { defaultPreferences, loadPreferences, savePreferences, type AppTheme, type BaudTidePreferences, type DisplayEncoding, type LineEnding } from './lib/preferences';
+import { loadAnalysisWorkspaces } from './lib/analysisWorkspaces';
 import { stableTerminalSessionIdentity, type SavedSessionWorkspace, type TerminalLayout } from './lib/sessionWorkspaces';
 import { isDesktopRuntime } from './lib/desktop';
-import { Moon, Radio, Sun, TerminalSquare, X } from 'lucide-react';
+import { Leaf, Moon, Radio, Sun, TerminalSquare, X } from 'lucide-react';
 import baudTideMark from './assets/signaldeck-mark.png';
 import './light-theme.css';
 import './components/theme-toggle.css';
@@ -33,6 +39,7 @@ import {
   sendNativeSerialText,
   startNativeSerialSession,
   type NativeSerialPort,
+  type SerialDeviceIdentity,
 } from './lib/serial';
 
 const pageNames: Record<SignalDeckPage, string> = {
@@ -44,23 +51,27 @@ type LiveSession = ConnectionRequest & {
   id: string;
   /** Stays stable across a native reconnect, so the terminal display is preserved. */
   uiKey: string;
+  /** Preserve saved-layout membership if this device returns at a new path. */
+  workspaceIdentity: string;
+  legacyWorkspaceIdentity: string;
   native: boolean;
   /** Whether this tab currently owns a native backend session handle. */
   nativeSessionOpen: boolean;
   logPath?: string;
+  deviceIdentity?: SerialDeviceIdentity | null;
   lineEnding: LineEnding;
   displayEncoding: DisplayEncoding;
   showTimestamps: boolean;
   reconnectWhenDeviceReturns: boolean;
   /** Per-terminal retry details shown while a device is unavailable. */
   autoReconnectStatus?: AutoReconnectStatus;
-  /** A capture-library limit needs user action, not another port retry. */
-  autoReconnectBlockedReason?: 'storage-limit';
+  /** Storage limits and ambiguous device identities need user action. */
+  autoReconnectBlockedReason?: 'storage-limit' | 'device-identity';
+  autoReconnectBlockedDetail?: string;
   connectionState: MonitorConnectionState;
 };
 
 type LiveSessions = Record<string, LiveSession>;
-type AppTheme = 'dark' | 'light';
 type AutoReconnectStatus = { attempt: number; nextRetryAt: number };
 type AutoReconnectTimer = { timer: number; attempts: number; nextRetryAt: number };
 const AUTO_RECONNECT_INITIAL_DELAY_MS = 2_000;
@@ -120,8 +131,13 @@ function App() {
   const [isConnectionDialogOpen, setConnectionDialogOpen] = useState(false);
   const [connectionDefaults, setConnectionDefaults] = useState<ConnectionDialogDefaults | null>(null);
   const [liveSessions, setLiveSessions] = useState<LiveSessions>({});
+  const [terminalLayout, setTerminalLayout] = useState<TerminalLayout>('tabs');
+  const [restoreWorkspace, setRestoreWorkspace] = useState<SavedSessionWorkspace | null>(null);
+  const [requestedAnalysis, setRequestedAnalysis] = useState<{ id: string; revision: number } | null>(null);
+  const benchRestoreBusy = useRef(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [visualizeCapturePath, setVisualizeCapturePath] = useState<string | null>(null);
+  const [visualizeVisited, setVisualizeVisited] = useState(() => Boolean(loadAnalysisWorkspaces().activeId));
   const [theme, setTheme] = useState<AppTheme>('dark');
   const [preferences, setPreferences] = useState<BaudTidePreferences>(defaultPreferences);
   // Native discovery temporarily switches surviving sessions into bounded
@@ -141,7 +157,8 @@ function App() {
   const reconnectReleasedHandles = useRef<Record<string, boolean>>({});
   const mountedRef = useRef(true);
   const { notifications, publish: publishNotification, markRead, markAllRead } = useNotifications();
-  const sessions = Object.values(liveSessions);
+  const sessions = useMemo(() => Object.values(liveSessions), [liveSessions]);
+  const visualizeSessions = useMemo(() => sessions.map<VisualizeSession>((session) => ({ id: session.id, uiKey: session.uiKey, sessionName: session.sessionName, port: session.port, connectionState: session.connectionState, capturePath: session.logPath, identity: session.workspaceIdentity, legacyIdentity: session.legacyWorkspaceIdentity, deviceIdentity: session.deviceIdentity, baudRate: session.baudRate, settings: session.settings })), [sessions]);
   const selectedSession = selectedSessionId ? liveSessions[selectedSessionId] : undefined;
   liveSessionsRef.current = liveSessions;
 
@@ -197,6 +214,7 @@ function App() {
     setConnectionDialogOpen(true);
   };
   const navigate = (nextPage: SignalDeckPage) => {
+    if (nextPage === 'visualize') setVisualizeVisited(true);
     if (nextPage !== page) {
       // Every workspace starts at its own stable origin. Previously the
       // document scroll offset leaked from the dashboard into the terminal,
@@ -282,6 +300,8 @@ function App() {
               next[session.id] = {
                 id: session.id,
                 uiKey: `recovered-${session.id}`,
+                workspaceIdentity: stableTerminalSessionIdentity(session),
+                legacyWorkspaceIdentity: stableTerminalSessionIdentity({ ...session, deviceIdentity: null }),
                 port: session.port,
                 baudRate: session.baudRate,
                 sessionName: session.sessionName,
@@ -290,6 +310,7 @@ function App() {
                 native: true,
                 nativeSessionOpen: true,
                 logPath: session.logPath,
+                deviceIdentity: session.deviceIdentity,
                 lineEnding: saved.serial.lineEnding,
                 displayEncoding: saved.serial.displayEncoding,
                 showTimestamps: saved.serial.showTimestamps,
@@ -356,15 +377,18 @@ function App() {
           sessionName: request.sessionName,
           settings: request.settings,
         })
-      : { id: uiKey, logPath: undefined };
+      : { id: uiKey, logPath: undefined, deviceIdentity: undefined };
     const next: LiveSession = {
       ...request,
       ...appliedSettings,
       id: session.id,
       uiKey,
+      workspaceIdentity: stableTerminalSessionIdentity({ ...request, deviceIdentity: session.deviceIdentity }),
+      legacyWorkspaceIdentity: stableTerminalSessionIdentity(request),
       native: nativeRuntime,
       nativeSessionOpen: nativeRuntime,
       logPath: session.logPath,
+      deviceIdentity: session.deviceIdentity,
       connectionState: nativeRuntime ? 'connected' : 'disconnected',
     };
     setLiveSessions((current) => ({ ...current, [next.id]: next }));
@@ -409,10 +433,15 @@ function App() {
     if (pending) await pending.catch(() => undefined);
   };
 
+  const setSessionLineEnding = (sessionId: string, lineEnding: LineEnding) => {
+    setLiveSessions((current) => current[sessionId] && current[sessionId].lineEnding !== lineEnding
+      ? { ...current, [sessionId]: { ...current[sessionId], lineEnding } }
+      : current);
+  };
+
   const setSessionAutoReconnect = (sessionId: string, enabled: boolean) => {
     const session = liveSessionsRef.current[sessionId];
-    // Storage exhaustion is deliberately non-retryable: a returning device
-    // cannot make room for the capture that was safely stopped.
+    // Storage exhaustion and an ambiguous device cannot be repaired by retrying.
     if (!session || (enabled && session.autoReconnectBlockedReason)) return;
     if (!enabled) clearAutoReconnect(sessionId);
     setLiveSessions((current) => current[sessionId]
@@ -588,6 +617,8 @@ function App() {
           baudRate: session.baudRate,
           sessionName: session.sessionName,
           settings: session.settings,
+          deviceIdentity: session.deviceIdentity,
+          automaticReconnect: automatic,
         });
         restartedSessionId = restarted.id;
         if (!canApplyReconnectResult(reconnectKey, generation)) {
@@ -602,6 +633,8 @@ function App() {
           const next: LiveSession = {
             ...currentSession,
             id: restarted.id,
+            port: restarted.port,
+            deviceIdentity: restarted.deviceIdentity,
             logPath: restarted.logPath,
             nativeSessionOpen: true,
             connectionState: 'connected',
@@ -610,6 +643,7 @@ function App() {
             // control without silently re-enabling retries.
             autoReconnectStatus: undefined,
             autoReconnectBlockedReason: undefined,
+            autoReconnectBlockedDetail: undefined,
           };
           const { [currentSessionId]: _previous, ...remaining } = current;
           return { ...remaining, [next.id]: next };
@@ -621,7 +655,7 @@ function App() {
         }
         delete monitorRefs.current[sessionId];
         delete autoReconnectAttempts.current[reconnectKey];
-        if (mountedRef.current) publishNotification({ kind: 'connection', title: 'Terminal reconnected', detail: `${session.sessionName} is monitoring ${session.port} again.` });
+        if (mountedRef.current) publishNotification({ kind: 'connection', title: 'Terminal reconnected', detail: `${session.sessionName} is monitoring ${restarted.port} again.` });
       } catch (error) {
         if (restartedSessionId && !canApplyReconnectResult(reconnectKey, generation)) {
           await disconnectNativeSerialSession(restartedSessionId).catch(() => undefined);
@@ -633,10 +667,19 @@ function App() {
         }
         const currentSessionId = findSessionEntryByUiKey(liveSessionsRef.current, reconnectKey)?.[0];
         if (currentSessionId) updateSessionState(currentSessionId, 'error');
+        const message = error instanceof Error ? error.message : String(error);
+        if (currentSessionId && message.includes('Device identity needs review:')) {
+          clearAutoReconnect(currentSessionId);
+          setLiveSessions((current) => current[currentSessionId] ? {
+            ...current,
+            [currentSessionId]: { ...current[currentSessionId], reconnectWhenDeviceReturns: false, autoReconnectBlockedReason: 'device-identity', autoReconnectBlockedDetail: message.slice(message.indexOf('Device identity needs review:') + 'Device identity needs review:'.length).trim() },
+          } : current);
+          if (mountedRef.current) publishNotification({ kind: 'error', title: 'Reconnect needs a device check', detail: message });
+        }
         // A disconnected device can take minutes to return. The first reader
         // failure already notified the user; automatic retries stay quiet so the
         // notification history is not flooded while exponential backoff runs.
-        if (!automatic && mountedRef.current) publishNotification({ kind: 'error', title: 'Reconnect failed', detail: `${session.sessionName} could not reopen ${session.port}.` });
+        if (!automatic && !message.includes('Device identity needs review:') && mountedRef.current) publishNotification({ kind: 'error', title: 'Reconnect failed', detail: message });
         throw error;
       }
     })();
@@ -792,12 +835,82 @@ function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    document.body.classList.toggle('theme-light', theme === 'light');
+    document.body.classList.toggle('theme-light', theme !== 'dark');
+    document.body.classList.toggle('theme-sage', theme === 'sage');
     return () => {
       document.body.classList.remove('theme-light');
+      document.body.classList.remove('theme-sage');
       delete document.documentElement.dataset.theme;
     };
   }, [theme]);
+
+  const benchSessions = () => Object.values(liveSessionsRef.current).map((session) => ({
+    id: session.id, identity: session.workspaceIdentity, legacyIdentity: session.legacyWorkspaceIdentity,
+    port: session.port, connected: session.native ? session.nativeSessionOpen : true,
+  }));
+  const restoreBench = async (choices: BenchRestoreChoice[]) => {
+    if (!restoreWorkspace || benchRestoreBusy.current) throw new Error('Wait for the current restore to finish.');
+    if (nativeRuntime && nativeRecoveryPending) throw new Error('Wait for active terminal recovery to finish.');
+    benchRestoreBusy.current = true;
+    const restored = new Map<string, string>();
+    const failures: string[] = [];
+    try {
+      for (const choice of choices) {
+        const preset = choice.preset;
+        try {
+          // Cancel retries for a dormant matching tab before rechecking the plan.
+          const previous = Object.values(liveSessionsRef.current).find((session) => session.workspaceIdentity === preset.identity || session.legacyWorkspaceIdentity === preset.identity);
+          if (previous && !previous.nativeSessionOpen) {
+            const key = invalidateSessionReconnectWork(previous.id, true, previous);
+            await waitForReconnectToSettle(key);
+          }
+          const available = nativeRuntime ? await listNativeSerialPorts() : [];
+          const row = planBenchRestore([preset], available, benchSessions())[0];
+          if (row.status === 'open' && row.existingId) { restored.set(preset.identity, row.existingId); continue; }
+          if (row.status === 'conflict' || row.status === 'missing') throw new Error(row.detail);
+          if (!choice.port || (row.status === 'review' && !choice.reviewed)) throw new Error('Review the current port before restoring.');
+          if (row.candidates.length && !row.candidates.some((port) => port.path === choice.port)) throw new Error('The selected device changed. Rescan and review it again.');
+          if (portIsInUse(choice.port)) throw new Error('This port is already open.');
+          const current = row.existingId ? liveSessionsRef.current[row.existingId] : undefined;
+          const uiKey = current?.uiKey ?? previewSessionId();
+          const identified = available.find((port) => port.path === choice.port)?.deviceIdentity;
+          const opened = nativeRuntime ? await startNativeSerialSession({ port: choice.port, baudRate: preset.baudRate,
+            sessionName: preset.sessionName, settings: preset.settings,
+            deviceIdentity: preset.deviceIdentity ?? identified, reviewedPort: choice.reviewed,
+            automaticReconnect: !choice.reviewed && Boolean(preset.deviceIdentity) })
+            : { id: uiKey, port: choice.port, logPath: undefined, deviceIdentity: preset.deviceIdentity };
+          const next: LiveSession = { ...preset, id: opened.id, uiKey, port: opened.port,
+            deviceIdentity: opened.deviceIdentity, workspaceIdentity: stableTerminalSessionIdentity({ ...preset, port: opened.port, deviceIdentity: opened.deviceIdentity }),
+            legacyWorkspaceIdentity: stableTerminalSessionIdentity({ ...preset, port: opened.port, deviceIdentity: null }),
+            native: nativeRuntime, nativeSessionOpen: nativeRuntime, manualPort: !identified, logPath: opened.logPath,
+            connectionState: nativeRuntime ? 'connected' : 'disconnected' };
+          const merge = (all: LiveSessions) => {
+            const updated = { ...all }; if (current) delete updated[current.id]; updated[next.id] = next; return updated;
+          };
+          liveSessionsRef.current = merge(liveSessionsRef.current); setLiveSessions(merge);
+          // Decoder changes remain isolated from terminal output and raw captures.
+          liveTelemetryStore.setDecoderProfile(uiKey, preset.decoder);
+          if (current && monitorRefs.current[current.id]) { monitorRefs.current[next.id] = monitorRefs.current[current.id]; delete monitorRefs.current[current.id]; }
+          if (preset.commands !== undefined) {
+            try { saveCommandPresets(next.workspaceIdentity, preset.commands); }
+            catch { publishNotification({ kind: 'error', title: 'Command presets were not restored', detail: `${preset.sessionName} connected, but command storage is unavailable.` }); }
+          }
+          restored.set(preset.identity, next.id);
+        } catch (error) { failures.push(`${preset.sessionName}: ${error instanceof Error ? error.message : String(error)}`); }
+      }
+      setTerminalLayout(restoreWorkspace.layout);
+      const selected = restoreWorkspace.selectedSessionIdentity ? restored.get(restoreWorkspace.selectedSessionIdentity) : undefined;
+      if (selected || restored.size) setSelectedSessionId(selected ?? [...restored.values()][0]);
+      if (restoreWorkspace.analysisWorkspaceId) {
+        setVisualizeVisited(true);
+        setRequestedAnalysis({ id: restoreWorkspace.analysisWorkspaceId, revision: Date.now() });
+      }
+      setWelcomeVisible(false); setPage('sessions');
+      const message = `${restored.size} terminal${restored.size === 1 ? '' : 's'} restored or already open. ${failures.length ? failures.join(' ') : 'Unselected devices remain disconnected.'}`;
+      publishNotification({ kind: failures.length ? 'error' : 'connection', title: 'Bench setup restored', detail: message });
+      return message;
+    } finally { benchRestoreBusy.current = false; }
+  };
 
   const activeLogPath = sessions.find((session) => session.native && session.connectionState === 'connected')?.logPath;
   const closeStartup = useCallback(() => setStartupVisible(false), []);
@@ -815,21 +928,32 @@ function App() {
         <div className="signaldeck-topbar-actions"><CommandPalette actions={commandActions} onAction={runCommand} /><TopThemeToggle theme={theme} onThemeChange={(nextTheme) => { setTheme(nextTheme); void saveAppPreferences({ ...preferences, appearance: { theme: nextTheme } }); }} /><NotificationsPanel notifications={notifications} onMarkRead={markRead} onMarkAllRead={markAllRead} /><WorkspaceProfileMenu onPreferences={() => navigate('preferences')} /></div>
       </header>
       <div className="signaldeck-content">
-        <div hidden={page !== 'sessions'}><SessionsWorkspace workspaceVisible={page === 'sessions'} sessions={sessions} selectedSessionId={selectedSessionId} onSelect={setSelectedSessionId} onRequestConnection={openConnectionDialog} onDisconnect={disconnectSession} onReconnect={reconnectSession} onAutoReconnectChange={setSessionAutoReconnect} onClose={closeSession} onConnectionStateChange={updateSessionState} onNativeSessionEnded={markNativeSessionEnded} onNativeStorageLimit={markNativeStorageLimit} onNativeSessionStartupFailure={releaseNativeSessionAfterStartupFailure} onMonitorRef={(sessionId, monitor) => { monitorRefs.current[sessionId] = monitor; }} /></div>
+        <div hidden={page !== 'sessions'}><SessionsWorkspace layout={terminalLayout} onLayoutChange={setTerminalLayout} onRestoreWorkspace={setRestoreWorkspace} restoreBusy={Boolean(restoreWorkspace)} workspaceVisible={page === 'sessions'} storageLimit={preferences.storage.storageLimitBytes} logDirectory={preferences.storage.logDirectory} onStorageWarning={(title, detail) => publishNotification({ kind: 'error', title, detail })} onStorageSettings={() => navigate('preferences')} onSavedLogs={() => navigate('logs')} sessions={sessions} selectedSessionId={selectedSessionId} onSelect={setSelectedSessionId} onRequestConnection={openConnectionDialog} onDisconnect={disconnectSession} onReconnect={reconnectSession} onReconnectSetup={(sessionId) => { const session = liveSessionsRef.current[sessionId]; if (session) openReconnectSetup({ port: session.port, baudRate: session.baudRate, sessionName: session.sessionName, settings: session.settings, setupNotice: 'Check the intended device and select its current port before connecting.' }); }} onAutoReconnectChange={setSessionAutoReconnect} onLineEndingChange={setSessionLineEnding} onClose={closeSession} onConnectionStateChange={updateSessionState} onNativeSessionEnded={markNativeSessionEnded} onNativeStorageLimit={markNativeStorageLimit} onNativeSessionStartupFailure={releaseNativeSessionAfterStartupFailure} onMonitorRef={(sessionId, monitor) => { monitorRefs.current[sessionId] = monitor; }} /></div>
+        {visualizeVisited && <div hidden={page !== 'visualize'}><VisualizeScreen workspaceVisible={page === 'visualize'} nativeEnabled={nativeRuntime} sessions={visualizeSessions} selectedSessionId={selectedSessionId} onSelectSession={setSelectedSessionId} onRequestConnection={openConnectionDialog} onTelemetryAlert={(alert) => publishNotification({ kind: 'alert', ...alert })} requestedAnalysis={requestedAnalysis} onRequestedAnalysisRestored={() => setRequestedAnalysis(null)} requestedCapturePath={visualizeCapturePath} onRequestedCaptureOpened={() => setVisualizeCapturePath(null)} /></div>}
         {page !== 'sessions' && (page === 'preferences' ? <PreferencesScreen preferences={preferences} nativeEnabled={nativeRuntime} onSave={saveAppPreferences} onThemePreview={setTheme} onChooseLogDirectory={chooseLogDirectory} />
           : page === 'help' ? <HelpFeedbackPanel nativeEnabled={nativeRuntime} openSessionCount={sessions.length} activeSessionCount={sessions.filter((session) => session.native && session.connectionState === 'connected').length} />
             : page === 'logs' ? <SavedLogsScreen nativeEnabled={nativeRuntime} activeLogPath={activeLogPath} onRequestConnection={openConnectionDialog} onReconnectWithSettings={openReconnectSetup} onOpenInVisualize={(log) => { setVisualizeCapturePath(log.path); navigate('visualize'); }} />
               : page === 'mobile' ? <MobileShareScreen nativeEnabled={nativeRuntime} sessions={sessions.map<MobileShareSession>((session) => ({ id: session.id, sessionName: session.sessionName, port: session.port, native: session.native, connectionState: session.connectionState }))} selectedSessionId={selectedSessionId} onSelectSession={setSelectedSessionId} />
-              : page === 'visualize' ? <VisualizeScreen nativeEnabled={nativeRuntime} sessions={sessions.map<VisualizeSession>((session) => ({ id: session.id, uiKey: session.uiKey, sessionName: session.sessionName, port: session.port, connectionState: session.connectionState }))} selectedSessionId={selectedSessionId} onSelectSession={setSelectedSessionId} onRequestConnection={openConnectionDialog} onTelemetryAlert={(alert) => publishNotification({ kind: 'alert', ...alert })} requestedCapturePath={visualizeCapturePath} onRequestedCaptureOpened={() => setVisualizeCapturePath(null)} />
+              : page === 'visualize' ? null
               : isWelcomeVisible ? <WelcomeScreen nativeEnabled={nativeRuntime} onConnect={openConnectionDialog} onExplore={() => setWelcomeVisible(false)} />
                 : <PortDiscoveryDashboard nativeEnabled={nativeRuntime} onScan={listNativeSerialPorts} onConnect={openConnectionDialog} onRequestConnection={openConnectionDialog} />)}
       </div>
     </section>
+    {restoreWorkspace && <BenchRestoreDialog workspace={restoreWorkspace} sessions={benchSessions()} scan={nativeRuntime ? listNativeSerialPorts : async () => []} onRestore={restoreBench} onClose={() => { if (!benchRestoreBusy.current) setRestoreWorkspace(null); }} />}
     <ConnectionDialog isOpen={isConnectionDialogOpen} onClose={() => { setConnectionDialogOpen(false); setConnectionDefaults(null); }} onStartMonitoring={startMonitoring} onScan={nativeRuntime ? listNativeSerialPorts : undefined} initialPort={connectionDefaults?.port} initialBaudRate={connectionDefaults?.baudRate ?? preferences.serial.baudRate} initialSessionName={connectionDefaults?.sessionName} initialSettings={connectionDefaults?.settings} initialSetupNotice={connectionDefaults?.setupNotice} nativeEnabled={nativeRuntime} activePorts={sessions.filter((session) => session.native ? session.nativeSessionOpen : true).map((session) => session.port)} />
   </div>;
 }
 
 type SessionsWorkspaceProps = {
+  layout: TerminalLayout;
+  storageLimit: number;
+  logDirectory: string;
+  onStorageWarning: (title: string, detail: string) => void;
+  onStorageSettings: () => void;
+  onSavedLogs: () => void;
+  onLayoutChange: (layout: TerminalLayout) => void;
+  onRestoreWorkspace: (workspace: SavedSessionWorkspace) => void;
+  restoreBusy: boolean;
   workspaceVisible: boolean;
   sessions: LiveSession[];
   selectedSessionId: string | null;
@@ -837,7 +961,9 @@ type SessionsWorkspaceProps = {
   onRequestConnection: () => void;
   onDisconnect: (sessionId: string) => Promise<void>;
   onReconnect: (sessionId: string) => Promise<void>;
+  onReconnectSetup: (sessionId: string) => void;
   onAutoReconnectChange: (sessionId: string, enabled: boolean) => void;
+  onLineEndingChange: (sessionId: string, lineEnding: LineEnding) => void;
   onClose: (sessionId: string) => Promise<void>;
   onConnectionStateChange: (sessionId: string, state: MonitorConnectionState) => void;
   onNativeSessionEnded: (sessionId: string) => void;
@@ -848,9 +974,8 @@ type SessionsWorkspaceProps = {
 
 type SessionsView = TerminalLayout;
 
-function SessionsWorkspace({ workspaceVisible, sessions, selectedSessionId, onSelect, onRequestConnection, onDisconnect, onReconnect, onAutoReconnectChange, onClose, onConnectionStateChange, onNativeSessionEnded, onNativeStorageLimit, onNativeSessionStartupFailure, onMonitorRef }: SessionsWorkspaceProps) {
+function SessionsWorkspace({ onStorageWarning, storageLimit, logDirectory, onStorageSettings, onSavedLogs, layout: view, onLayoutChange: setView, onRestoreWorkspace, restoreBusy, workspaceVisible, sessions, selectedSessionId, onSelect, onRequestConnection, onDisconnect, onReconnect, onReconnectSetup, onAutoReconnectChange, onLineEndingChange, onClose, onConnectionStateChange, onNativeSessionEnded, onNativeStorageLimit, onNativeSessionStartupFailure, onMonitorRef }: SessionsWorkspaceProps) {
   const activeCount = sessions.filter((session) => session.native && session.connectionState === 'connected').length;
-  const [view, setView] = useState<SessionsView>('tabs');
   const [enteringSessionId, setEnteringSessionId] = useState<string | null>(null);
   const workspaceRef = useRef<HTMLElement>(null);
   const newTerminalButtonRef = useRef<HTMLButtonElement>(null);
@@ -875,7 +1000,7 @@ function SessionsWorkspace({ workspaceVisible, sessions, selectedSessionId, onSe
     // reconnects, disconnects, or otherwise changes a native serial reader.
     setView(workspace.layout);
     const selectedId = workspace.selectedSessionIdentity
-      ? sessions.find((session) => stableTerminalSessionIdentity(session) === workspace.selectedSessionIdentity)?.id
+      ? sessions.find((session) => (session.workspaceIdentity === workspace.selectedSessionIdentity || session.legacyWorkspaceIdentity === workspace.selectedSessionIdentity))?.id
       : undefined;
     const nextSelectedId = selectedId ?? matchingSessionIds[0] ?? selectedSessionId ?? sessions[0]?.id;
     if (nextSelectedId) selectSession(nextSelectedId);
@@ -889,7 +1014,12 @@ function SessionsWorkspace({ workspaceVisible, sessions, selectedSessionId, onSe
   };
 
   return <section ref={workspaceRef} className="sd-sessions-workspace" aria-label="Live terminal workspace">
-    <header className="sd-sessions-workspace-header"><div><h1>Live terminal</h1><span>{activeView === 'tiled' ? 'Compare active serial monitors side by side.' : 'Run independent serial monitors in separate terminal tabs.'}</span></div><div className="sd-sessions-workspace-actions">{showViewControl && <div className="sd-session-view-switch" role="group" aria-label="Terminal layout"><button type="button" className={view === 'tabs' ? 'is-selected' : ''} aria-pressed={view === 'tabs'} onClick={() => setView('tabs')}>Tabs</button><button type="button" className={view === 'tiled' ? 'is-selected' : ''} aria-pressed={view === 'tiled'} onClick={() => setView('tiled')}>Tiled</button></div>}<SessionWorkspaceManager layout={view} sessions={sessions.map((session) => ({ id: session.id, identity: stableTerminalSessionIdentity(session) }))} selectedSessionId={selectedSessionId} onApply={applySavedWorkspace} /><span className="sd-session-count"><i className={activeCount ? 'is-active' : ''} /> {activeCount} active</span><button ref={newTerminalButtonRef} className="sd-primary-button" type="button" onClick={onRequestConnection}><Radio size={16} /> New terminal</button></div></header>
+    <header className="sd-sessions-workspace-header"><div><h1>Live terminal</h1><span>{activeView === 'tiled' ? 'Compare active serial monitors side by side.' : 'Run independent serial monitors in separate terminal tabs.'}</span></div><div className="sd-sessions-workspace-actions">{showViewControl && <div className="sd-session-view-switch" role="group" aria-label="Terminal layout"><button type="button" className={view === 'tabs' ? 'is-selected' : ''} aria-pressed={view === 'tabs'} onClick={() => setView('tabs')}>Tabs</button><button type="button" className={view === 'tiled' ? 'is-selected' : ''} aria-pressed={view === 'tiled'} onClick={() => setView('tiled')}>Tiled</button></div>}<SessionWorkspaceManager layout={view} sessions={sessions.map((session) => ({ id: session.id, identity: session.workspaceIdentity, legacyIdentity: session.legacyWorkspaceIdentity, preset: {
+        identity: session.workspaceIdentity, port: session.port, baudRate: session.baudRate, sessionName: session.sessionName, settings: session.settings,
+        deviceIdentity: session.deviceIdentity, lineEnding: session.lineEnding, displayEncoding: session.displayEncoding, showTimestamps: session.showTimestamps,
+        reconnectWhenDeviceReturns: session.reconnectWhenDeviceReturns, decoder: liveTelemetryStore.getSnapshot(session.uiKey).decoderProfile,
+      } satisfies BenchConnectionPreset }))} selectedSessionId={selectedSessionId} onApply={applySavedWorkspace} onRestore={onRestoreWorkspace} restoreBusy={restoreBusy} /><span className="sd-session-count"><i className={activeCount ? 'is-active' : ''} /> {activeCount} active</span><button ref={newTerminalButtonRef} className="sd-primary-button" type="button" onClick={onRequestConnection}><Radio size={16} /> New terminal</button></div></header>
+    <CaptureStorageBanner onWarning={onStorageWarning} nativeEnabled={nativeRuntime} limit={storageLimit} directory={logDirectory} stoppedCount={sessions.filter((session) => session.autoReconnectBlockedReason === 'storage-limit').length} onSettings={onStorageSettings} onLogs={onSavedLogs} onRetry={async () => { const failures: string[] = []; for (const session of sessions.filter((s) => s.autoReconnectBlockedReason === 'storage-limit')) { try { await onReconnect(session.id); } catch (error) { failures.push(`${session.sessionName}: ${error instanceof Error ? error.message : String(error)}`); } } if (failures.length) throw new Error(failures.join(' · ')); }} />
     {!sessions.length && <article className="sd-sessions-empty-panel"><div className="sd-sessions-empty-icon"><TerminalSquare size={21} /></div><div><h2>No terminal tabs are open.</h2><p>Use <strong>New terminal</strong> to add a live serial monitor to this workspace.</p></div></article>}
     {sessions.length > 0 && <>
       <div className="sd-session-tabs" role={activeView === 'tabs' ? 'tablist' : 'list'} aria-label={activeView === 'tabs' ? 'Open serial terminals' : 'Open serial terminals; select one for terminal actions'}>
@@ -900,7 +1030,7 @@ function SessionsWorkspace({ workspaceVisible, sessions, selectedSessionId, onSe
       </div>
       <div className={`sd-session-monitors ${activeView === 'tiled' ? 'is-tiled' : ''}`} aria-label={activeView === 'tiled' ? 'Tiled serial terminals' : undefined}>
         {sessions.map((session) => <div className={`sd-session-panel ${session.id === enteringSessionId ? 'is-entering' : ''}`} id={`monitor-${session.uiKey}`} role={activeView === 'tabs' ? 'tabpanel' : 'region'} aria-labelledby={activeView === 'tabs' ? `tab-${session.uiKey}` : undefined} aria-label={activeView === 'tiled' ? `${session.sessionName} on ${session.port} terminal` : undefined} hidden={activeView === 'tabs' && session.id !== selectedSessionId} key={session.uiKey}>
-          <LiveMonitor ref={(monitor) => onMonitorRef(session.id, monitor)} sessionName={session.sessionName} port={session.port} baudRate={session.baudRate} lineEnding={session.lineEnding} displayEncoding={session.displayEncoding} showTimestamps={session.showTimestamps} sessionId={session.id} telemetrySessionKey={session.uiKey} nativeSession={session.native} displayActive={monitorDisplayActive(session.id)} capturePath={session.logPath} initialConnectionState={session.connectionState} autoReconnectEnabled={session.reconnectWhenDeviceReturns} autoReconnectStatus={session.autoReconnectStatus} autoReconnectBlockedReason={session.autoReconnectBlockedReason} onAutoReconnectChange={session.native ? (enabled) => onAutoReconnectChange(session.id, enabled) : undefined} onConnectionStateChange={(state) => onConnectionStateChange(session.id, state)} onNativeSessionEnded={session.native ? (eventSessionId) => onNativeSessionEnded(eventSessionId) : undefined} onNativeStorageLimit={session.native ? (eventSessionId) => onNativeStorageLimit(eventSessionId) : undefined} onNativeSessionStartupFailure={session.native ? async () => { await onNativeSessionStartupFailure(session.id); } : undefined} onSend={session.native ? async (text) => { await sendNativeSerialText(session.id, text); } : undefined} onSendBytes={session.native ? async (bytes) => { await sendNativeSerialBytes(session.id, bytes); } : undefined} onDisconnect={session.native ? async () => { await onDisconnect(session.id); } : undefined} onReconnect={session.native ? async () => { await onReconnect(session.id); } : undefined} onClose={async () => { await onClose(session.id); }} />
+          <LiveMonitor commandIdentity={session.workspaceIdentity} ref={(monitor) => onMonitorRef(session.id, monitor)} sessionName={session.sessionName} port={session.port} baudRate={session.baudRate} lineEnding={session.lineEnding} onLineEndingChange={(ending) => onLineEndingChange(session.id, ending)} displayEncoding={session.displayEncoding} showTimestamps={session.showTimestamps} sessionId={session.id} telemetrySessionKey={session.uiKey} nativeSession={session.native} displayActive={monitorDisplayActive(session.id)} capturePath={session.logPath} initialConnectionState={session.connectionState} autoReconnectEnabled={session.reconnectWhenDeviceReturns} autoReconnectStatus={session.autoReconnectStatus} autoReconnectBlockedReason={session.autoReconnectBlockedReason} autoReconnectBlockedDetail={session.autoReconnectBlockedDetail} onReconnectSetup={() => onReconnectSetup(session.id)} onAutoReconnectChange={session.native ? (enabled) => onAutoReconnectChange(session.id, enabled) : undefined} onConnectionStateChange={(state) => onConnectionStateChange(session.id, state)} onNativeSessionEnded={session.native ? (eventSessionId) => onNativeSessionEnded(eventSessionId) : undefined} onNativeStorageLimit={session.native ? (eventSessionId) => onNativeStorageLimit(eventSessionId) : undefined} onNativeSessionStartupFailure={session.native ? async () => { await onNativeSessionStartupFailure(session.id); } : undefined} onSend={session.native ? async (text) => { await sendNativeSerialText(session.id, text); } : undefined} onSendBytes={session.native ? async (bytes) => { await sendNativeSerialBytes(session.id, bytes); } : undefined} onDisconnect={session.native ? async () => { await onDisconnect(session.id); } : undefined} onReconnect={session.native ? async () => { await onReconnect(session.id); } : undefined} onClose={async () => { await onClose(session.id); }} />
         </div>)}
       </div>
     </>}
@@ -908,8 +1038,8 @@ function SessionsWorkspace({ workspaceVisible, sessions, selectedSessionId, onSe
 }
 
 function TopThemeToggle({ theme, onThemeChange }: { theme: AppTheme; onThemeChange: (theme: AppTheme) => void }) {
-  const isLight = theme === 'light';
-  return <button className={`sd-top-theme-toggle ${isLight ? 'is-light' : ''}`} type="button" aria-label={`Switch to ${isLight ? 'dark' : 'light'} theme`} aria-pressed={isLight} title={`Switch to ${isLight ? 'dark' : 'light'} theme`} onClick={() => onThemeChange(isLight ? 'dark' : 'light')}><Sun className="sd-theme-sun" size={14} /><Moon className="sd-theme-moon" size={13} /><span><i>{isLight ? <Sun size={12} /> : <Moon size={11} />}</i></span></button>;
+  const options = [{ value: 'light', label: 'Light', Icon: Sun }, { value: 'dark', label: 'Dark', Icon: Moon }, { value: 'sage', label: 'Sage', Icon: Leaf }] as const;
+  return <div className="sd-header-theme-toggle" role="group" aria-label="Application theme">{options.map(({ value, label, Icon }) => <button key={value} type="button" aria-label={`${label} theme`} title={`${label} theme`} aria-pressed={theme === value} onClick={() => onThemeChange(value)}><Icon size={16} /></button>)}</div>;
 }
 
 export default App;

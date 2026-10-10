@@ -8,7 +8,27 @@ export type TelemetryAlertCondition = 'above' | 'below' | 'outsideRange';
  * `min` and `max`. A range is inclusive, so its endpoints are safe and only
  * values below/above them are considered outside.
  */
-export type TelemetryAlertRule = Readonly<{
+export type TelemetryWatchOptions = {
+  /** Matching readings must continue breaching this long before an alert. */
+  sustainMs?: number;
+  /** Recovery must move this far back across the boundary before re-arming. */
+  hysteresis?: number;
+  /** Time without a matching reading before the watch becomes stale. */
+  staleAfterMs?: number;
+};
+
+export function watchOptionsError(options: TelemetryWatchOptions & { condition?: string; min?: number; max?: number }): string | null {
+  const duration = options.sustainMs ?? 0;
+  const stale = options.staleAfterMs ?? 10_000;
+  const hysteresis = options.hysteresis ?? 0;
+  if (!Number.isSafeInteger(duration) || duration < 0 || duration > 86_400_000) return 'Sustained breach must be from 0 to 86,400 seconds.';
+  if (!Number.isSafeInteger(stale) || stale < 1_000 || stale > 86_400_000) return 'Stale timeout must be from 1 to 86,400 seconds.';
+  if (!Number.isFinite(hysteresis) || hysteresis < 0) return 'Recovery margin must be zero or a positive number in the signal’s unit.';
+  if (options.condition === 'outsideRange' && options.min !== undefined && options.max !== undefined && hysteresis > (options.max - options.min) / 2) return 'Recovery margin must be at most half the expected range.';
+  return null;
+}
+
+export type TelemetryAlertRule = Readonly<TelemetryWatchOptions & {
   id: string;
   sessionKey: string;
   fieldKey: string;
@@ -24,7 +44,7 @@ export type TelemetryAlertRule = Readonly<{
 export type TelemetryAlertState = ReadonlyMap<string, boolean>;
 
 /** Emitted only when a rule transitions from normal to breaching. */
-export type TelemetryAlertEvent = Readonly<{
+export type TelemetryAlertEvent = Readonly<TelemetryWatchOptions & {
   ruleId: string;
   sessionKey: string;
   fieldKey: string;
@@ -79,6 +99,7 @@ function targetForRule(rule: TelemetryAlertRule): WatchTarget | null {
     || typeof rule.enabled !== 'boolean'
     || !rule.enabled
     || (rule.unit !== undefined && typeof rule.unit !== 'string')
+    || watchOptionsError(rule) !== null
   ) return null;
 
   if (rule.condition === 'above' || rule.condition === 'below') {
@@ -113,13 +134,14 @@ function isBreaching(
   condition: TelemetryAlertCondition,
   value: number,
   target: WatchTarget,
+  hysteresis = 0,
 ): boolean {
   if (target.kind === 'threshold') {
-    if (condition === 'above') return value > target.threshold;
-    if (condition === 'below') return value < target.threshold;
+    if (condition === 'above') return value > target.threshold - hysteresis;
+    if (condition === 'below') return value < target.threshold + hysteresis;
     return false;
   }
-  return condition === 'outsideRange' && (value < target.min || value > target.max);
+  return condition === 'outsideRange' && (value < target.min + hysteresis || value > target.max - hysteresis);
 }
 
 function createEvent(
@@ -135,6 +157,9 @@ function createEvent(
     sampleId: sample.id,
     timestamp: sample.timestamp,
     value: fieldValue.value,
+    ...(rule.sustainMs === undefined ? {} : { sustainMs: rule.sustainMs }),
+    ...(rule.hysteresis === undefined ? {} : { hysteresis: rule.hysteresis }),
+    ...(rule.staleAfterMs === undefined ? {} : { staleAfterMs: rule.staleAfterMs }),
     condition: rule.condition,
     ...(fieldValue.unit === undefined ? {} : { unit: fieldValue.unit }),
   };
@@ -184,7 +209,7 @@ export function evaluateTelemetryAlerts(
       const fieldValue = sampleFieldValue(rule, sample);
       if (fieldValue === null) continue;
 
-      const breaching = isBreaching(rule.condition, fieldValue.value, target);
+      const breaching = isBreaching(rule.condition, fieldValue.value, target, wasActive(activeStates, rule.id) ? rule.hysteresis ?? 0 : 0);
       if (breaching && !wasActive(activeStates, rule.id)) {
         events.push(createEvent(rule, sample, fieldValue, target));
       }

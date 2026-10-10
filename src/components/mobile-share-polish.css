@@ -1,0 +1,174 @@
+/* The sharing workbench: two scopes, one surface, no nested panel chrome. */
+.signaldeck-shell .sd-session-view-switch {
+  border-color: var(--color-border-subtle);
+  background: var(--color-app-raised);
+}
+.signaldeck-shell .sd-session-view-switch button { color: var(--color-ink-muted); }
+.signaldeck-shell .sd-session-view-switch button:hover { background: var(--color-surface-raised); color: var(--color-ink); }
+.signaldeck-shell .sd-session-view-switch button.is-selected {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-ink);
+  box-shadow: inset 0 0 0 1px var(--color-border);
+}
+
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-screen-note {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-session-picker {
+  margin-top: 28px;
+  border: 0;
+  background: transparent;
+}
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-section-heading {
+  padding: 0 0 12px;
+  border: 0;
+}
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-session-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-session {
+  flex: 1 1 220px;
+  width: auto;
+  min-height: 68px;
+  padding: 12px 16px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-ink-soft);
+}
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-session:hover {
+  background: var(--color-surface);
+  border-color: var(--color-border);
+}
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-session.is-selected {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent);
+  color: var(--color-ink);
+}
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-session small { color: var(--color-ink-muted); }
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-screen-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0;
+  margin-top: 24px;
+  padding: 24px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+}
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-screen-grid > .sd-mobile-workspace-share,
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-terminal-card {
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-screen-grid > .sd-mobile-workspace-share { padding-right: 28px; }
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-terminal-card {
+  padding-left: 28px;
+  border-left: 1px solid var(--color-border-subtle);
+}
+.signaldeck-shell .sd-mobile-share-screen :is(.sd-mobile-workspace-heading, .sd-mobile-share-terminal-heading) {
+  align-items: center;
+  min-height: 52px;
+  padding: 0;
+  border: 0;
+}
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-selected-session {
+  align-items: center;
+  background: transparent;
+}
+.signaldeck-shell .sd-mobile-share-screen :is(.sd-mobile-workspace-heading h2, .sd-mobile-share-selected-session h2) { margin: 0; color: var(--color-ink); }
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-selected-session > div:last-child > span { color: var(--color-ink-muted); }
+.signaldeck-shell .sd-mobile-share-screen :is(.sd-mobile-share-icon, .sd-mobile-share-terminal-icon, .sd-mobile-share-screen-icon) {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  box-shadow: none;
+}
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share {
+  padding-top: 0;
+  background: transparent;
+}
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-screen-grid :is(.sd-mobile-workspace-start, .sd-mobile-share-start) {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+  margin: 0;
+  padding: 20px 0 0;
+  border: 0;
+  background: transparent;
+}
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-screen-grid :is(.sd-mobile-workspace-start p, .sd-mobile-share-start p) {
+  min-height: 48px;
+  margin: 0;
+  color: var(--color-ink-muted);
+  line-height: 1.5;
+}
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-primary-button { min-height: 44px; }
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-safety {
+  margin-top: 24px;
+  padding-top: 16px;
+  border: 0;
+  border-top: 1px solid var(--color-border-subtle);
+  background: transparent;
+  color: var(--color-ink-muted);
+}
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-safety strong { color: var(--color-ink-soft); }
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-preview {
+  margin-top: 20px;
+  padding: 12px 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-muted);
+}
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-terminal-status.connected {
+  border-color: var(--color-border-subtle);
+  background: var(--color-app-raised);
+  color: var(--color-accent);
+}
+.signaldeck-shell .sd-mobile-share-screen :is(.sd-mobile-share-terminal-status.connected i, .sd-mobile-share-screen-status i.is-active) { background: var(--color-accent); }
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-screen-status > span {
+  border-color: var(--color-border-subtle);
+  background: var(--color-app-raised);
+  color: var(--color-ink-soft);
+}
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-screen-grid :is(.sd-mobile-share-instruction, .sd-mobile-share-control) { background: transparent; }
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-link { background: var(--color-app-raised); border-color: var(--color-border); }
+
+@media (max-width: 900px) {
+  .signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-screen-grid { grid-template-columns: 1fr; }
+  .signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-screen-grid > .sd-mobile-workspace-share { padding-right: 0; padding-bottom: 24px; }
+  .signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-terminal-card { padding-left: 0; padding-top: 24px; border-left: 0; border-top: 1px solid var(--color-border-subtle); }
+}
+@media (max-width: 620px) {
+  .signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-screen-grid { padding: 18px; }
+  .signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-session { flex-basis: 100%; }
+  .signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-terminal-heading { flex-direction: row; flex-wrap: wrap; }
+  .signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-terminal-status { margin-left: 0; }
+  .signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-screen-grid :is(.sd-mobile-workspace-start p, .sd-mobile-share-start p) { min-height: 0; }
+}
+
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-screen-grid .sd-mobile-share-icon { border: 0; background: var(--color-accent-soft); color: var(--color-accent); }
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-selected-session { flex: 1; min-width: 0; }
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-live {
+  border-color: var(--color-border);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-live i { background: var(--color-accent); }
+.signaldeck-shell .sd-mobile-share-screen :is(.sd-mobile-share-metrics, .sd-mobile-share-screen-status small) { color: var(--color-ink-muted); }
+.signaldeck-shell .sd-mobile-share-screen :is(.sd-mobile-share-metrics svg, .sd-mobile-share-safety svg, .sd-mobile-share-screen-note > svg) { color: var(--color-accent); background: transparent; }
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-rotate { color: var(--color-ink-soft); }
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-rotate:hover:not(:disabled) { color: var(--color-accent); }
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-revoke { color: var(--color-danger); }
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-revoke:hover:not(:disabled) { color: var(--color-danger); text-decoration: underline; }
+.signaldeck-shell .sd-mobile-share-screen .sd-mobile-share-control.readonly > svg { color: var(--color-accent); }

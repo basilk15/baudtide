@@ -15,10 +15,11 @@ type ThemedSelectProps = {
   invalid?: boolean;
   compact?: boolean;
   disabled?: boolean;
+  menuPlacement?: 'top' | 'bottom';
   onChange: (value: string) => void;
 };
 
-export function ThemedSelect({ value, options, placeholder, label, invalid = false, compact = false, disabled = false, onChange }: ThemedSelectProps) {
+export function ThemedSelect({ value, options, placeholder, label, invalid = false, compact = false, disabled = false, menuPlacement = 'bottom', onChange }: ThemedSelectProps) {
   const [open, setOpen] = useState(false);
   const selectRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -30,7 +31,7 @@ export function ThemedSelect({ value, options, placeholder, label, invalid = fal
 
   const closeMenu = (restoreTriggerFocus = false) => {
     setOpen(false);
-    if (restoreTriggerFocus) requestAnimationFrame(() => triggerRef.current?.focus());
+    if (restoreTriggerFocus) requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }));
   };
 
   const openMenu = (index = selectedIndex >= 0 ? selectedIndex : 0) => {
@@ -58,7 +59,18 @@ export function ThemedSelect({ value, options, placeholder, label, invalid = fal
 
   useEffect(() => {
     if (!open) return;
-    const focusId = requestAnimationFrame(() => optionRefs.current[activeIndex]?.focus());
+    const focusId = requestAnimationFrame(() => {
+      const option = optionRefs.current[activeIndex];
+      if (!option) return;
+      option.focus({ preventScroll: true });
+      // Keyboard navigation may scroll the list, but never its page ancestors.
+      const list = option.parentElement;
+      if (!list) return;
+      const top = option.offsetTop;
+      const bottom = top + option.offsetHeight;
+      if (top < list.scrollTop) list.scrollTop = top;
+      else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
+    });
     return () => cancelAnimationFrame(focusId);
   }, [activeIndex, open]);
 
@@ -117,7 +129,7 @@ export function ThemedSelect({ value, options, placeholder, label, invalid = fal
     <button ref={triggerRef} className={`sd-themed-select-trigger ${invalid ? 'is-invalid' : ''}`} type="button" aria-label={label} aria-haspopup="listbox" aria-controls={open ? listboxId : undefined} aria-expanded={open} disabled={disabled} onClick={() => open ? closeMenu() : openMenu()} onKeyDown={handleTriggerKeyDown}>
       <span className={selected ? '' : 'is-placeholder'}>{selected?.label ?? placeholder}</span><ChevronDown size={18} />
     </button>
-    {open && <div className="sd-themed-select-options" id={listboxId} role="listbox" aria-label={label}>
+    {open && <div className={`sd-themed-select-options ${menuPlacement === 'top' ? 'opens-up' : ''}`} id={listboxId} role="listbox" aria-label={label}>
       {options.map((option, index) => <button ref={(element) => { optionRefs.current[index] = element; }} type="button" role="option" aria-selected={option.value === value} aria-posinset={index + 1} aria-setsize={options.length} tabIndex={index === activeIndex ? 0 : -1} className={option.value === value ? 'is-selected' : ''} key={option.value} onClick={() => chooseOption(index)} onKeyDown={(event) => handleOptionKeyDown(event, index)}>{option.label}</button>)}
     </div>}
   </div>;

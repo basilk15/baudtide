@@ -86,3 +86,30 @@
   --shadow-panel: 0 14px 34px oklch(25% 0.03 226 / 0.1);
   --shadow-popover: 0 20px 48px oklch(25% 0.03 226 / 0.18);
 }
+
+/* Sage: a quiet daylight workbench with green-gray paper and forest controls. */
+:root[data-theme="sage"],
+.theme-sage {
+  color-scheme: light;
+  --color-app: #e7ece4;
+  --color-app-raised: #f0f3ec;
+  --color-surface: #f5f7f1;
+  --color-surface-raised: #dce5d8;
+  --color-rail: #dde5d8;
+  --color-border: #a7b7a0;
+  --color-border-subtle: #c7d2bf;
+  --color-ink: #25332c;
+  --color-ink-soft: #3d5042;
+  --color-ink-muted: #52654f;
+  --color-ink-dim: #5e705a;
+  --color-accent: #3d6b4d;
+  --color-accent-strong: #30563d;
+  --color-accent-soft: #d5e3cf;
+  --color-accent-ink: #243c2b;
+  --color-focus: #3d6b4d;
+  --color-info: #386579;
+  --color-warning: #85601d;
+  --color-danger: #a13f42;
+  --shadow-panel: 0 14px 34px #25332c12;
+  --shadow-popover: 0 20px 48px #25332c26;
+}

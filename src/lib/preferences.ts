@@ -4,7 +4,7 @@ export const SETTINGS_VERSION = 1 as const;
 
 export type LineEnding = 'lf' | 'crlf' | 'cr' | 'none';
 export type DisplayEncoding = 'utf8' | 'ascii' | 'hex';
-export type AppTheme = 'dark' | 'light';
+export type AppTheme = 'dark' | 'light' | 'sage';
 
 export type BaudTidePreferences = {
   version: typeof SETTINGS_VERSION;
@@ -38,10 +38,11 @@ export const DEFAULT_PREFERENCES: BaudTidePreferences = {
 };
 
 const browserStorageKey = 'baudtide.preferences.v1';
+const appearanceOverrideKey = 'baudtide.appearance-override.v1';
 const baudRates = new Set([9600, 57600, 115200, 230400]);
 const lineEndings = new Set<LineEnding>(['lf', 'crlf', 'cr', 'none']);
 const encodings = new Set<DisplayEncoding>(['utf8', 'ascii', 'hex']);
-const themes = new Set<AppTheme>(['dark', 'light']);
+const themes = new Set<AppTheme>(['dark', 'light', 'sage']);
 const storageLimits = new Set([2, 5, 10, 25].map((gigabytes) => gigabytes * 1024 ** 3));
 
 /**
@@ -115,10 +116,24 @@ function writeBrowserPreferences(settings: BaudTidePreferences) {
   }
 }
 
+function readAppearanceOverride(): AppTheme | undefined {
+  try {
+    const value: unknown = JSON.parse(window.localStorage.getItem(appearanceOverrideKey) ?? 'null');
+    return typeof value === 'string' && themes.has(value as AppTheme) ? value as AppTheme : undefined;
+  } catch { return undefined; }
+}
+
+function writeAppearanceOverride(theme?: AppTheme) {
+  try { window.localStorage.setItem(appearanceOverrideKey, JSON.stringify(theme ?? null)); }
+  catch { /* Keep the current theme usable when renderer storage is unavailable. */ }
+}
+
 export async function loadPreferences(): Promise<BaudTidePreferences> {
   if (isDesktopRuntime()) {
     try {
-      return normalizePreferences(await invokeDesktop<unknown>('load_preferences'));
+      const saved = normalizePreferences(await invokeDesktop<unknown>('load_preferences'));
+      const theme = readAppearanceOverride();
+      return theme ? { ...saved, appearance: { theme } } : saved;
     } catch {
       // Keep the UI usable if the desktop settings file cannot be read.
     }
@@ -134,7 +149,12 @@ export async function savePreferences(settings: BaudTidePreferences): Promise<Ba
     // Do not fall back to browser storage here: native validation or write failures
     // must remain visible so the displayed destination cannot diverge from the one
     // desktop sessions will actually use.
-    return normalizePreferences(await invokeDesktop<unknown>('save_preferences', { settings: normalized }));
+    const saved = normalizePreferences(await invokeDesktop<unknown>('save_preferences', { settings: normalized }));
+    // A running pre-Sage sidecar repairs unknown themes to dark. Appearance is
+    // renderer-only, so retain that choice locally until a newer sidecar can
+    // persist it. Serial/storage settings and native write errors stay native.
+    writeAppearanceOverride(saved.appearance.theme !== normalized.appearance.theme ? normalized.appearance.theme : undefined);
+    return { ...saved, appearance: normalized.appearance };
   }
   writeBrowserPreferences(normalized);
   return normalized;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as echarts from 'echarts/core';
 import { LineChart } from 'echarts/charts';
 import {
@@ -15,10 +15,12 @@ import {
   alignTelemetryChartData,
   formatTelemetryValue,
   prepareTelemetryCharts,
-  TELEMETRY_SERIES_COLORS,
+  telemetrySeriesColor,
   telemetryYDomain,
 } from '../lib/telemetryChart';
 import './telemetry-charts.css';
+import { frameScheduler } from '../lib/frameScheduler';
+import { formatTelemetryElapsedTime, type TelemetryTimeline } from '../lib/telemetryTime';
 
 echarts.use([
   AxisPointerComponent,
@@ -38,6 +40,8 @@ export type TelemetryChartsProps = {
   windowMs: number;
   paused: boolean;
   mode?: ChartMode;
+  timeline?: TelemetryTimeline;
+  visible?: boolean;
 };
 
 type TooltipItem = {
@@ -64,7 +68,10 @@ const MAX_RENDERED_POINTS_PER_SERIES = 1_200;
 const CHART_DATA_FONT = '"Ubuntu Mono", "Noto Sans Mono", ui-monospace, monospace';
 
 function readableFieldName(key: string) {
-  return key.replace(/[._-]+/gu, ' ');
+  const separator = key.lastIndexOf(' · ');
+  if (separator < 0) return key.replace(/[._-]+/gu, ' ');
+  // Preserve terminal paths and capture names; prettify only the signal key.
+  return `${key.slice(0, separator)} · ${key.slice(separator + 3).replace(/[._-]+/gu, ' ')}`;
 }
 
 function escapeHtml(value: string) {
@@ -87,9 +94,9 @@ function formatChartTime(timestamp: number, includeMilliseconds = false) {
   return includeMilliseconds ? `${base}.${String(date.getMilliseconds()).padStart(3, '0')}` : base;
 }
 
-function colorForField(fields: readonly TelemetryField[], fieldKey: string) {
+function colorForField(fields: readonly TelemetryField[], fieldKey: string, light: boolean) {
   const index = fields.findIndex((field) => field.key === fieldKey);
-  return TELEMETRY_SERIES_COLORS[(index < 0 ? 0 : index) % TELEMETRY_SERIES_COLORS.length];
+  return telemetrySeriesColor(index, light);
 }
 
 function formatAxisTime(timestamp: number, startMs?: number, endMs?: number) {
@@ -129,18 +136,35 @@ function chartOption({
   startMs,
   endMs,
   isLight,
+  isSage = false,
   mode,
+  timeline,
 }: {
   fields: readonly TelemetryField[];
   series: readonly ReturnType<typeof prepareTelemetryCharts>['groups'][number]['series'][number][];
   aligned: ReturnType<typeof alignTelemetryChartData>;
-  gaps: readonly { timestampMs: number }[];
+  gaps: readonly { timestampMs: number; fieldKeys?: readonly string[] }[];
   startMs?: number;
   endMs?: number;
   isLight: boolean;
+  isSage?: boolean;
   mode: ChartMode;
+  timeline?: TelemetryTimeline;
 }): EChartsOption {
-  const palette = isLight ? {
+  const palette = isSage ? {
+    axis: 'rgba(61, 80, 66, 0.3)',
+    grid: 'rgba(61, 80, 66, 0.13)',
+    muted: '#52654f',
+    pointer: '#3d5042',
+    pointerLabel: '#f0f3ec',
+    navigatorTrack: 'rgba(61, 80, 66, 0.07)',
+    navigatorFill: 'rgba(61, 107, 77, 0.16)',
+    navigatorLine: 'rgba(61, 80, 66, 0.28)',
+    navigatorHandle: '#3d6b4d',
+    tooltipBackground: '#f5f7f1',
+    tooltipBorder: '#a7b7a0',
+    tooltipText: '#25332c',
+  } : isLight ? {
     axis: 'rgba(55, 81, 99, 0.3)',
     grid: 'rgba(55, 81, 99, 0.13)',
     muted: '#6c8190',
@@ -174,6 +198,9 @@ function chartOption({
     aligned.timestamps.length ? aligned.timestamps[aligned.timestamps.length - 1] * 1_000 : Number.NEGATIVE_INFINITY,
   );
   const hasZoom = aligned.timestamps.length > 80;
+  const axisTime = (timestamp: number) => timeline?.kind === 'elapsed'
+    ? formatTelemetryElapsedTime(timestamp, timeline.originMs, chartEndMs - (chartStartMs ?? chartEndMs) < 5_000)
+    : timeline?.kind === 'clock' ? formatChartTime(timestamp) : formatAxisTime(timestamp, chartStartMs, chartEndMs);
   const isLanes = mode === 'lanes';
   const lastSeriesIndex = Math.max(0, series.length - 1);
   const rawRanges = series.map((currentSeries) => numericRange(currentSeries.points));
@@ -187,8 +214,11 @@ function chartOption({
     ? series.map((_currentSeries, index) => ({
       left: 72,
       right: 20,
-      top: `${laneTop + index * (laneHeight + laneGap)}%`,
-      height: `${laneHeight}%`,
+      top: seriesCount === 1 ? 12 : `${laneTop + index * (laneHeight + laneGap)}%`,
+      height: seriesCount === 1 ? undefined : `${laneHeight}%`,
+      // Each separate chart has one grid. Reserve fixed space for time labels
+      // and the navigator instead of a percentage that collapses in short plots.
+      bottom: seriesCount === 1 ? (hasZoom ? 64 : 34) : undefined,
       containLabel: false,
     }))
     : {
@@ -196,13 +226,14 @@ function chartOption({
       right: 20,
       top: 18,
       bottom: hasZoom ? 62 : 40,
-      containLabel: true,
+      outerBoundsMode: 'same' as const,
+      outerBoundsContain: 'axisLabel' as const,
     };
 
   const yAxis = isLanes
     ? series.map((currentSeries, index) => {
       const domain = telemetryYDomain(currentSeries.points) ?? { min: 0, max: 1 };
-      const color = colorForField(fields, currentSeries.key);
+      const color = colorForField(fields, currentSeries.key, isLight);
       return {
         type: 'value' as const,
         gridIndex: index,
@@ -262,7 +293,7 @@ function chartOption({
         fontSize: 10,
         hideOverlap: true,
         margin: 10,
-        formatter: (value: number) => formatAxisTime(value, chartStartMs, chartEndMs),
+        formatter: axisTime,
       },
       splitLine: { show: false },
       axisPointer: {
@@ -272,10 +303,10 @@ function chartOption({
         lineStyle: { color: palette.pointer, width: 1, type: 'dashed' as const },
         label: {
           show: index === lastSeriesIndex,
-          backgroundColor: isLight ? '#315766' : '#18323d',
+          backgroundColor: isSage ? '#3d5042' : isLight ? '#315766' : '#18323d',
           color: palette.pointerLabel,
           padding: [3, 5],
-          formatter: (params: AxisPointerLabelParams) => formatAxisTime(Number(params.value), chartStartMs, chartEndMs),
+          formatter: (params: AxisPointerLabelParams) => axisTime(Number(params.value)),
         },
       },
     }))
@@ -292,7 +323,7 @@ function chartOption({
         fontSize: 10,
         hideOverlap: true,
         margin: 10,
-        formatter: (value: number) => formatAxisTime(value, chartStartMs, chartEndMs),
+        formatter: axisTime,
       },
       splitLine: { show: false },
       axisPointer: {
@@ -302,18 +333,23 @@ function chartOption({
         lineStyle: { color: palette.pointer, width: 1, type: 'dashed' as const },
         label: {
           show: true,
-          backgroundColor: isLight ? '#315766' : '#18323d',
+          backgroundColor: isSage ? '#3d5042' : isLight ? '#315766' : '#18323d',
           color: palette.pointerLabel,
           padding: [3, 5],
-          formatter: (params: AxisPointerLabelParams) => formatAxisTime(Number(params.value), chartStartMs, chartEndMs),
+          formatter: (params: AxisPointerLabelParams) => axisTime(Number(params.value)),
         },
       },
     };
 
   const lineSeries = series.map((currentSeries, seriesIndex) => {
-    const color = colorForField(fields, currentSeries.key);
+    const color = colorForField(fields, currentSeries.key, isLight);
     const values = aligned.values[seriesIndex] ?? [];
     const normalizedValues = values.map((value) => typeof value === 'number' ? normalizeValue(value, rawRanges[seriesIndex]) : null);
+    const scopedGaps = gaps.filter((gap) => !gap.fieldKeys || gap.fieldKeys.includes(currentSeries.key));
+    const markerGaps = isLanes ? scopedGaps : gaps;
+    const lineData: Array<[number, number | null]> = aligned.timestamps.map((timestamp, index) => [timestamp * 1_000, isLanes ? values[index] ?? null : normalizedValues[index]]);
+    scopedGaps.forEach((gap) => lineData.push([gap.timestampMs - 0.001, null]));
+    lineData.sort((a, b) => a[0] - b[0]);
     return {
       id: currentSeries.key,
       name: currentSeries.key,
@@ -346,16 +382,13 @@ function chartOption({
         focus: 'series' as const,
         lineStyle: { width: isLanes ? 3 : 2.8 },
       },
-      data: aligned.timestamps.map((timestamp, index) => [
-        timestamp * 1_000,
-        isLanes ? values[index] ?? null : normalizedValues[index],
-      ]),
-      markLine: gaps.length && (isLanes || seriesIndex === 0) ? {
+      data: lineData,
+      markLine: markerGaps.length && (isLanes || seriesIndex === 0) ? {
         silent: true,
         symbol: 'none',
-        lineStyle: { color: TELEMETRY_SERIES_COLORS[2], type: 'dashed', width: 1, opacity: 0.62 },
+        lineStyle: { color: telemetrySeriesColor(2, isLight), type: 'dashed', width: 1, opacity: 0.62 },
         label: { show: false },
-        data: gaps.map((gap) => ({ xAxis: gap.timestampMs })),
+        data: markerGaps.map((gap) => ({ xAxis: gap.timestampMs })),
       } : undefined,
     };
   });
@@ -400,7 +433,7 @@ function chartOption({
         lineStyle: { color: palette.pointer, width: 1, type: 'dashed' },
         label: {
           show: true,
-          backgroundColor: isLight ? '#315766' : '#18323d',
+          backgroundColor: isSage ? '#3d5042' : isLight ? '#315766' : '#18323d',
           color: palette.pointerLabel,
           padding: [3, 5],
         },
@@ -427,7 +460,9 @@ function chartOption({
           })
           .filter(Boolean)
           .join('');
-        return `<div class="bt-telemetry-tooltip-time">${Number.isFinite(timestamp) ? formatChartTime(timestamp, true) : 'Telemetry'}</div>${rows}`;
+        const time = Number.isFinite(timestamp) ? timeline?.kind === 'elapsed'
+          ? `Elapsed ${formatTelemetryElapsedTime(timestamp, timeline.originMs, true)}` : formatChartTime(timestamp, true) : 'Telemetry';
+        return `<div class="bt-telemetry-tooltip-time">${time}</div>${rows}`;
       },
     },
     dataZoom: [
@@ -445,8 +480,8 @@ function chartOption({
         id: 'telemetry-range-zoom',
         type: 'slider' as const,
         xAxisIndex: 'all' as const,
-        height: 14,
-        bottom: 5,
+        height: 16,
+        bottom: 8,
         left: isLanes ? 72 : 24,
         right: 20,
         borderColor: 'transparent',
@@ -489,18 +524,24 @@ function chartOption({
   };
 }
 
-function EChartsSurface({ option, structureKey, ariaLabel }: { option: EChartsOption; structureKey: string; ariaLabel: string }) {
+function EChartsSurface({ option, structureKey, ariaLabel, visible }: { option: EChartsOption; structureKey: string; ariaLabel: string; visible: boolean }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const visibleRef = useRef(visible);
+  const [activated, setActivated] = useState(visible);
+  const resizeWorkRef = useRef<ReturnType<typeof frameScheduler> | null>(null);
   const chartRef = useRef<ECharts | null>(null);
   const pendingOptionRef = useRef<EChartsOption>(option);
   const pendingStructureKeyRef = useRef('');
   const structureKeyRef = useRef('');
   const zoomingRef = useRef(false);
+  const scrollingRef = useRef(false);
+  const scrollIdleTimerRef = useRef<number | undefined>(undefined);
+  const scrollUpdatePendingRef = useRef(false);
   const zoomIdleTimerRef = useRef<number | undefined>(undefined);
 
   const applyOption = useCallback((nextOption: EChartsOption, structureKey: string) => {
     const chart = chartRef.current;
-    if (!chart) return;
+    if (!chart || !visibleRef.current) return;
     const structureChanged = structureKeyRef.current !== structureKey;
     chart.setOption(nextOption, {
       // Apply the snapshot before the next pointer/dataZoom event so ECharts
@@ -516,7 +557,7 @@ function EChartsSurface({ option, structureKey, ariaLabel }: { option: EChartsOp
 
   useEffect(() => {
     const host = hostRef.current;
-    if (!host) return undefined;
+    if (!host || !activated) return undefined;
     // Dirty-rectangle rendering is not safe for this surface: a dataZoom
     // gesture changes the position of every trace, axis, pointer, and slider
     // at once. Repainting the full canvas prevents stale fragments and the
@@ -532,11 +573,16 @@ function EChartsSurface({ option, structureKey, ariaLabel }: { option: EChartsOp
       zoomIdleTimerRef.current = window.setTimeout(() => {
         zoomIdleTimerRef.current = undefined;
         zoomingRef.current = false;
-        applyOption(pendingOptionRef.current, pendingStructureKeyRef.current);
+        if (scrollingRef.current) scrollUpdatePendingRef.current = true;
+        else applyOption(pendingOptionRef.current, pendingStructureKeyRef.current);
       }, 160);
     };
     chart.on('datazoom', handleDataZoom);
-    const resizeObserver = new ResizeObserver(() => chart.resize());
+    const resizeWork = frameScheduler(() => {
+      if (visibleRef.current && host.clientWidth > 0 && host.clientHeight > 0) chart.resize();
+    });
+    resizeWorkRef.current = resizeWork;
+    const resizeObserver = new ResizeObserver(() => resizeWork.schedule());
     const preventPageScroll = (event: WheelEvent) => {
       // Shift+wheel is the deliberate chart-zoom gesture. Leave an ordinary
       // wheel available for page scrolling, especially in the taller lane
@@ -545,30 +591,59 @@ function EChartsSurface({ option, structureKey, ariaLabel }: { option: EChartsOp
       event.preventDefault();
       event.stopPropagation();
     };
+    const scroller = host.closest('.bt-analysis')?.closest<HTMLElement>('.signaldeck-main');
+    const onScroll = () => {
+      if (host.closest('[hidden]')) return;
+      scrollingRef.current = true;
+      if (scrollIdleTimerRef.current !== undefined) window.clearTimeout(scrollIdleTimerRef.current);
+      scrollIdleTimerRef.current = window.setTimeout(() => {
+        scrollIdleTimerRef.current = undefined;
+        scrollingRef.current = false;
+        if (scrollUpdatePendingRef.current && !zoomingRef.current) {
+          scrollUpdatePendingRef.current = false;
+          applyOption(pendingOptionRef.current, pendingStructureKeyRef.current);
+        }
+      }, 100);
+    };
+    scroller?.addEventListener('scroll', onScroll, { passive: true });
     host.addEventListener('wheel', preventPageScroll, { passive: false });
     resizeObserver.observe(host);
-    chart.resize();
+    resizeWork.schedule();
     return () => {
       host.removeEventListener('wheel', preventPageScroll);
+      scroller?.removeEventListener('scroll', onScroll);
+      if (scrollIdleTimerRef.current !== undefined) window.clearTimeout(scrollIdleTimerRef.current);
+      scrollingRef.current = false;
+      scrollUpdatePendingRef.current = false;
       chart.off('datazoom', handleDataZoom);
       if (zoomIdleTimerRef.current !== undefined) window.clearTimeout(zoomIdleTimerRef.current);
       resizeObserver.disconnect();
+      resizeWork.cancel();
+      if (resizeWorkRef.current === resizeWork) resizeWorkRef.current = null;
       chart.dispose();
       if (chartRef.current === chart) chartRef.current = null;
     };
-  }, [applyOption]);
+  }, [applyOption, activated]);
+
+  useEffect(() => {
+    visibleRef.current = visible;
+    if (visible) { setActivated(true); resizeWorkRef.current?.schedule(); }
+    else resizeWorkRef.current?.cancel();
+  }, [visible]);
 
   useEffect(() => {
     pendingOptionRef.current = option;
     pendingStructureKeyRef.current = structureKey;
+    if (scrollingRef.current) { scrollUpdatePendingRef.current = true; return; }
     if (zoomingRef.current) return;
+    scrollUpdatePendingRef.current = false;
     applyOption(option, structureKey);
-  }, [applyOption, option, structureKey]);
+  }, [applyOption, option, structureKey, visible, activated]);
 
   return <div ref={hostRef} className="bt-telemetry-echarts" role="img" aria-label={ariaLabel} />;
 }
 
-export function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, windowMs, paused, mode = 'lanes' }: TelemetryChartsProps) {
+export const TelemetryCharts = memo(function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, windowMs, paused, mode = 'lanes', timeline, visible = true }: TelemetryChartsProps) {
   const prepared = useMemo(() => prepareTelemetryCharts({
     samples,
     fields,
@@ -579,8 +654,17 @@ export function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, wind
   }), [fields, gaps, samples, selectedFieldKeys, windowMs]);
   const selectedSeries = useMemo(() => prepared.groups.flatMap((group) => group.series), [prepared.groups]);
   const aligned = useMemo(() => alignTelemetryChartData(selectedSeries), [selectedSeries]);
-  const isLight = typeof document !== 'undefined' && document.documentElement.dataset.theme === 'light';
-  const plots = useMemo(() => selectedSeries.map((series) => {
+  const [theme, setTheme] = useState(() => typeof document !== 'undefined' ? document.documentElement.dataset.theme ?? 'dark' : 'dark');
+  const isLight = theme !== 'dark';
+  useEffect(() => {
+    const update = () => setTheme(document.documentElement.dataset.theme ?? 'dark');
+    const observer = new MutationObserver(update);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    update();
+    return () => observer.disconnect();
+  }, []);
+  const chartableSeries = selectedSeries.filter((series) => series.points.length > 0);
+  const plots = useMemo(() => mode === 'lanes' ? selectedSeries.map((series) => {
     const plotAligned = alignTelemetryChartData([series]);
     const option = plotAligned.timestamps.length
       ? chartOption({
@@ -591,13 +675,15 @@ export function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, wind
         startMs: prepared.startMs,
         endMs: prepared.endMs,
         isLight,
+        isSage: theme === 'sage',
         mode: 'lanes',
+        timeline,
       })
       : null;
     return { series, aligned: plotAligned, option };
-  }), [fields, isLight, prepared.endMs, prepared.gaps, prepared.startMs, selectedSeries]);
+  }) : [], [mode, fields, isLight, theme, prepared.endMs, prepared.gaps, prepared.startMs, selectedSeries, timeline]);
   const chartablePlots = plots.filter((plot) => plot.option && plot.aligned.timestamps.length);
-  const overlayOption = useMemo(() => aligned.timestamps.length ? chartOption({
+  const overlayOption = useMemo(() => mode === 'compare' && aligned.timestamps.length ? chartOption({
     fields,
     series: selectedSeries,
     aligned,
@@ -605,8 +691,10 @@ export function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, wind
     startMs: prepared.startMs,
     endMs: prepared.endMs,
     isLight,
+    isSage: theme === 'sage',
     mode: 'compare',
-  }) : null, [aligned, fields, isLight, prepared.endMs, prepared.gaps, prepared.startMs, selectedSeries]);
+    timeline,
+  }) : null, [mode, aligned, fields, isLight, theme, prepared.endMs, prepared.gaps, prepared.startMs, selectedSeries, timeline]);
 
   if (!fields.length) {
     return <section className="bt-telemetry-view bt-telemetry-view-empty" role="status">
@@ -622,7 +710,7 @@ export function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, wind
     </section>;
   }
 
-  if (!chartablePlots.length) {
+  if (!chartableSeries.length) {
     return <section className="bt-telemetry-view bt-telemetry-view-empty" role="status">
       <strong>No chartable points in this window</strong>
       <span>Keep the serial stream running or choose a longer display window.</span>
@@ -632,19 +720,22 @@ export function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, wind
   if (mode === 'compare' && overlayOption) {
     return <section className="bt-telemetry-view bt-telemetry-overlay" aria-label="Overlaid telemetry comparison" data-paused={paused || undefined}>
       <header className="bt-telemetry-stack-header">
-        <div className="bt-telemetry-stack-title"><strong>Normalized overlay</strong><span>{chartablePlots.length} selected · each signal mapped to its own 0–100% range</span></div>
+        <div className="bt-telemetry-stack-title"><strong>Normalized overlay</strong><span>{chartableSeries.length} selected · each signal mapped to its own 0–100% range</span></div>
         <span className="bt-telemetry-stack-hint">Hover for raw values</span>
       </header>
+      <ul className="bt-telemetry-signal-legend" aria-label="Plotted signals">
+        {selectedSeries.map((series) => <li key={series.key}><i aria-hidden="true" style={{ backgroundColor: colorForField(fields, series.key, isLight) }} /><span>{readableFieldName(series.key)}</span></li>)}
+      </ul>
       <div className="bt-telemetry-plot-stack">
         <article className="bt-telemetry-plot">
           <div className="bt-telemetry-plot-canvas">
-            <EChartsSurface option={overlayOption} structureKey={`overlay\u0000${selectedSeries.map((series) => series.key).join('\u0000')}`} ariaLabel="Normalized overlay of selected telemetry signals" />
+            <EChartsSurface visible={visible} option={overlayOption} structureKey={`overlay\u0000${selectedSeries.map((series) => series.key).join('\u0000')}`} ariaLabel="Normalized overlay of selected telemetry signals" />
           </div>
         </article>
       </div>
       <footer className="bt-telemetry-view-footer">
         <span><strong>{aligned.timestamps.length.toLocaleString()}</strong> aligned records</span>
-        <span>{chartablePlots.length} overlaid signals</span>
+        <span>{chartableSeries.length} overlaid signals</span>
       </footer>
     </section>;
   }
@@ -659,7 +750,7 @@ export function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, wind
     </header>
     <div className="bt-telemetry-plot-stack">
       {chartablePlots.map((plot) => {
-        const color = colorForField(fields, plot.series.key);
+        const color = colorForField(fields, plot.series.key, isLight);
         return <article className="bt-telemetry-plot" key={plot.series.key}>
           <header className="bt-telemetry-plot-header">
             <div className="bt-telemetry-plot-label">
@@ -674,6 +765,7 @@ export function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, wind
           </header>
           <div className="bt-telemetry-plot-canvas">
             <EChartsSurface
+              visible={visible}
               option={plot.option!}
               structureKey={`separate\u0000${plot.series.key}`}
               ariaLabel={`${readableFieldName(plot.series.key)} telemetry plot`}
@@ -688,4 +780,4 @@ export function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, wind
       {prepared.gaps.length ? <span>{prepared.gaps.length} reconnect marker{prepared.gaps.length === 1 ? '' : 's'}</span> : null}
     </footer>
   </section>;
-}
+});

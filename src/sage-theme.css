@@ -1,0 +1,206 @@
+/* Shared tokens provide the palette; these cover older component-local colors. */
+/* Three explicit icon choices retain the compact header toggle. */
+.sd-header-theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 2px;
+  height: 38px;
+  padding: 3px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 999px;
+  background: var(--color-app-raised);
+}
+.sd-header-theme-toggle button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-ink-muted);
+  cursor: pointer;
+}
+.sd-header-theme-toggle button:hover { background: var(--color-surface-raised); color: var(--color-ink); }
+.sd-header-theme-toggle button[aria-pressed="true"] { background: var(--color-accent-soft); color: var(--color-accent); }
+.sd-header-theme-toggle button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
+.sd-theme-switcher { flex-wrap: wrap; }
+
+.theme-sage .bt-analysis {
+  --bt-analysis-bench: var(--color-app-raised);
+  --bt-analysis-panel: var(--color-surface);
+  --bt-analysis-raised: var(--color-surface-raised);
+  --bt-analysis-rule: var(--color-border-subtle);
+  --bt-analysis-rule-soft: var(--color-border-subtle);
+  --bt-analysis-ink: var(--color-ink);
+  --bt-analysis-soft: var(--color-ink-soft);
+  --bt-analysis-muted: var(--color-ink-muted);
+  --bt-analysis-aqua: var(--color-accent);
+  --bt-analysis-aqua-soft: var(--color-accent-soft);
+  --bt-analysis-blue: var(--color-info);
+}
+
+.theme-sage :is(.sd-sidebar, .sd-mobile-drawer) { background: var(--color-rail); }
+.theme-sage :is(.sd-command-trigger, .sd-profile-trigger:hover, .sd-settings-card, .sd-help-card,
+  .sd-feedback-card, .sd-port-list, .sd-saved-log-list, .sd-sessions-empty-panel,
+  .sd-themed-select-options, .sd-menu-select-options, .sd-command-palette,
+  .sd-notification-panel, .sd-workspace-popover, .sd-connection-dialog, .sd-log-preview,
+  .sd-log-delete-confirm, .bt-bench-dialog) {
+  border-color: var(--color-border-subtle);
+  background: var(--color-surface);
+  color: var(--color-ink);
+}
+.theme-sage :is(.sd-sidebar-brand, .sd-port-primary strong, .sd-saved-log-name strong,
+  .sd-help-card h2, .sd-feedback-card h2, .sd-screen-heading h1, .sd-sessions-workspace-header h1,
+  .sd-settings-card legend, .sd-terminal-title, .sd-log-preview header h2) { color: var(--color-ink); }
+.theme-sage :is(.sd-settings-card label, .sd-theme-setting strong, .sd-toggle-row,
+  .sd-nav-item, .sd-help-topic button, .sd-feedback-label) { color: var(--color-ink-soft); }
+.theme-sage :is(.sd-help-topic p, .sd-feedback-card p, .sd-theme-setting span,
+  .sd-field-hint, .sd-settings-card small, .sd-port-details, .sd-port-details small,
+  .sd-saved-log-primary p, .sd-saved-log-primary small, .sd-feedback-count,
+  .sd-nav-label, .sd-sidebar-status) { color: var(--color-ink-muted); }
+.theme-sage :is(.sd-nav-item:hover, .sd-port-row:hover, .sd-saved-log-row:hover) {
+  background: var(--color-surface-raised);
+  color: var(--color-ink);
+}
+.theme-sage :is(.sd-nav-item.is-active, .sd-theme-switcher button.is-active) {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-ink);
+}
+.theme-sage .sd-nav-item.is-active { box-shadow: inset 2px 0 var(--color-accent); }
+.theme-sage .sd-theme-switcher { border-color: var(--color-border-subtle); background: var(--color-app); }
+.theme-sage .sd-theme-switcher button { color: var(--color-ink-muted); }
+.theme-sage :is(.sd-secondary-button, .sd-monitor-secondary, .sd-monitor-icon-button,
+  .sd-themed-select-trigger, .sd-path-control button, .bt-analysis-replay-button,
+  .bt-workspace-menu, .bt-workspace-name-form, .bt-workspace-name-form input,
+  .bt-bench-dialog button, .bt-bench-dialog select) {
+  border-color: var(--color-border);
+  background: var(--color-app-raised);
+  color: var(--color-ink-soft);
+}
+.theme-sage :is(.sd-secondary-button:hover, .sd-themed-select-trigger:hover,
+  .sd-monitor-secondary:hover, .bt-analysis-replay-button:hover) {
+  background: var(--color-surface-raised);
+  border-color: var(--color-accent);
+  color: var(--color-ink);
+}
+.theme-sage :is(.sd-themed-select-options button, .sd-menu-select-options button) { color: var(--color-ink-soft); }
+.theme-sage :is(.sd-themed-select-options button:hover, .sd-themed-select-options button:focus-visible,
+  .sd-menu-select-options button:hover) { background: var(--color-surface-raised); color: var(--color-ink); }
+.theme-sage :is(.sd-themed-select-options button.is-selected, .sd-menu-select-options button.is-selected) {
+  background: var(--color-accent-soft); color: var(--color-accent-ink);
+}
+.theme-sage :is(.sd-settings-card input, .sd-feedback-card textarea, .sd-path-control input,
+  .sd-send-form input, .sd-saved-logs-search, .sd-log-preview pre,
+  .bt-command-tools input, .bt-decoder-sample-line input) {
+  border-color: var(--color-border);
+  background: var(--color-app-raised);
+  color: var(--color-ink);
+}
+.theme-sage :is(.sd-terminal-output, .sd-monitor, .bt-analysis-fields, .bt-analysis-replay,
+  .sd-terminal-toolbar, .sd-send-form, .sd-log-preview header, .sd-log-preview footer,
+  .bt-command-tools, .bt-capture-storage, .bt-workspace-expanded,
+  .bt-workspace-menu-heading, .bt-workspace-menu-footer) {
+  border-color: var(--color-border-subtle);
+  background: var(--color-app-raised);
+  color: var(--color-ink-soft);
+}
+.theme-sage .sd-terminal-line code { color: var(--color-ink); }
+.theme-sage .sd-terminal-line time { color: var(--color-ink-muted); }
+.theme-sage .sd-terminal-line:hover { background: var(--color-surface-raised); }
+.theme-sage :is(.sd-terminal-logging, .sd-port-dashboard-summary, .sd-active-capture-summary,
+  .sd-port-icon.usb, .sd-saved-log-icon.capturing, .bt-workspace-save,
+  .bt-command-tools button, .bt-capture-storage button, .bt-decoder-preview, .bt-decoder-value) {
+  border-color: var(--color-border);
+  background: var(--color-accent-soft);
+  color: var(--color-accent-ink);
+}
+.theme-sage :is(.sd-port-dashboard-summary strong, .sd-active-capture-summary strong,
+  .sd-port-dashboard-summary p, .sd-active-capture-summary p,
+  .bt-decoder-value strong, .bt-decoder-value b, .bt-decoder-value small,
+  .bt-command-tools summary, .bt-capture-storage strong) { color: var(--color-accent-ink); }
+.theme-sage :is(.sd-port-row, .sd-saved-log-row, .sd-nav-divider,
+  .bt-decoder-preview-header, .bt-decoder-sample-line) { border-color: var(--color-border-subtle); }
+.theme-sage .sd-nav-divider { background: var(--color-border-subtle); }
+.theme-sage .bt-decoder-secondary:hover:not(:disabled) { background: var(--color-surface-raised); color: var(--color-ink); border-color: var(--color-border); }
+.theme-sage .bt-analysis :is(.sd-themed-select-trigger, .bt-visualize-control) { background: var(--color-app-raised); color: var(--color-ink-soft); border-color: var(--color-border); }
+.theme-sage .bt-analysis :is(.sd-themed-select-trigger:hover, .bt-visualize-control:hover:not(:disabled)) { background: var(--color-surface-raised); color: var(--color-ink); border-color: var(--color-accent); }
+.theme-sage .bt-analysis .sd-themed-select-options { background: var(--color-surface); border-color: var(--color-border); box-shadow: var(--shadow-popover); }
+.theme-sage .bt-analysis .sd-themed-select-options button { color: var(--color-ink-soft); }
+.theme-sage .bt-analysis .sd-themed-select-options button:is(:hover, :focus-visible, .is-selected) { background: var(--color-accent-soft); color: var(--color-accent-ink); }
+.theme-sage .bt-analysis :is(.sd-themed-select-trigger svg, .bt-visualize-control svg) { color: var(--color-ink-muted); }
+
+
+.theme-sage :is(.sd-primary-button, .sd-welcome-primary, .sd-monitor-connect, .bt-analysis .sd-primary-button) { color: #f5f7f1; }
+.theme-sage :is(.sd-primary-button:hover:not(:disabled), .sd-welcome-primary:hover:not(:disabled)) { color: #f5f7f1; }
+.theme-sage .bt-workspace-picker .sd-themed-select-trigger { background: var(--color-app-raised); color: var(--color-ink-soft); border-color: var(--color-border); }
+.theme-sage .bt-workspace-picker .sd-themed-select-options { background: var(--color-surface); border-color: var(--color-border); box-shadow: var(--shadow-popover); }
+.theme-sage .bt-workspace-picker .sd-themed-select-options button { color: var(--color-ink-soft); }
+.theme-sage .bt-workspace-picker .sd-themed-select-options button:is(:hover, :focus-visible, .is-selected) { background: var(--color-accent-soft); color: var(--color-accent-ink); }
+
+.sd-theme-setting { display: grid; gap: 12px; }
+.sd-theme-switcher { display: inline-flex; width: max-content; max-width: 100%; }
+
+.theme-sage .sd-palette-backdrop,
+.theme-sage .sd-modal-backdrop,
+.theme-sage .sd-log-preview-backdrop { background: #e7ece4dc; }
+.theme-sage .sd-toggle-row input:checked + i { background: var(--color-accent); }
+.theme-sage .sd-toggle-row input:checked + i::after { background: var(--color-surface); }
+.theme-sage .sd-toggle-row input:focus + i { outline-color: var(--color-focus); }
+.theme-sage .signaldeck-shell :is(.sd-sessions-empty-panel h2, .sd-sessions-empty-panel strong,
+  .sd-mobile-share-screen-heading h1, .sd-mobile-share-session-empty strong,
+  .sd-mobile-share-terminal-empty strong, .sd-mobile-share-heading h2) { color: var(--color-ink); }
+.theme-sage .signaldeck-shell :is(.sd-sessions-empty-panel p, .sd-screen-heading small,
+  .sd-help-card > p, .sd-feedback-copy p, .sd-help-link,
+  .sd-mobile-share-screen-heading p, .sd-mobile-share-screen-heading small,
+  .sd-mobile-share-session-empty small, .sd-mobile-share-terminal-empty span,
+  .sd-mobile-share-link code, .sd-mobile-share-instruction, .sd-mobile-share-screen-note,
+  .sd-mobile-share-heading p) { color: var(--color-ink-muted); }
+.theme-sage .signaldeck-shell :is(.sd-sessions-empty-icon, .sd-mobile-share-screen-icon,
+  .sd-mobile-share-terminal-icon, .sd-mobile-share-session-empty svg,
+  .sd-mobile-share-terminal-empty svg, .sd-mobile-share-safety svg) {
+  background: var(--color-accent-soft); color: var(--color-accent);
+}
+.theme-sage .signaldeck-shell :is(.sd-mobile-share-screen-note, .sd-mobile-share-preview,
+  .sd-mobile-share-link, .sd-mobile-share-session, .sd-mobile-share-selected-session,
+  .sd-mobile-share-instruction, .sd-mobile-share-control) {
+  border-color: var(--color-border-subtle); background: var(--color-app-raised); color: var(--color-ink-soft);
+}
+.theme-sage .sd-github-button { background: var(--color-accent); color: var(--color-surface); border-color: var(--color-accent); box-shadow: none; }
+.theme-sage .sd-github-button:hover { background: var(--color-accent-strong); border-color: var(--color-accent-strong); color: var(--color-surface); }
+.theme-sage .sd-monitor .sd-terminal-output { scrollbar-color: var(--color-border) var(--color-app-raised); }
+.theme-sage .sd-send-form :is(.sd-send-mode select, .sd-send-ending select) { background: var(--color-app-raised); color: var(--color-ink); border-color: var(--color-border); }
+.theme-sage .sd-send-form .sd-themed-select-trigger { background: var(--color-app-raised); color: var(--color-ink); border-color: var(--color-border); }
+.theme-sage .sd-send-form .sd-themed-select-options { background: var(--color-surface); border-color: var(--color-border); }
+.theme-sage .sd-send-form .sd-themed-select-options button { color: var(--color-ink-soft); }
+.theme-sage .sd-send-form .sd-themed-select-options button:is(:hover, :focus-visible, .is-selected) { background: var(--color-accent-soft); color: var(--color-ink); }
+.theme-sage .sd-capture-health:not(.error) { background: var(--color-accent-soft); color: var(--color-ink-soft); border-color: var(--color-border); }
+.theme-sage .sd-capture-health:not(.error) .sd-capture-path { background: var(--color-app-raised); border-color: var(--color-border-subtle); }
+.theme-sage .sd-capture-health:not(.error) :is(.sd-capture-path code, .sd-capture-health-status span) { color: var(--color-ink-muted); }
+.theme-sage .sd-capture-copy { background: var(--color-app-raised); color: var(--color-accent); border-color: var(--color-border); }
+
+.theme-sage .sd-connection-dialog :is(input, textarea) { border-color: var(--color-border); background: var(--color-app-raised); color: var(--color-ink); }
+.theme-sage .sd-connection-dialog :is(.sd-form-field, .sd-port-scan-heading, legend) { color: var(--color-ink-soft); }
+.theme-sage .sd-connection-dialog :is(.sd-dialog-subtitle, .sd-framing-hint, .sd-field-hint, small) { color: var(--color-ink-muted); }
+.theme-sage .sd-connection-dialog fieldset { border-color: var(--color-border-subtle); }
+.theme-sage .sd-connection-dialog .sd-scan-notice.success { background: var(--color-accent-soft); color: var(--color-accent-ink); border-color: var(--color-border); }
+.theme-sage .sd-connection-dialog :is(.sd-dialog-close, .sd-port-scan-button) { background: var(--color-app-raised); color: var(--color-accent); border-color: var(--color-border-subtle); }
+.theme-sage .sd-monitor h1 { color: var(--color-ink); }
+
+/* Keep accessible hidden switches from expanding the mobile page width. */
+.signaldeck-shell .sd-toggle-row { position: relative; }
+.signaldeck-shell .sd-toggle-row input[type="checkbox"] {
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  inset: 0 auto auto 0;
+}
+
+.theme-sage .sd-connection-dialog .sd-serial-settings p { color: var(--color-ink-muted); }
+.theme-sage .sd-connection-dialog .sd-serial-settings label { color: var(--color-ink-soft); }
+.theme-sage .sd-connection-dialog .sd-dialog-scan-row { color: var(--color-ink-soft); }
+.theme-sage .sd-connection-dialog .sd-dialog-scan-row button { color: var(--color-accent); }
+.theme-sage .signaldeck-shell .sd-sessions-workspace .sd-primary-button { color: #f5f7f1; }

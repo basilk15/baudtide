@@ -7,6 +7,13 @@ import {
 
 type UnlistenFn = DesktopUnlisten;
 
+export type SerialDeviceIdentity = {
+  vendorId: number;
+  productId: number;
+  serialNumber: string | null;
+  stablePath: string | null;
+};
+
 export type NativeSerialPort = {
   path: string;
   label: string;
@@ -14,6 +21,7 @@ export type NativeSerialPort = {
   product?: string;
   serialNumber?: string;
   transport: 'usb' | 'bluetooth' | 'pci' | 'unknown';
+  deviceIdentity?: SerialDeviceIdentity | null;
 };
 
 export type SerialConnectionSettings = {
@@ -38,6 +46,7 @@ export type StartedSerialSession = {
   logPath: string;
   state: 'connected';
   settings: SerialConnectionSettings;
+  deviceIdentity?: SerialDeviceIdentity | null;
 };
 
 /**
@@ -150,6 +159,13 @@ export type SavedLogContent = {
   truncated: boolean;
 };
 
+export type CaptureReceiveTiming = Readonly<{ endOffset: number; timestampMs: number }>;
+export type SavedTelemetryLogContent = SavedLogContent & {
+  timing?: readonly CaptureReceiveTiming[] | null;
+  /** Original bytes keep timing offsets correct even for split/invalid UTF-8. */
+  rawBase64?: string | null;
+};
+
 export type SavedLogSearchMatch = {
   source: 'content' | 'metadata';
   byteOffset?: number;
@@ -195,6 +211,9 @@ export type StartNativeSerialSessionRequest = {
   baudRate: number;
   sessionName: string;
   settings: SerialConnectionSettings;
+  deviceIdentity?: SerialDeviceIdentity | null;
+  automaticReconnect?: boolean;
+  reviewedPort?: boolean;
 };
 
 export async function startNativeSerialSession(request: StartNativeSerialSessionRequest) {
@@ -291,7 +310,22 @@ export async function readNativeSavedLog(path: string) {
 /** Reads a larger, still bounded capture window for telemetry replay. */
 export async function readNativeTelemetryLog(path: string) {
   ensureNativeRuntime();
-  return invokeDesktop<SavedLogContent>('read_saved_log_telemetry', { path });
+  return invokeDesktop<SavedTelemetryLogContent>('read_saved_log_telemetry', { path });
+}
+
+export type CaptureAnalysisHandle = { id: string; totalBytes: number; timingMode: 'recorded' | 'approximate' };
+export type CaptureAnalysisChunk = { offset: number; nextOffset: number; totalBytes: number; rawBase64: string; timing: CaptureReceiveTiming[] | null };
+export function openNativeCaptureAnalysis(path: string) { return invokeDesktop<CaptureAnalysisHandle>('open_capture_analysis', { path }); }
+export function readNativeCaptureAnalysisChunk(id: string) { return invokeDesktop<CaptureAnalysisChunk>('read_capture_analysis_chunk', { id }); }
+export function closeNativeCaptureAnalysis(id: string) { return invokeDesktop<void>('close_capture_analysis', { id }); }
+export function beginNativeTelemetryExport(format: 'csv' | 'json', defaultName: string) { return invokeDesktop<string | null>('begin_telemetry_export', { format, defaultName }); }
+export function appendNativeTelemetryExport(id: string, contents: string) { return invokeDesktop<void>('append_telemetry_export', { id, contents }); }
+export function finishNativeTelemetryExport(id: string) { return invokeDesktop<string>('finish_telemetry_export', { id }); }
+export function cancelNativeTelemetryExport(id: string) { return invokeDesktop<void>('cancel_telemetry_export', { id }); }
+
+export async function getNativeCaptureStorageUsage() {
+  ensureNativeRuntime();
+  return invokeDesktop<number>('get_capture_storage_usage');
 }
 
 export async function exportNativeTelemetryData(contents: string, format: 'csv' | 'json', defaultName: string) {

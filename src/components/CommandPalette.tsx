@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Command, FileText, MonitorPlay, Plus, Search, Settings2, Smartphone, TerminalSquare, X } from 'lucide-react';
 import './phase3-controls.css';
 
@@ -26,7 +27,7 @@ export function CommandPalette({ actions = defaultActions, onAction }: CommandPa
   const close = () => {
     setOpen(false);
     setQuery('');
-    window.setTimeout(() => trigger.current?.focus(), 0);
+    window.setTimeout(() => trigger.current?.focus({ preventScroll: true }), 0);
   };
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -41,9 +42,19 @@ export function CommandPalette({ actions = defaultActions, onAction }: CommandPa
     };
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey);
   }, []);
-  useEffect(() => { if (open) { setSelectedIndex(0); window.setTimeout(() => input.current?.focus(), 0); } }, [open]);
+  useEffect(() => { if (open) { setSelectedIndex(0); window.setTimeout(() => input.current?.focus({ preventScroll: true }), 0); } }, [open]);
   const filtered = useMemo(() => actions.filter((action) => `${action.label} ${action.description}`.toLowerCase().includes(query.toLowerCase())), [actions, query]);
   useEffect(() => { setSelectedIndex((current) => Math.min(current, Math.max(filtered.length - 1, 0))); }, [filtered.length]);
+  useEffect(() => {
+    if (!open) return;
+    const selected = document.getElementById(`sd-palette-action-${filtered[selectedIndex]?.id}`);
+    const list = selected?.parentElement;
+    if (!selected || !list) return;
+    const item = selected.getBoundingClientRect();
+    const bounds = list.getBoundingClientRect();
+    if (item.top < bounds.top) list.scrollTop -= bounds.top - item.top;
+    else if (item.bottom > bounds.bottom) list.scrollTop += item.bottom - bounds.bottom;
+  }, [open, selectedIndex, filtered]);
   const execute = (action: CommandPaletteAction) => {
     if (action.disabled) return;
     action.run?.(); onAction?.(action); close();
@@ -56,12 +67,12 @@ export function CommandPalette({ actions = defaultActions, onAction }: CommandPa
   };
   return <>
     <button ref={trigger} className="sd-command-trigger" type="button" onClick={() => setOpen(true)} aria-haspopup="dialog" aria-expanded={open}><Search size={16} /><span>Search commands</span><kbd><Command size={11} />K</kbd></button>
-    {open && <div className="sd-palette-backdrop" onMouseDown={close}><section className="sd-command-palette" role="dialog" aria-modal="true" aria-label="Command palette" onMouseDown={(e) => e.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') close(); }}>
+    {open && createPortal(<div className="sd-palette-backdrop" onMouseDown={close}><section className="sd-command-palette" role="dialog" aria-modal="true" aria-label="Command palette" onMouseDown={(e) => e.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') close(); }}>
       <div className="sd-palette-search"><Search size={18} /><input ref={input} value={query} onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0); }} onKeyDown={onInputKeyDown} placeholder="Search actions, terminals, or logs…" role="combobox" aria-expanded="true" aria-controls="sd-palette-results" aria-activedescendant={filtered[selectedIndex] ? `sd-palette-action-${filtered[selectedIndex].id}` : undefined} /><button type="button" onClick={close} aria-label="Close command palette"><X size={17} /></button></div>
       <p className="sd-palette-note">Use keyboard commands to navigate BaudTide.</p>
       <div className="sd-palette-results" id="sd-palette-results" role="listbox">{filtered.length ? filtered.map((action, index) => <button id={`sd-palette-action-${action.id}`} role="option" aria-selected={index === selectedIndex} className={index === selectedIndex ? 'is-selected' : ''} key={action.id} type="button" disabled={action.disabled} onMouseMove={() => setSelectedIndex(index)} onClick={() => execute(action)}><PaletteIcon icon={action.icon} /><span><strong>{action.label}</strong><small>{action.description}</small></span>{action.shortcut && <kbd>{action.shortcut}</kbd>}</button>) : <p className="sd-empty-result">No matching local actions.</p>}</div>
       <footer><span><kbd>↑↓</kbd> navigate</span><span><kbd>↵</kbd> choose</span><span><kbd>esc</kbd> close</span></footer>
-    </section></div>}
+    </section></div>, trigger.current?.closest('.signaldeck-shell') ?? document.body)}
   </>;
 }
 

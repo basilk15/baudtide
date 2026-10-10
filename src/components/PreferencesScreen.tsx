@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, Check, FolderOpen, HardDrive, LoaderCircle, Moon, RefreshCw, RotateCcw, Settings2, Sun } from 'lucide-react';
+import { AlertTriangle, Check, FolderOpen, HardDrive, LoaderCircle, Leaf, Moon, RefreshCw, RotateCcw, Settings2, Sun } from 'lucide-react';
 import { defaultPreferences, logDirectoryValidationError, type BaudTidePreferences, type DisplayEncoding, type LineEnding } from '../lib/preferences';
-import { listNativeSavedLogs } from '../lib/serial';
+import { getNativeCaptureStorageUsage } from '../lib/serial';
 import { ThemedSelect } from './ThemedSelect';
 import './phase3-controls.css';
 
@@ -41,8 +41,7 @@ export function PreferencesScreen({ preferences, nativeEnabled, onSave, onThemeP
     if (!nativeEnabled) return;
     setRefreshingStorage(true);
     try {
-      const logs = await listNativeSavedLogs();
-      setStoredBytes(logs.reduce((total, log) => total + log.sizeBytes, 0));
+      setStoredBytes(await getNativeCaptureStorageUsage());
       setStorageError('');
     } catch {
       setStorageError('Could not read local capture usage.');
@@ -125,16 +124,16 @@ export function PreferencesScreen({ preferences, nativeEnabled, onSave, onThemeP
           <Toggle label="Show timestamps by default" checked={draft.serial.showTimestamps} onChange={(value) => update({ showTimestamps: value }, 'serial')} />
         </fieldset>
         <fieldset className="sd-settings-card"><legend>Appearance & reconnect</legend>
-          <div className="sd-theme-setting"><div><strong>Theme</strong><span>Preview now; it is saved with the rest of these preferences.</span></div><div className="sd-theme-switcher" role="group" aria-label="Application theme"><button type="button" className={draft.appearance.theme === 'dark' ? 'is-active' : ''} aria-pressed={draft.appearance.theme === 'dark'} onClick={() => changeTheme('dark')}><Moon size={14} /> Dark</button><button type="button" className={draft.appearance.theme === 'light' ? 'is-active' : ''} aria-pressed={draft.appearance.theme === 'light'} onClick={() => changeTheme('light')}><Sun size={14} /> Light</button></div></div>
+          <div className="sd-theme-setting"><div><strong>Theme</strong><span>Preview now; it is saved with the rest of these preferences.</span></div><div className="sd-theme-switcher" role="group" aria-label="Application theme"><button type="button" className={draft.appearance.theme === 'dark' ? 'is-active' : ''} aria-pressed={draft.appearance.theme === 'dark'} onClick={() => changeTheme('dark')}><Moon size={14} /> Dark</button><button type="button" className={draft.appearance.theme === 'light' ? 'is-active' : ''} aria-pressed={draft.appearance.theme === 'light'} onClick={() => changeTheme('light')}><Sun size={14} /> Light</button><button type="button" className={draft.appearance.theme === 'sage' ? 'is-active' : ''} aria-pressed={draft.appearance.theme === 'sage'} onClick={() => changeTheme('sage')}><Leaf size={14} /> Sage</button></div></div>
           <Toggle label="Reconnect when a device returns" checked={draft.serial.reconnectWhenDeviceReturns} onChange={(value) => update({ reconnectWhenDeviceReturns: value }, 'serial')} />
-          <p className="sd-field-hint">New desktop sessions retry a failed device connection until it returns. Intentional disconnects never reconnect.</p>
+        <p className="sd-field-hint">Retry failed device connections. USB devices without a unique ID need a manual check. Intentional disconnects stay disconnected.</p>
         </fieldset>
         <fieldset className="sd-settings-card sd-storage-settings"><legend>Local storage</legend>
           <label>Log folder<div className="sd-path-control"><input value={draft.storage.logDirectory} onChange={(event) => update({ logDirectory: event.target.value }, 'storage')} placeholder="Use BaudTide's default log location" aria-invalid={Boolean(logDirectoryError)} aria-describedby={logDirectoryError ? 'log-folder-error' : undefined} readOnly={nativeEnabled} /><button type="button" aria-label="Choose log folder" title={nativeEnabled ? 'Choose log folder' : 'Folder picker is available in the desktop app'} onClick={() => void chooseDirectory()} disabled={!nativeEnabled || isChoosingDirectory}>{isChoosingDirectory ? <LoaderCircle className="sd-spin" size={17} /> : <FolderOpen size={17} />}</button></div>{logDirectoryError && <small className="sd-preferences-field-error" id="log-folder-error">{logDirectoryError}</small>}</label>
           <label>Storage limit<ThemedSelect label="Storage limit" value={String(draft.storage.storageLimitBytes)} onChange={(value) => update({ storageLimitBytes: Number(value) }, 'storage')} placeholder="Select a storage limit" options={storageLimits.map((limit) => ({ value: String(limit.value), label: limit.label }))} /></label>
           {nativeEnabled ? <div className={`sd-storage-usage${storageLimitReached ? ' is-critical' : storageLimitNear ? ' is-warning' : ''}`} aria-live="polite">
             <div className="sd-storage-usage-heading"><span><HardDrive size={15} /> Stored captures</span><button type="button" onClick={() => void refreshStorageUsage()} disabled={isRefreshingStorage}>{isRefreshingStorage ? <LoaderCircle className="sd-spin" size={14} /> : <RefreshCw size={14} />} Refresh</button></div>
-            {storageError ? <p className="sd-storage-usage-error"><AlertTriangle size={14} /> {storageError}</p> : storedBytes === null ? <p>Checking local capture usage…</p> : <><strong>{formatBytes(storedBytes)} <span>of {formatBytes(draft.storage.storageLimitBytes)} hard limit</span></strong><progress className="sd-storage-meter" value={storageUsagePercent ?? 0} max={100} aria-label={`${formatBytes(storedBytes)} of ${formatBytes(draft.storage.storageLimitBytes)} storage limit`} /><p>{storageLimitReached ? 'The hard limit has been reached. New and active captures stop before exceeding it.' : storageLimitNear ? 'Approaching the hard limit. Review saved logs or choose a larger limit before a long capture.' : 'Usage includes saved raw captures that BaudTide can list locally.'}</p></>}
+            {storageError ? <p className="sd-storage-usage-error"><AlertTriangle size={14} /> {storageError}</p> : storedBytes === null ? <p>Checking local capture usage…</p> : <><strong>{formatBytes(storedBytes)} <span>of {formatBytes(draft.storage.storageLimitBytes)} hard limit</span></strong><progress className="sd-storage-meter" value={storageUsagePercent ?? 0} max={100} aria-label={`${formatBytes(storedBytes)} of ${formatBytes(draft.storage.storageLimitBytes)} storage limit`} /><p>{storageLimitReached ? 'The hard limit has been reached. New and active captures stop before exceeding it.' : storageLimitNear ? 'Approaching the hard limit. Review saved logs or choose a larger limit before a long capture.' : 'Usage includes raw captures, receive timing, and bytes buffered by active sessions.'}</p></>}
           </div> : <p className="sd-field-hint">Capture usage is available in the BaudTide desktop app.</p>}
           <p className="sd-field-hint">The folder is used for new desktop-session logs. The limit is enforced without trimming or deleting existing raw logs; reducing it can stop active captures.</p>
         </fieldset>

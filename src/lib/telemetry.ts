@@ -1,4 +1,4 @@
-import type { SerialDataEvent } from './serial';
+import type { CaptureReceiveTiming, SerialDataEvent } from './serial';
 import {
   cloneTelemetryDecoderProfile,
   parseCustomTelemetryLine,
@@ -25,6 +25,10 @@ export type TelemetrySample = {
   values: Readonly<Record<string, Readonly<TelemetryValue>>>;
 };
 
+export type TelemetryObservation =
+  | { type: 'sample'; sample: TelemetrySample }
+  | { type: 'boundary' };
+
 export type TelemetryField = {
   key: string;
   unit?: string;
@@ -39,6 +43,7 @@ export type TelemetryGap = {
   previousNativeSessionId: string;
   nextNativeSessionId: string;
   nextSequence: number;
+  fieldKeys?: readonly string[];
 };
 
 /** The immutable view consumed by a future visualization screen. */
@@ -77,6 +82,8 @@ export type RecordedTelemetryOptions = {
   endedAt?: string;
   nativeSessionId?: string;
   decoderProfile?: TelemetryDecoderProfile;
+  receiveTiming?: readonly CaptureReceiveTiming[];
+  captureBytes?: Uint8Array;
 };
 
 export const DEFAULT_MAX_TELEMETRY_SAMPLES = 10_000;
@@ -586,6 +593,7 @@ export class TelemetrySessionStore {
   private readonly decoderProfile?: TelemetryDecoderProfile;
   private readonly sessions = new Map<string, InternalSession>();
   private readonly subscribers = new Map<string, Set<() => void>>();
+  private readonly observers = new Map<string, Set<(observation: TelemetryObservation) => void>>();
   /** Cached empty snapshots are bounded except for active external subscribers. */
   private readonly emptySnapshots = new Map<string, TelemetrySessionSnapshot>();
 
@@ -605,6 +613,7 @@ export class TelemetrySessionStore {
     const session = this.ensureSession(sessionKey);
     let snapshotChanged = false;
     if (session.latestNativeSessionId && session.latestNativeSessionId !== event.sessionId) {
+      this.observe(sessionKey, { type: 'boundary' });
       session.assembler.reset();
       session.parser.resetForStreamBoundary();
       session.gaps.push({
@@ -643,6 +652,16 @@ export class TelemetrySessionStore {
   }
 
   /** A future screen can use this with useSyncExternalStore. */
+  subscribeRecords(sessionKey: string, listener: (observation: TelemetryObservation) => void) {
+    const listeners = this.observers.get(sessionKey) ?? new Set();
+    listeners.add(listener);
+    this.observers.set(sessionKey, listeners);
+    return () => {
+      listeners.delete(listener);
+      if (!listeners.size) this.observers.delete(sessionKey);
+    };
+  }
+
   subscribe(sessionKey: string, listener: () => void) {
     const listeners = this.subscribers.get(sessionKey) ?? new Set<() => void>();
     listeners.add(listener);
@@ -667,6 +686,7 @@ export class TelemetrySessionStore {
   setDecoderProfile(sessionKey: string, profile?: TelemetryDecoderProfile) {
     if (!sessionKey) return;
     const session = this.ensureSession(sessionKey);
+    this.observe(sessionKey, { type: 'boundary' });
     session.assembler.reset();
     session.parser.setDecoderProfile(profile);
     session.samples = [];
@@ -679,6 +699,7 @@ export class TelemetrySessionStore {
 
   /** Release a closed UI session explicitly when a future owner no longer needs it. */
   removeSession(sessionKey: string) {
+    this.observe(sessionKey, { type: 'boundary' });
     this.sessions.delete(sessionKey);
     this.emptySnapshots.set(sessionKey, emptySnapshot(sessionKey));
     this.trimEmptySnapshots();
@@ -697,6 +718,7 @@ export class TelemetrySessionStore {
       const oldest = this.sessions.keys().next().value;
       if (oldest === undefined) break;
       this.sessions.delete(oldest);
+      this.observe(oldest, { type: 'boundary' });
       this.emptySnapshots.set(oldest, emptySnapshot(oldest));
       this.emit(oldest);
     }
@@ -726,7 +748,7 @@ export class TelemetrySessionStore {
   }
 
   private appendRecord(sessionKey: string, session: InternalSession, record: ParsedRecord) {
-    const sample: TelemetrySample = {
+    const sample: TelemetrySample = Object.freeze({
       id: `${sessionKey}:sample:${++session.nextSampleId}`,
       timestamp: record.timestamp,
       nativeSessionId: record.nativeSessionId,
@@ -734,7 +756,7 @@ export class TelemetrySessionStore {
       format: record.format,
       schemaId: record.schemaId,
       values: cloneValues(record.values),
-    };
+    });
     if (session.samples.length < session.maxSamplesPerSession) {
       session.samples.push(sample);
       if (session.samples.length === session.maxSamplesPerSession) session.sampleWriteIndex = 0;
@@ -743,6 +765,7 @@ export class TelemetrySessionStore {
       session.sampleWriteIndex = (session.sampleWriteIndex + 1) % session.maxSamplesPerSession;
     }
     session.acceptedSampleCount += 1;
+    this.observe(sessionKey, { type: 'sample', sample });
     for (const [key, value] of Object.entries(sample.values)) {
       const existing = session.fields.get(key);
       if (existing) {
@@ -767,6 +790,12 @@ export class TelemetrySessionStore {
         // Telemetry is an optional observer. One faulty UI subscriber must not
         // disrupt serial ingestion or other subscribers.
       }
+    });
+  }
+
+  private observe(sessionKey: string, observation: TelemetryObservation) {
+    this.observers.get(sessionKey)?.forEach((listener) => {
+      try { listener(observation); } catch { /* Optional observers never interrupt raw serial handling. */ }
     });
   }
 
@@ -796,18 +825,42 @@ export class TelemetrySessionStore {
   }
 }
 
-/**
- * Replays raw capture text through the same parser used by live sessions.
- * Raw .log files intentionally contain only device bytes, so record times are
- * reconstructed evenly across the capture metadata interval. When metadata is
- * incomplete, a stable 100 ms cadence keeps relative comparison useful.
- */
+export function hasRecordedCaptureTiming(options: RecordedTelemetryOptions): boolean {
+  const { receiveTiming, captureBytes } = options;
+  if (!captureBytes?.length || !receiveTiming?.length) return false;
+  let previousOffset = 0;
+  for (const record of receiveTiming) {
+    if (!Number.isSafeInteger(record.endOffset) || record.endOffset <= previousOffset
+      || record.endOffset > captureBytes.length || !Number.isSafeInteger(record.timestampMs)
+      || !Number.isFinite(new Date(record.timestampMs).getTime())) return false;
+    previousOffset = record.endOffset;
+  }
+  return previousOffset === captureBytes.length;
+}
+
+/** Replay original chunks with recorded receive times when available. Older
+ * captures retain their explicitly approximate, evenly reconstructed cadence. */
 export function telemetrySnapshotFromCapture(
   sessionKey: string,
   text: string,
   options: RecordedTelemetryOptions = {},
 ): TelemetrySessionSnapshot {
   const store = new TelemetrySessionStore({ decoderProfile: options.decoderProfile });
+  if (hasRecordedCaptureTiming(options)) {
+    const bytes = options.captureBytes!;
+    let start = 0;
+    options.receiveTiming!.forEach((record, index) => {
+      const chunk = bytes.subarray(start, record.endOffset);
+      store.ingestOrderedSerialEvent(sessionKey, {
+        sessionId: options.nativeSessionId ?? `recorded:${sessionKey}`,
+        port: 'saved-capture', sequence: index + 1,
+        timestamp: new Date(record.timestampMs).toISOString(),
+        text: '', bytes: [...chunk],
+      });
+      start = record.endOffset;
+    });
+    return store.getSnapshot(sessionKey);
+  }
   const lines = text.split(/\r\n|\r|\n/u);
   const startCandidate = options.startedAt ? Date.parse(options.startedAt) : Number.NaN;
   const endCandidate = options.endedAt ? Date.parse(options.endedAt) : Number.NaN;
@@ -837,10 +890,6 @@ function cloneValues(values: Readonly<Record<string, Readonly<TelemetryValue>>>)
   return Object.freeze(Object.fromEntries(entries));
 }
 
-function cloneSample(sample: TelemetrySample): TelemetrySample {
-  return Object.freeze({ ...sample, values: cloneValues(sample.values) });
-}
-
 function orderedSamples(session: InternalSession): readonly TelemetrySample[] {
   if (session.samples.length < session.maxSamplesPerSession || session.sampleWriteIndex === 0) return session.samples;
   return [
@@ -852,7 +901,9 @@ function orderedSamples(session: InternalSession): readonly TelemetrySample[] {
 function createSnapshot(sessionKey: string, session: InternalSession): TelemetrySessionSnapshot {
   return Object.freeze({
     sessionKey,
-    samples: Object.freeze(orderedSamples(session).map(cloneSample)),
+    // Readings are frozen at ingestion. Copy only the ring's ordering so old
+    // snapshots remain stable without cloning every retained value per paint.
+    samples: Object.freeze(orderedSamples(session).slice()),
     fields: Object.freeze([...session.fields.values()].map((field) => Object.freeze({
       ...field,
       formats: Object.freeze([...field.formats]),

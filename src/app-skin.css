@@ -968,6 +968,28 @@ button:disabled,
   color: var(--color-ink);
 }
 
+/* Notification rows share the active theme, including unread and severity states. */
+.sd-notification-panel { overflow: hidden; }
+.sd-notification-panel header { border-color: var(--color-border-subtle); }
+.sd-notification-panel header strong,
+.sd-notice-list strong { color: var(--color-ink); }
+.sd-notification-panel header small,
+.sd-notice-list small,
+.sd-notice-empty { color: var(--color-ink-muted); }
+.sd-notice-list time { color: var(--color-ink-dim); }
+.sd-notification-panel header button { color: var(--color-accent); }
+.sd-notice-list { max-height: min(640px, calc(100dvh - 160px)); overflow-y: auto; }
+.sd-notice-list > button { padding-right: 28px; }
+.sd-notice-list > button.is-unread { background: color-mix(in srgb, var(--color-accent) 8%, var(--color-surface)); }
+.sd-notice-list > button:hover { background: var(--color-surface-raised); }
+.sd-notice-list > button:focus-visible { outline-offset: -3px; }
+.sd-notice-list > button > i:last-child { background: var(--color-accent); }
+.sd-notice-list > button:last-child { border-bottom: 0; }
+.sd-notice-icon { background: var(--color-accent-soft); color: var(--color-accent); }
+.sd-notice-icon.error { background: color-mix(in srgb, var(--color-danger) 12%, var(--color-surface)); color: var(--color-danger); }
+.sd-notice-icon.alert { background: color-mix(in srgb, var(--color-warning) 12%, var(--color-surface)); color: var(--color-warning); }
+.sd-notice-icon.export { background: color-mix(in srgb, var(--color-info) 12%, var(--color-surface)); color: var(--color-info); }
+
 .sd-diagnostics pre,
 .sd-log-preview pre {
   border: 1px solid var(--color-border-subtle);
@@ -2037,4 +2059,127 @@ button:disabled,
 .signaldeck-shell .sd-local-notice {
   font-size: var(--text-xs) !important;
   line-height: 1.45;
+}
+
+/* Header utilities stay on one line; command results own their overflow. */
+.signaldeck-shell .sd-profile-trigger {
+  height: 38px;
+  flex: 0 0 auto;
+  gap: 8px;
+  padding: 0 10px;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+}
+
+.signaldeck-shell .sd-profile-trigger > span {
+  display: block;
+  max-width: none;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.signaldeck-shell .sd-profile-trigger > svg {
+  flex: 0 0 auto;
+}
+
+.signaldeck-shell .sd-palette-backdrop {
+  --palette-inset: clamp(16px, 8dvh, 64px);
+  z-index: 100;
+  padding: var(--palette-inset) 16px;
+  overflow: hidden;
+}
+
+.signaldeck-shell .sd-command-palette {
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 680px);
+  max-height: calc(100dvh - 2 * var(--palette-inset));
+  min-height: 0;
+}
+
+.signaldeck-shell .sd-palette-search {
+  flex: 0 0 auto;
+  height: 64px;
+  border-color: var(--color-border-subtle);
+  color: var(--color-accent);
+}
+
+.signaldeck-shell .sd-palette-search:focus-within {
+  box-shadow: inset 0 -2px var(--color-focus);
+}
+
+.signaldeck-shell .sd-palette-search input,
+.signaldeck-shell .sd-palette-search input:hover,
+.signaldeck-shell .sd-palette-search input:focus {
+  min-width: 0;
+  border: 0;
+  padding: 8px 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-ink);
+  box-shadow: none;
+}
+
+.signaldeck-shell .sd-palette-search button {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  color: var(--color-ink-muted);
+}
+
+.signaldeck-shell .sd-palette-note {
+  flex: 0 0 auto;
+  background: var(--color-app-raised);
+  color: var(--color-ink-muted);
+}
+
+.signaldeck-shell .sd-palette-results {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.signaldeck-shell .sd-palette-results > button {
+  padding: 8px 10px;
+  color: var(--color-ink);
+}
+
+.signaldeck-shell .sd-palette-results > button:hover {
+  background: var(--color-surface-raised);
+}
+
+.signaldeck-shell .sd-palette-results > button.is-selected {
+  background: var(--color-accent-soft);
+  color: var(--color-ink);
+}
+
+.signaldeck-shell .sd-palette-results > button > i {
+  flex: 0 0 auto;
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.signaldeck-shell .sd-palette-results > button > span {
+  min-width: 0;
+}
+
+.signaldeck-shell .sd-palette-results small,
+.signaldeck-shell .sd-empty-result {
+  color: var(--color-ink-muted);
+}
+
+.signaldeck-shell .sd-command-palette footer {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  border-color: var(--color-border-subtle);
+  background: var(--color-surface);
+  color: var(--color-ink-muted);
+}
+
+@media (max-width: 760px) {
+  .signaldeck-shell .sd-profile-trigger > span { display: none; }
+  .signaldeck-shell .sd-profile-trigger { width: 38px; padding: 0; justify-content: center; }
 }

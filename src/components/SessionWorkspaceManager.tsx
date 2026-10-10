@@ -1,3 +1,4 @@
+import { loadCommandPresets } from '../lib/serialCommands';
 import { BookmarkPlus, FolderOpen, Pencil, Trash2, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import {
@@ -5,28 +6,36 @@ import {
   loadSessionWorkspaces,
   renameSessionWorkspace,
   saveSessionWorkspace,
+  updateSessionWorkspace,
   type SavedSessionWorkspace,
   type TerminalLayout,
 } from '../lib/sessionWorkspaces';
+import { loadAnalysisWorkspaces } from '../lib/analysisWorkspaces';
+import type { BenchConnectionPreset } from '../lib/benchSetup';
 import { ThemedSelect } from './ThemedSelect';
 import './session-workspaces.css';
 
-type OpenTerminal = { id: string; identity: string };
+type OpenTerminal = { id: string; identity: string; legacyIdentity?: string; preset: BenchConnectionPreset };
 
 type SessionWorkspaceManagerProps = {
   layout: TerminalLayout;
   sessions: OpenTerminal[];
   selectedSessionId: string | null;
+  onRestore: (workspace: SavedSessionWorkspace) => void;
+  restoreBusy?: boolean;
   onApply: (workspace: SavedSessionWorkspace, matchingSessionIds: string[]) => void;
 };
 
-export function SessionWorkspaceManager({ layout, sessions, selectedSessionId, onApply }: SessionWorkspaceManagerProps) {
+export function SessionWorkspaceManager({ layout, sessions, selectedSessionId, onApply, onRestore, restoreBusy = false }: SessionWorkspaceManagerProps) {
   const [{ workspaces: initialWorkspaces, error: initialLoadError }] = useState(loadSessionWorkspaces);
   const [workspaces, setWorkspaces] = useState(initialWorkspaces);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState('');
   const [isSaving, setSaving] = useState(false);
   const [isRenaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState('');
+  const [analysisId, setAnalysisId] = useState('');
+  const [analyses, setAnalyses] = useState(() => loadAnalysisWorkspaces().workspaces);
+  const [updating, setUpdating] = useState(false);
   const [status, setStatus] = useState(() => {
     if (initialLoadError === 'storage-read-failed') return 'Saved workspaces could not be read from local storage.';
     if (initialLoadError === 'storage-unavailable') return 'Saved workspaces are unavailable because local storage is blocked.';
@@ -43,12 +52,13 @@ export function SessionWorkspaceManager({ layout, sessions, selectedSessionId, o
 
   const applyWorkspace = (workspace: SavedSessionWorkspace) => {
     const matchingSessionIds = workspace.sessionIdentities.flatMap((identity) => {
-      const match = sessions.find((session) => session.identity === identity);
+      const matches = sessions.filter((session) => session.identity === identity || session.legacyIdentity === identity);
+      const match = matches.length === 1 ? matches[0] : undefined;
       return match ? [match.id] : [];
     });
     const hasSelectedIdentity = workspace.selectedSessionIdentity !== null;
     const selectedStillOpen = hasSelectedIdentity
-      ? sessions.some((session) => session.identity === workspace.selectedSessionIdentity)
+      ? sessions.some((session) => session.identity === workspace.selectedSessionIdentity || session.legacyIdentity === workspace.selectedSessionIdentity)
       : true;
     onApply(workspace, matchingSessionIds);
     setActiveWorkspaceId(workspace.id);
@@ -82,13 +92,19 @@ export function SessionWorkspaceManager({ layout, sessions, selectedSessionId, o
       setStatus('Open a terminal before saving a workspace.');
       return;
     }
+    let connections;
+    try { connections = sessions.map((session) => ({ ...session.preset, commands: loadCommandPresets(session.identity) })); }
+    catch { setStatus('Command presets could not be read. The saved setup has not been changed.'); return; }
     const selected = sessions.find((session) => session.id === selectedSessionId);
-    const saved = saveSessionWorkspace({
+    const snapshot = {
       name: draftName,
       layout,
       sessionIdentities: sessions.map((session) => session.identity),
       selectedSessionIdentity: selected?.identity ?? null,
-    });
+      connections,
+      ...(analysisId ? { analysisWorkspaceId: analysisId } : {}),
+    };
+    const saved = updating && activeWorkspace ? updateSessionWorkspace(activeWorkspace.id, snapshot) : saveSessionWorkspace(snapshot);
     if (!saved.ok) {
       if (saved.error === 'invalid-snapshot') {
         setStatus('Enter a workspace name to save this layout.');
@@ -97,7 +113,7 @@ export function SessionWorkspaceManager({ layout, sessions, selectedSessionId, o
       setStatus(storageFailureMessage(saved.error));
       return;
     }
-    setWorkspaces((current) => [saved.workspace, ...current].slice(0, 30));
+    setWorkspaces((current) => [saved.workspace, ...current.filter((workspace) => workspace.id !== saved.workspace.id)].slice(0, 30));
     setActiveWorkspaceId(saved.workspace.id);
     setDraftName('');
     setSaving(false);
@@ -165,12 +181,14 @@ export function SessionWorkspaceManager({ layout, sessions, selectedSessionId, o
 
   return <div className="bt-workspace-manager" aria-label="Saved terminal workspaces">
     <div className="bt-workspace-manager-controls">
-      <button className="bt-workspace-save" type="button" disabled={!sessions.length} onClick={() => { setSaving((current) => !current); setRenaming(false); setDraftName(''); }}><BookmarkPlus size={14} /> Save workspace</button>
+      <button className="bt-workspace-save" type="button" disabled={!sessions.length} onClick={() => { setSaving((current) => !current); setRenaming(false); setUpdating(false); setDraftName(''); setAnalyses(loadAnalysisWorkspaces().workspaces); setAnalysisId(loadAnalysisWorkspaces().activeId ?? ''); }}><BookmarkPlus size={14} /> Save workspace</button>
       <div className="bt-workspace-picker"><ThemedSelect compact label="Open saved workspace" value={activeWorkspaceId} placeholder="Saved workspaces" options={workspaceOptions} onChange={handleWorkspaceChange} /></div>
+      <button type="button" className="bt-workspace-save" disabled={!activeWorkspace?.connections || restoreBusy} title={activeWorkspace?.connections ? 'Review devices and restore this bench setup' : 'Update this legacy layout to save its connections'} onClick={() => activeWorkspace && onRestore(activeWorkspace)}>Restore setup</button>
+      <button type="button" className="bt-workspace-save" disabled={!activeWorkspace || !sessions.length || restoreBusy} onClick={() => { if (!activeWorkspace) return; setUpdating(true); setSaving(true); setRenaming(false); setDraftName(activeWorkspace.name); setAnalysisId(activeWorkspace.analysisWorkspaceId ?? ''); setAnalyses(loadAnalysisWorkspaces().workspaces); }}>Update setup</button>
       <button type="button" className="bt-workspace-icon" disabled={!activeWorkspace} onClick={() => { if (!activeWorkspace) return; setSaving(false); setRenaming(true); setDraftName(activeWorkspace.name); }} aria-label="Rename saved workspace" title="Rename saved workspace"><Pencil size={13} /></button>
       <button type="button" className="bt-workspace-icon bt-workspace-delete" disabled={!activeWorkspace} onClick={removeWorkspace} aria-label="Delete saved workspace" title="Delete saved workspace"><Trash2 size={13} /></button>
     </div>
-    {(isSaving || isRenaming) && <form className="bt-workspace-name-form" onSubmit={(event) => { event.preventDefault(); if (isSaving) saveWorkspace(); else renameWorkspace(); }}><label htmlFor="workspace-name">{isSaving ? 'Workspace name' : 'New name'}</label><input id="workspace-name" autoFocus value={draftName} maxLength={80} placeholder={isSaving ? 'e.g. Bench bring-up' : 'Workspace name'} onChange={(event) => setDraftName(event.target.value)} /><button type="submit">{isSaving ? 'Save' : 'Rename'}</button><button type="button" className="bt-workspace-cancel" onClick={() => { setSaving(false); setRenaming(false); setDraftName(''); }} aria-label="Cancel"><X size={13} /></button></form>}
+    {(isSaving || isRenaming) && <form className="bt-workspace-name-form" onSubmit={(event) => { event.preventDefault(); if (isSaving) saveWorkspace(); else renameWorkspace(); }}><label htmlFor="workspace-name">{isSaving ? updating ? 'Update setup' : 'Workspace name' : 'New name'}</label><input id="workspace-name" autoFocus value={draftName} maxLength={80} placeholder={isSaving ? 'e.g. Bench bring-up' : 'Workspace name'} onChange={(event) => setDraftName(event.target.value)} />{isSaving && <ThemedSelect compact label="Analysis to restore with setup" value={analysisId} placeholder="No linked analysis" options={[{ value: '', label: 'No linked analysis' }, ...analyses.map((analysis) => ({ value: analysis.id, label: analysis.name }))]} onChange={setAnalysisId} />}<button type="submit">{isSaving ? 'Save' : 'Rename'}</button><button type="button" className="bt-workspace-cancel" onClick={() => { setSaving(false); setRenaming(false); setDraftName(''); }} aria-label="Cancel"><X size={13} /></button></form>}
     {status && <p className="bt-workspace-status" role="status"><FolderOpen size={13} /> {status}</p>}
   </div>;
 }
