@@ -9,6 +9,7 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { TelemetryExportStreams } from '../electron/telemetry-export.mjs';
+import { DesktopWatchService, watchCommands } from '../electron/watch-service.mjs';
 import { CaptureAnalysisReaders } from '../electron/capture-analysis.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -21,9 +22,12 @@ fixtureOutput.on('line', (line) => { try { received.push(JSON.parse(line)); } ca
 const received = [];
 const clients = new Set(); const pending = new Map(); let nextId = 1; let exportCount = 0;
 const exports = new TelemetryExportStreams();
+const watches = new DesktopWatchService(data, (event, payload) => { for (const client of clients) client.write(`data: ${JSON.stringify({ event, payload })}\n\n`); });
 const commands = new Set(createRequire(import.meta.url)('../electron/contract.cjs').commands);
 readline.createInterface({ input: backend.stdout }).on('line', (line) => {
   const message = JSON.parse(line);
+  if (message.event === 'watch-data') { watches.feed(message.payload); return; }
+  if (message.event === 'serial-status') watches.status(message.payload);
   if (message.event) { for (const client of clients) client.write(`data: ${JSON.stringify(message)}\n\n`); }
   else {
     const request = pending.get(message.id); pending.delete(message.id);
@@ -33,6 +37,8 @@ readline.createInterface({ input: backend.stdout }).on('line', (line) => {
 function invoke(method, params = {}) {
   return new Promise((resolve, reject) => { const id = nextId++; pending.set(id, { resolve, reject }); backend.stdin.write(JSON.stringify({ id, method, params }) + '\n'); });
 }
+await watches.start();
+await invoke('set_watch_feed', { enabled: true });
 const captureAnalyses = new CaptureAnalysisReaders(invoke);
 const bridge = `const listeners = new Map();
 const events = new EventSource('/smoke/events');
@@ -59,7 +65,8 @@ const server = http.createServer(async (request, response) => {
       if (!commands.has(command) || command === 'delete_saved_log') throw new Error('Command unavailable in the isolated smoke fixture');
       if (command === 'start_serial_session' && args.request.port !== pty) throw new Error('Smoke connections are restricted to the fixture PTY');
       let value;
-      if (command === 'begin_telemetry_export') value = await exports.begin(path.join(data, `export-${++exportCount}.${args.format === 'json' ? 'json' : 'csv'}`));
+      if (watchCommands.includes(command)) value = await watches.invoke(command, args);
+      else if (command === 'begin_telemetry_export') value = await exports.begin(path.join(data, `export-${++exportCount}.${args.format === 'json' ? 'json' : 'csv'}`));
       else if (command === 'append_telemetry_export') value = await exports.append(args.id, args.contents);
       else if (command === 'finish_telemetry_export') value = await exports.finish(args.id);
       else if (command === 'cancel_telemetry_export') value = await exports.cancel(args.id);
@@ -86,6 +93,7 @@ async function stop() {
   // A fixture can be blocked writing an unopened PTY, so EOF alone is insufficient.
   fixture.kill('SIGTERM');
   backend.stdin.end();
+  await watches.stop();
   for (const client of clients) client.end();
   server.close();
   server.closeAllConnections();

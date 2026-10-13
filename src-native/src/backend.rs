@@ -725,6 +725,7 @@ struct ReaderContext {
     app: AppHandle,
     sessions: Arc<Mutex<HashMap<String, ActiveSession>>>,
     event_delivery: Arc<Mutex<SerialEventDelivery>>,
+    watch_feed: Arc<AtomicBool>,
     quota: Arc<Mutex<CaptureQuota>>,
     mobile_shares: Arc<Mutex<HashMap<String, ActiveMobileShare>>>,
     mobile_replay: Arc<Mutex<MobileReplayBuffer>>,
@@ -756,6 +757,7 @@ struct SerialState {
     saved_log_searches: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     capture_quota: Arc<Mutex<CaptureQuota>>,
     shutting_down: Arc<AtomicBool>,
+    watch_feed: Arc<AtomicBool>,
 }
 
 /// Only the desktop UI can create a share. The opaque token lives solely in
@@ -4330,6 +4332,7 @@ fn start_serial_session(
     let reader_app = app.clone();
     let reader_sessions = Arc::clone(&state.sessions);
     let reader_quota = Arc::clone(&state.capture_quota);
+    let reader_watch_feed = Arc::clone(&state.watch_feed);
     let reader_mobile_shares = Arc::clone(&state.mobile_shares);
     let reader_mobile_workspace_share = Arc::clone(&state.mobile_workspace_share);
     let reader_thread = match thread::Builder::new()
@@ -4344,6 +4347,7 @@ fn start_serial_session(
                     app: reader_app,
                     sessions: reader_sessions,
                     event_delivery: reader_event_delivery,
+                    watch_feed: reader_watch_feed,
                     quota: reader_quota,
                     mobile_shares: reader_mobile_shares,
                     mobile_replay: reader_mobile_replay,
@@ -4532,6 +4536,14 @@ fn read_serial_loop(
         |event| {
             broadcast_mobile_serial_data(&context.mobile_shares, &context.mobile_replay, &event);
             broadcast_mobile_workspace_serial_data(&context.mobile_workspace_share, &event);
+            // Application-owned watches observe the reader even while the renderer
+            // is recovering and its bounded display replay is buffering.
+            if context.watch_feed.load(Ordering::Acquire) {
+                let _ = context.app.emit(
+                    "watch-data",
+                    serde_json::json!({ "info": info, "data": &event }),
+                );
+            }
             deliver_serial_data(&context.app, &context.event_delivery, event);
         },
     );
@@ -7763,6 +7775,17 @@ fn dispatch_sidecar_request(
         )),
         "select_log_directory" => {
             Err("select_log_directory is handled by the Electron main process.".into())
+        }
+        "set_watch_feed" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct WatchFeedRequest {
+                enabled: bool,
+            }
+            let request: WatchFeedRequest = serde_json::from_value(params)
+                .map_err(|error| format!("Invalid watch feed request: {error}"))?;
+            state.watch_feed.store(request.enabled, Ordering::Release);
+            Ok(serde_json::json!(true))
         }
         "shutdown" => Err("shutdown is handled by the sidecar protocol loop.".into()),
         _ => Err(format!("Unknown sidecar method `{method}`.")),

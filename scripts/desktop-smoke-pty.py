@@ -22,6 +22,9 @@ while True:
         command = json.loads(line)
         if 'temperature' in command:
             temperature = float(command['temperature'])
+        for value in command.get('temperatures', []):
+            os.write(master, (json.dumps({'temperature': float(value), 'voltage': 3.3, 'tick': sequence}) + '\n').encode())
+            sequence += 1
         if command.get('burst'):
             count = int(command['burst'])
             for i in range(count):

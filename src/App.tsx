@@ -1,3 +1,6 @@
+import { listenDesktop } from './lib/desktop';
+import { watchSnapshot, setDesktopWatchDecoder } from './lib/desktopWatches';
+import type { WatchHistoryRow } from './lib/watchHistory';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppStartupScreen } from './components/AppStartupScreen';
 import { CommandPalette, type CommandPaletteAction } from './components/CommandPalette';
@@ -157,6 +160,15 @@ function App() {
   const reconnectReleasedHandles = useRef<Record<string, boolean>>({});
   const mountedRef = useRef(true);
   const { notifications, publish: publishNotification, markRead, markAllRead } = useNotifications();
+  useEffect(() => {
+    if (!nativeRuntime) return;
+    let mounted = true;
+    const unlisten = listenDesktop<WatchHistoryRow>('watch-event', (event) => {
+      publishNotification({ kind: 'alert', title: `Watch triggered · ${event.fieldKey}`, detail: `${event.sourceName} · ${event.value}${event.unit ? ` ${event.unit}` : ''}.` });
+    });
+    void watchSnapshot().then((snapshot) => { if (mounted && snapshot.watches.length) setVisualizeVisited(true); }).catch(() => undefined);
+    return () => { mounted = false; unlisten(); };
+  }, [publishNotification]);
   const sessions = useMemo(() => Object.values(liveSessions), [liveSessions]);
   const visualizeSessions = useMemo(() => sessions.map<VisualizeSession>((session) => ({ id: session.id, uiKey: session.uiKey, sessionName: session.sessionName, port: session.port, connectionState: session.connectionState, capturePath: session.logPath, identity: session.workspaceIdentity, legacyIdentity: session.legacyWorkspaceIdentity, deviceIdentity: session.deviceIdentity, baudRate: session.baudRate, settings: session.settings })), [sessions]);
   const selectedSession = selectedSessionId ? liveSessions[selectedSessionId] : undefined;
@@ -890,6 +902,7 @@ function App() {
           liveSessionsRef.current = merge(liveSessionsRef.current); setLiveSessions(merge);
           // Decoder changes remain isolated from terminal output and raw captures.
           liveTelemetryStore.setDecoderProfile(uiKey, preset.decoder);
+          if (nativeRuntime) void setDesktopWatchDecoder(next.workspaceIdentity, preset.decoder).catch((error) => publishNotification({ kind: 'error', title: 'Watch decoder was not restored', detail: error.message }));
           if (current && monitorRefs.current[current.id]) { monitorRefs.current[next.id] = monitorRefs.current[current.id]; delete monitorRefs.current[current.id]; }
           if (preset.commands !== undefined) {
             try { saveCommandPresets(next.workspaceIdentity, preset.commands); }

@@ -152,6 +152,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 }
 
 try {
+  await waitForExit(run(process.execPath, [path.join(scriptsDirectory, 'build-watch-runtime.mjs')]), 'Watch runtime build');
   if (!skipNativeBuild) {
     const cargo = run('cargo', ['build', '--manifest-path', nativeManifest, '--locked']);
     await waitForExit(cargo, 'Native backend build');

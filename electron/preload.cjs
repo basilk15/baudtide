@@ -39,8 +39,16 @@ const commands = Object.freeze([
   'send_serial_bytes',
   'disconnect_serial_session',
   'toggle_menu_bar',
+  'watch_snapshot',
+  'watch_put',
+  'watch_remove',
+  'watch_decoder',
+  'watch_history_import',
+  'watch_history_summary',
+  'watch_history_latest',
+  'watch_history_page',
 ]);
-const events = Object.freeze(['serial-data', 'serial-status']);
+const events = Object.freeze(['serial-data', 'serial-status', 'watch-event', 'watch-state']);
 const invokeChannel = 'baudtide:invoke';
 const eventChannelPrefix = 'baudtide:event:';
 

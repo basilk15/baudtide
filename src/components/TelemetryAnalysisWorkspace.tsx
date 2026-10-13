@@ -45,6 +45,8 @@ import { analyzeNativeCapture, type CaptureAnalysisIndex, type CaptureRange } fr
 import { telemetryExportChunks, type TelemetryExportRow } from '../lib/telemetryExport';
 import { telemetryReplayTimeline } from '../lib/telemetryReplay';
 import { WatchHistoryJournal, watchHistoryExportChunks, type WatchHistoryRow } from '../lib/watchHistory';
+import { isDesktopRuntime, listenDesktop } from '../lib/desktop';
+import { watchSnapshot, putDesktopWatch, removeDesktopWatches, setDesktopWatchDecoder, nativeWatchHistory, type WatchSnapshot } from '../lib/desktopWatches';
 import { TelemetryWatchEngine } from '../lib/telemetryWatchEngine';
 import { TelemetryProjectionCache } from '../lib/telemetryProjection';
 import type { TelemetryDecoderProfile } from '../lib/telemetryDecoders';
@@ -277,6 +279,12 @@ export function TelemetryAnalysisWorkspace({
   onRequestedAnalysisRestored,
   onRequestedCaptureOpened,
 }: TelemetryAnalysisWorkspaceProps) {
+  const desktopWatchesEnabled = nativeEnabled && isDesktopRuntime();
+  const [desktopSnapshot, setDesktopSnapshot] = useState<WatchSnapshot>({ watches: [], interruption: '', historyError: '', historyCount: 0 });
+  const [desktopSnapshotReady, setDesktopSnapshotReady] = useState(false);
+  const synchronizedWatchDecoders = useRef(new Map<string, string>());
+  const [monitorError, setMonitorError] = useState('');
+  const [watchOperationError, setWatchOperationError] = useState('');
   const pageRef = useRef<HTMLElement>(null);
   const [logs, setLogs] = useState<SavedLog[]>([]);
   const [libraryLoaded, setLibraryLoaded] = useState(false);
@@ -340,7 +348,12 @@ export function TelemetryAnalysisWorkspace({
   const [exportFormat, setExportFormat] = useState<ExportFormat>('csv');
   const [exporting, setExporting] = useState(false);
   const [watchOpen, setWatchOpen] = useState(false);
-  const [watchRules, setWatchRules] = useState<TelemetryAlertRule[]>([]);
+  const [localWatchRules, setWatchRules] = useState<TelemetryAlertRule[]>([]);
+  const watchRules = useMemo(() => desktopWatchesEnabled ? desktopSnapshot.watches.map(({ rule, nativeSessionId }) => {
+    const session = sessions.find((candidate) => candidate.id === nativeSessionId)
+      ?? resolveAnalysisSession(rule.sessionKey, sessions);
+    return { ...rule, sessionKey: session?.uiKey ?? rule.sessionKey };
+  }) : localWatchRules, [desktopWatchesEnabled, desktopSnapshot, sessions, localWatchRules]);
   const [watchEvents, setWatchEvents] = useState<WatchEventRow[]>([]);
   const [watchBreachCounts, setWatchBreachCounts] = useState<Record<string, number>>({});
   const [activeBreach, setActiveBreach] = useState<WatchEventRow | null>(null);
@@ -352,7 +365,7 @@ export function TelemetryAnalysisWorkspace({
   const [watchSustain, setWatchSustain] = useState('0');
   const [watchHysteresis, setWatchHysteresis] = useState('0');
   const [watchStale, setWatchStale] = useState('10');
-  const [historyJournal] = useState(() => new WatchHistoryJournal());
+  const [historyJournal] = useState(() => new WatchHistoryJournal(desktopWatchesEnabled ? nativeWatchHistory : undefined));
   const [historyCount, setHistoryCount] = useState(0);
   const [historyError, setHistoryError] = useState('');
   const [historyWriteError, setHistoryWriteError] = useState('');
@@ -410,7 +423,7 @@ export function TelemetryAnalysisWorkspace({
       const retained = current.filter((id) => !id.startsWith('live:') || liveKeys.has(id.slice('live:'.length)));
       return retained.length === current.length ? current : retained;
     });
-    setWatchRules((current) => {
+    if (!desktopWatchesEnabled) setWatchRules((current) => {
       const retained = current.filter((rule) => liveKeys.has(rule.sessionKey));
       return retained.length === current.length ? current : retained;
     });
@@ -631,9 +644,13 @@ export function TelemetryAnalysisWorkspace({
     const source = sourcesById.get(sourceId);
     if (!source) return;
     if (source.kind === 'live') {
-      // The live store remains the sole ordered telemetry observer. Selecting a
-      // profile only swaps its optional parser; terminal display and raw
+      // Keep chart and worker decoding consistent. Terminal display and raw
       // capture continue through the existing LiveMonitor path unchanged.
+      const identity = source.session.identity ?? stableTerminalSessionIdentity({ ...source.session, settings: source.session.settings ?? defaultSerialConnectionSettings, baudRate: source.session.baudRate ?? 115200 });
+      if (desktopWatchesEnabled && desktopSnapshot.watches.some((watch) => watch.rule.sessionKey === identity)) {
+        try { await setDesktopWatchDecoder(identity, profile); setWatchOperationError(''); }
+        catch (error) { setWatchOperationError(error instanceof Error ? error.message : 'Could not update watch decoding.'); return; }
+      }
       liveTelemetryStore.setDecoderProfile(source.session.uiKey, profile);
     } else {
       const rebuilt = await loadCapture(source.log, profile, true, source.index.totalRecords ? source.selection : undefined);
@@ -660,7 +677,10 @@ export function TelemetryAnalysisWorkspace({
       .filter((source) => source.decoderProfile?.id === profile.id);
     if (!affectedLiveSources.length && !affectedRecordedSources.length) return;
 
-    affectedLiveSources.forEach((source) => liveTelemetryStore.setDecoderProfile(source.session.uiKey));
+    affectedLiveSources.forEach((source) => {
+      liveTelemetryStore.setDecoderProfile(source.session.uiKey);
+      if (desktopWatchesEnabled && source.session.identity) void setDesktopWatchDecoder(source.session.identity).then(() => setWatchOperationError('')).catch((error) => setWatchOperationError(error.message));
+    });
     if (affectedRecordedSources.length) {
       // Loads are sequential so each decoder reset remains cancellable and bounded.
       void (async () => {
@@ -694,7 +714,8 @@ export function TelemetryAnalysisWorkspace({
     });
     if (source.kind === 'live') {
       excludedLiveSources.current.add(source.id);
-      setWatchRules((current) => current.filter((rule) => rule.sessionKey !== source.session.uiKey));
+      if (desktopWatchesEnabled) void removeDesktopWatches(watchRules.filter((rule) => rule.sessionKey === source.session.uiKey).map((rule) => rule.id)).then(() => setWatchOperationError('')).catch((error) => setWatchOperationError(error.message));
+      else setWatchRules((current) => current.filter((rule) => rule.sessionKey !== source.session.uiKey));
     } else {
       restoreIntent.current?.removedCapturePaths.add(source.log.path);
       captureIndexes.current.delete(source.index);
@@ -774,7 +795,45 @@ export function TelemetryAnalysisWorkspace({
   const watchFieldsById = useMemo(() => new Map(watchableFields.map((field) => [field.id, field])), [watchableFields]);
   const watchEventHandler = useRef<(event: TelemetryAlertEvent) => void>(() => undefined);
   const [watchEngine] = useState(() => new TelemetryWatchEngine(liveTelemetryStore, (event) => watchEventHandler.current(event)));
-  useEffect(() => { watchEngine.setRules(watchRules); }, [watchEngine, watchRules]);
+  const refreshDesktopWatches = async () => {
+    try { setDesktopSnapshot(await watchSnapshot()); setDesktopSnapshotReady(true); setMonitorError(''); }
+    catch (error) { setDesktopSnapshotReady(true); setMonitorError(error instanceof Error ? error.message : 'Watch monitoring is unavailable.'); }
+  };
+  useEffect(() => {
+    if (!desktopWatchesEnabled) return;
+    let mounted = true;
+    const receive = (snapshot: WatchSnapshot) => {
+      if (!mounted) return;
+      setDesktopSnapshotReady(true);
+      if (snapshot.unavailable) setMonitorError(snapshot.interruption);
+      else { setDesktopSnapshot(snapshot); setDesktopSnapshotReady(true); setMonitorError(''); }
+    };
+    const unlistenState = listenDesktop<WatchSnapshot>('watch-state', receive);
+    const unlistenEvent = listenDesktop<WatchHistoryRow>('watch-event', (event) => {
+      if (mounted) watchEventHandler.current(event);
+    });
+    void watchSnapshot().then(receive).catch((error) => { if (mounted) { setDesktopSnapshotReady(true); setMonitorError(error.message); } });
+    return () => { mounted = false; unlistenState(); unlistenEvent(); };
+  }, [desktopWatchesEnabled]);
+  useEffect(() => {
+    if (!desktopWatchesEnabled) return;
+    for (const watch of desktopSnapshot.watches) {
+      const session = sessions.find((candidate) => candidate.id === watch.nativeSessionId);
+      if (!session) continue;
+      const decoder = JSON.stringify(watch.decoder ?? null);
+      const key = `${session.id}:${watch.rule.sessionKey}`;
+      if (synchronizedWatchDecoders.current.get(key) === decoder) continue;
+      synchronizedWatchDecoders.current.set(key, decoder);
+      if (JSON.stringify(liveTelemetryStore.getSnapshot(session.uiKey).decoderProfile ?? null) !== decoder) liveTelemetryStore.setDecoderProfile(session.uiKey, watch.decoder);
+    }
+  }, [desktopWatchesEnabled, desktopSnapshot, sessions]);
+  useEffect(() => {
+    if (!desktopWatchesEnabled) return;
+    setHistoryCount(desktopSnapshot.historyCount);
+    setHistoryWriteError(desktopSnapshot.historyError);
+    setWatchBreachCounts(Object.fromEntries(desktopSnapshot.watches.map((watch) => [watch.rule.id, watch.occurrence])));
+  }, [desktopWatchesEnabled, desktopSnapshot]);
+  useEffect(() => { watchEngine.setRules(desktopWatchesEnabled ? [] : watchRules); }, [watchEngine, watchRules, desktopWatchesEnabled]);
   useEffect(() => () => watchEngine.dispose(), [watchEngine]);
   useEffect(() => {
     if (!watchRules.length || !displayVisible) return undefined;
@@ -850,16 +909,24 @@ export function TelemetryAnalysisWorkspace({
     const occurrence = (watchBreachCountsRef.current.get(event.ruleId) ?? 0) + 1;
     watchBreachCountsRef.current.set(event.ruleId, occurrence);
     const session = sessions.find((candidate) => candidate.uiKey === event.sessionKey);
-    const row: WatchEventRow = { ...event, id: freshWatchId(), sourceName: session?.port ?? liveSourceNames.get(event.sessionKey) ?? 'Device', occurrence, sourceIdentity: session?.identity, capturePath: session?.capturePath };
-    void historyJournal.append(row).then(() => historyJournal.summary()).then((summary) => { if (historyMounted.current) setHistoryCount(summary.count); }).catch((error) => { if (historyMounted.current) setHistoryWriteError(error instanceof Error ? error.message : 'Breach history was not saved.'); });
+    const row: WatchEventRow = desktopWatchesEnabled ? event as WatchHistoryRow : { ...event, id: freshWatchId(), sourceName: session?.port ?? liveSourceNames.get(event.sessionKey) ?? 'Device', occurrence, sourceIdentity: session?.identity, capturePath: session?.capturePath };
+    if (!desktopWatchesEnabled) void historyJournal.append(row).then(() => historyJournal.summary()).then((summary) => { if (historyMounted.current) setHistoryCount(summary.count); }).catch((error) => { if (historyMounted.current) setHistoryWriteError(error instanceof Error ? error.message : 'Breach history was not saved.'); });
     setWatchEvents((current) => [row, ...current].slice(0, MAX_WATCH_EVENTS));
     setWatchBreachCounts(Object.fromEntries(watchBreachCountsRef.current));
     setActiveBreach(row);
     setWatchStateRevision((current) => current + 1);
-    onTelemetryAlertRef.current?.({ title: `Watch triggered · ${event.fieldKey}`, detail: `${row.sourceName} · ${formatWatchEvent(event)}.` });
+    if (!desktopWatchesEnabled) onTelemetryAlertRef.current?.({ title: `Watch triggered · ${event.fieldKey}`, detail: `${row.sourceName} · ${formatWatchEvent(event)}.` });
   };
 
   const watchStatus = (rule: TelemetryAlertRule) => {
+    if (desktopWatchesEnabled) {
+      if (monitorError) return 'INTERRUPTED';
+      const state = desktopSnapshot.watches.find((watch) => watch.rule.id === rule.id);
+      if (!state?.nativeSessionId) return 'DISCONNECTED';
+      if (state.lastReading === undefined) return 'WAITING';
+      if (Date.now() - state.lastReading > (rule.staleAfterMs ?? 10_000)) return 'STALE';
+      return state.pending ? 'PENDING' : state.breached ? 'BREACH' : 'LIVE';
+    }
     const session = sessions.find((candidate) => candidate.uiKey === rule.sessionKey);
     if (!session || session.connectionState !== 'connected') return session?.connectionState.toUpperCase() ?? 'DISCONNECTED';
     const last = watchEngine.lastReadings.get(rule.id);
@@ -915,7 +982,7 @@ export function TelemetryAnalysisWorkspace({
     setPendingDevices(restoreIntent.current.pendingLives.map((source) => source.name)); setMissingCaptures([]);
     setActiveSourceIds([]); setRestoreRevision((value) => value + 1);
     setRestoringWorkspace(true); setSelectedFields([]); setFieldsConfigured(true);
-    watchEngine.setRules([]); setWatchRules([]);
+    if (!desktopWatchesEnabled) { watchEngine.setRules([]); setWatchRules([]); }
     setAlignment(workspace.alignment); setChartMode(workspace.chartMode); setWindowMs(workspace.windowMs); setReplayRate(workspace.replayRate);
     setCustomWindow(WINDOW_OPTIONS.some((option) => option.value === workspace.windowMs) || workspace.windowMs === 0 ? null : { amount: workspace.windowMs / 60000, unit: 'minutes' });
     setDisplayPaused(false); frozenLiveSnapshots.current = {}; setReplayPlaying(false); setReplayProgress(1);
@@ -953,6 +1020,9 @@ export function TelemetryAnalysisWorkspace({
 
   useEffect(() => {
     if (!restoreIntent.current) return;
+    // Wait for the initial configuration attempt, but let chart restoration
+    // continue if monitoring is unavailable.
+    if (desktopWatchesEnabled && !desktopSnapshotReady) return;
     const intent = restoreIntent.current;
     const remaining: AnalysisSourcePreset[] = [];
     const restoredRules: TelemetryAlertRule[] = [];
@@ -961,7 +1031,9 @@ export function TelemetryAnalysisWorkspace({
       if (!session) { remaining.push(preset); continue; }
       const sourceId = liveSourceId(session);
       const previousDecoder = liveTelemetryStore.getSnapshot(session.uiKey).decoderProfile;
-      if (JSON.stringify(previousDecoder ?? null) !== JSON.stringify(preset.decoder ?? null)) liveTelemetryStore.setDecoderProfile(session.uiKey, preset.decoder);
+      const armed = desktopWatchesEnabled ? desktopSnapshot.watches.find((watch) => watch.rule.sessionKey === session.identity) : undefined;
+      const decoder = armed ? armed.decoder : preset.decoder;
+      if (JSON.stringify(previousDecoder ?? null) !== JSON.stringify(decoder ?? null)) liveTelemetryStore.setDecoderProfile(session.uiKey, decoder);
       intent.bindings.set(preset.key, sourceId);
       setActiveSourceIds((current) => current.includes(sourceId) ? current : [...current, sourceId]);
       pendingSelections.current.set(sourceId, preset.selectedFields);
@@ -977,9 +1049,22 @@ export function TelemetryAnalysisWorkspace({
       return [...ordered, ...current.filter((id) => !ordered.includes(id))];
     });
     setPendingDevices(remaining.map((source) => source.name));
-    if (restoredRules.length) { const next = [...watchRules, ...restoredRules]; watchEngine.setRules(next); setWatchRules(next); setWatchOpen(true); }
+    if (restoredRules.length) {
+      if (desktopWatchesEnabled) {
+        void (async () => {
+          for (const rule of restoredRules) {
+            const session = sessions.find((candidate) => candidate.uiKey === rule.sessionKey);
+            if (!session?.identity) continue;
+            await putDesktopWatch({ rule: { ...rule, sessionKey: session.identity }, sourceName: session.sessionName,
+              decoder: liveTelemetryStore.getSnapshot(session.uiKey).decoderProfile });
+          }
+          setWatchOperationError('');
+        })().catch((error) => setWatchOperationError(`Saved watches were not fully restored: ${error.message} Reopen this analysis to retry.`));
+      } else { const next = [...watchRules, ...restoredRules]; watchEngine.setRules(next); setWatchRules(next); }
+      setWatchOpen(true);
+    }
     if (remaining.length !== pendingDevices.length) setLiveRevision((value) => value + 1);
-  }, [sessions, restoringWorkspace, restoreRevision]);
+  }, [sessions, restoringWorkspace, restoreRevision, desktopSnapshotReady]);
 
   useEffect(() => {
     if (!pendingSelections.current.size) return;
@@ -1033,7 +1118,7 @@ export function TelemetryAnalysisWorkspace({
     else { restoreGeneration.current += 1; restoreIntent.current = null; pendingSelections.current.clear(); setPendingDevices([]); setMissingCaptures([]); }
   };
 
-  const addWatch = () => {
+  const addWatch = async () => {
     const field = watchFieldsById.get(watchFieldId);
     const source = field ? sourcesById.get(field.sourceId) : undefined;
     if (!field || !source || source.kind !== 'live') {
@@ -1083,8 +1168,15 @@ export function TelemetryAnalysisWorkspace({
     const optionsError = !watchSustain.trim() || !watchHysteresis.trim() || !watchStale.trim() ? 'Enter a duration, recovery margin, and stale timeout.' : watchOptionsError({ ...rule, ...options });
     if (optionsError) { setWatchFormError(optionsError); return; }
     rule = { ...rule, ...options };
-    watchEngine.setRules([...watchRules, rule]);
-    setWatchRules((current) => [...current, rule]);
+    if (desktopWatchesEnabled) {
+      try {
+        const identity = source.session.identity ?? stableTerminalSessionIdentity({ ...source.session, settings: source.session.settings ?? defaultSerialConnectionSettings, baudRate: source.session.baudRate ?? 115200 });
+        await putDesktopWatch({ rule: { ...rule, sessionKey: identity }, sourceName: source.name,
+          decoder: liveTelemetryStore.getSnapshot(source.session.uiKey).decoderProfile });
+        setWatchOperationError('');
+        await refreshDesktopWatches();
+      } catch (error) { setWatchFormError(error instanceof Error ? error.message : 'Could not arm the watch.'); return; }
+    } else { watchEngine.setRules([...watchRules, rule]); setWatchRules((current) => [...current, rule]); }
     setWatchFormError('');
     setWatchThreshold('');
     setWatchMinimum('');
@@ -1093,9 +1185,11 @@ export function TelemetryAnalysisWorkspace({
     setNotice(`Watching ${field.field.key} from ${source.name}.`);
   };
 
-  const removeWatch = (rule: TelemetryAlertRule) => {
-    watchEngine.setRules(watchRules.filter((candidate) => candidate.id !== rule.id));
-    setWatchRules((current) => current.filter((candidate) => candidate.id !== rule.id));
+  const removeWatch = async (rule: TelemetryAlertRule) => {
+    if (desktopWatchesEnabled) {
+      try { await removeDesktopWatches([rule.id]); setWatchOperationError(''); await refreshDesktopWatches(); }
+      catch (error) { setWatchOperationError(error instanceof Error ? error.message : 'Could not remove the watch.'); return; }
+    } else { watchEngine.setRules(watchRules.filter((candidate) => candidate.id !== rule.id)); setWatchRules((current) => current.filter((candidate) => candidate.id !== rule.id)); }
     setNotice(`Stopped watching ${rule.fieldKey}.`);
   };
 
@@ -1427,7 +1521,7 @@ export function TelemetryAnalysisWorkspace({
           <div className="bt-analysis-actions">
             <div className="bt-analysis-compact-select"><span>View</span><ThemedSelect compact value={chartMode} options={[{ value: 'compare', label: 'Overlay' }, { value: 'lanes', label: 'Separate' }]} placeholder="Overlay" label="Chart presentation" onChange={(value) => setChartMode(value as ChartMode)} /></div>
             <div className="bt-analysis-compact-select"><span>Window</span><ThemedSelect compact value={selectedWindowValue} options={windowOptions} placeholder="All data" label="Chart time window" onChange={chooseWindow} /></div>
-            {watchableFields.length || watchRules.length || historyCount || historyError || historyWriteError ? <button className={`bt-visualize-control bt-analysis-watch-toggle ${watchOpen ? 'is-active' : ''} ${currentBreachCount ? 'has-breach' : ''}`} type="button" onClick={() => setWatchOpen((current) => !current)} aria-expanded={watchOpen} aria-controls="signal-watch-panel"><BellRing size={15} />{watchRules.length ? `Watches · ${watchRules.length}` : 'Watch signals'}</button> : null}
+            {watchableFields.length || watchRules.length || historyCount || historyError || historyWriteError || monitorError || watchOperationError || desktopSnapshot.interruption ? <button className={`bt-visualize-control bt-analysis-watch-toggle ${watchOpen ? 'is-active' : ''} ${currentBreachCount ? 'has-breach' : ''}`} type="button" onClick={() => setWatchOpen((current) => !current)} aria-expanded={watchOpen} aria-controls="signal-watch-panel"><BellRing size={15} />{watchRules.length ? `Watches · ${watchRules.length}` : 'Watch signals'}</button> : null}
             {liveSources.length ? <button className={`bt-visualize-control ${displayPaused ? 'is-active' : ''}`} type="button" onClick={toggleDisplayPause}>{displayPaused ? <CirclePlay size={15} /> : <CirclePause size={15} />}{displayPaused ? 'Resume live' : 'Pause live'}</button> : null}
             <button className="bt-visualize-control" type="button" onClick={resetView}><RotateCcw size={15} /> Reset view</button>
           </div>
@@ -1445,7 +1539,7 @@ export function TelemetryAnalysisWorkspace({
 
         {watchOpen ? <section className="bt-analysis-watch" id="signal-watch-panel" aria-labelledby="signal-watch-heading">
           <div className="bt-analysis-watch-setup">
-            <header><div><h3 id="signal-watch-heading">Signal watch</h3><p>Alert when a live value crosses its boundary. Armed watches keep running while you use other pages. Set a recovery margin or sustained duration to filter boundary chatter. History stays on this computer across restarts.</p></div><span>{watchRules.length ? `${watchRules.length} armed` : 'No watches armed'}</span></header>
+            <header><div><h3 id="signal-watch-heading">Signal watch</h3><p>Alert when a live value crosses its boundary. Armed watches keep running while you use other pages. Set a recovery margin or sustained duration to filter boundary chatter. {desktopWatchesEnabled ? 'Watches also continue through UI reloads and stay armed until removed. Monitoring ends when you quit BaudTide. ' : ''}History stays on this computer across restarts.</p></div><span>{watchRules.length ? `${watchRules.length} armed` : 'No watches armed'}</span></header>
             <div className="bt-analysis-watch-form">
               <div className="bt-analysis-watch-field"><span>Live signal</span><ThemedSelect value={watchFieldId} options={watchableFields.map((field) => ({ value: field.id, label: `${field.sourceName} · ${field.field.key}${field.latest?.unit ?? field.field.unit ? ` (${field.latest?.unit ?? field.field.unit})` : ''}` }))} placeholder="Choose a signal" label="Live signal to watch" onChange={(value) => { setWatchFieldId(value); setWatchFormError(''); }} /></div>
               <div className="bt-analysis-watch-field bt-analysis-watch-condition"><span>Boundary</span><ThemedSelect value={watchCondition} options={[{ value: 'above', label: 'Above limit' }, { value: 'below', label: 'Below limit' }, { value: 'outsideRange', label: 'Outside range' }]} placeholder="Above limit" label="Watch boundary" onChange={(value) => { setWatchCondition(value as TelemetryAlertCondition); setWatchFormError(''); }} /></div>
@@ -1457,13 +1551,15 @@ export function TelemetryAnalysisWorkspace({
               <label className="bt-analysis-watch-field"><span>Recovery margin (signal unit)</span><input aria-label="Watch recovery margin" type="number" min="0" step="any" value={watchHysteresis} onChange={(event) => { setWatchHysteresis(event.target.value); setWatchFormError(''); }} /><small>Move this far back inside the boundary before re-arming.</small></label>
               <label className="bt-analysis-watch-field"><span>Stale after (seconds)</span><input aria-label="Watch stale timeout in seconds" type="number" min="1" max="86400" step="0.001" value={watchStale} onChange={(event) => { setWatchStale(event.target.value); setWatchFormError(''); }} /><small>Default: 10 seconds without a matching reading.</small></label>
             </div></details>
+            {desktopWatchesEnabled && (monitorError || desktopSnapshot.interruption) ? <p className="bt-analysis-watch-error" role="alert">{monitorError || desktopSnapshot.interruption} {monitorError ? <button type="button" className="sd-secondary-button" onClick={() => void refreshDesktopWatches()}>Retry monitoring</button> : null}</p> : null}
+            {watchOperationError ? <p className="bt-analysis-watch-error" role="alert">{watchOperationError}</p> : null}
             {watchFormError ? <p className="bt-analysis-watch-error" role="alert">{watchFormError}</p> : null}
           </div>
           <div className="bt-analysis-watch-ledger">
             <section aria-label="Armed signal watches"><header><h3>Armed watches</h3><span>{currentBreachCount ? `${currentBreachCount} breached` : waitingWatchCount ? `${waitingWatchCount} waiting, pending, or stale` : watchRules.length ? 'Monitoring' : 'Waiting for setup'}</span></header>
               {watchRules.length ? <div className="bt-analysis-watch-rule-list">{watchRules.map((rule) => {
                 const breachCount = watchBreachCounts[rule.id] ?? 0;
-                return <div className={`bt-analysis-watch-rule ${watchStatus(rule) === 'BREACH' ? 'is-breached' : ''}`} key={rule.id}><BellRing size={14} aria-hidden="true" /><span><strong>{formatWatchRule(rule)}</strong><small>{liveSourceNames.get(rule.sessionKey) ?? 'Source removed'} · after {(rule.sustainMs ?? 0) / 1000}s · recovery {rule.hysteresis ?? 0} · stale {(rule.staleAfterMs ?? 10_000) / 1000}s · {breachCount ? `${breachCount} breach${breachCount === 1 ? '' : 'es'} logged` : 'No breaches logged'}</small></span><em>{watchStatus(rule)}</em><button type="button" onClick={() => removeWatch(rule)} aria-label={`Remove watch for ${rule.fieldKey}`} title={`Remove watch for ${rule.fieldKey}`}><Trash2 size={14} /></button></div>;
+                return <div className={`bt-analysis-watch-rule ${watchStatus(rule) === 'BREACH' ? 'is-breached' : ''}`} key={rule.id}><BellRing size={14} aria-hidden="true" /><span><strong>{formatWatchRule(rule)}</strong><small>{liveSourceNames.get(rule.sessionKey) ?? desktopSnapshot.watches.find((watch) => watch.rule.id === rule.id)?.sourceName ?? 'Source removed'} · after {(rule.sustainMs ?? 0) / 1000}s · recovery {rule.hysteresis ?? 0} · stale {(rule.staleAfterMs ?? 10_000) / 1000}s · {breachCount ? `${breachCount} breach${breachCount === 1 ? '' : 'es'} logged` : 'No breaches logged'}</small></span><em>{watchStatus(rule)}</em><button type="button" onClick={() => removeWatch(rule)} aria-label={`Remove watch for ${rule.fieldKey}`} title={`Remove watch for ${rule.fieldKey}`}><Trash2 size={14} /></button></div>;
               })}</div> : <p className="bt-analysis-watch-empty">Choose a live signal and set one clear boundary.</p>}
             </section>
             <section className="bt-analysis-watch-events" aria-label="Breach history"><header><h3>Breach history</h3><span>{historyLoading ? 'Opening saved history…' : `${watchEvents.length} shown · ${historyCount.toLocaleString()} saved · ${watchBreachTotal} this run`}</span></header>

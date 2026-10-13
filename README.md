@@ -34,7 +34,7 @@ On Ubuntu/Debian, serial-device access may require membership in the `dialout` g
 
 ## Development
 
-Requires **Node.js 22.12+**, **Rust**, and **`libudev-dev`** on Ubuntu/Debian.
+Requires **Node.js 22.13+**, **Rust**, and **`libudev-dev`** on Ubuntu/Debian.
 
 ```bash
 git clone https://github.com/basilk15/baudtide.git

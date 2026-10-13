@@ -1,3 +1,4 @@
+import { DesktopWatchService, watchCommands } from './watch-service.mjs';
 import { TelemetryExportStreams, assertExportDestinationSafe } from './telemetry-export.mjs';
 import { CaptureAnalysisReaders } from './capture-analysis.mjs';
 import { spawn } from 'node:child_process';
@@ -175,7 +176,7 @@ class BackendProcess {
     }
 
     if (typeof message.event === 'string') {
-      if (allowedEvents.has(message.event)) {
+      if (allowedEvents.has(message.event) || message.event === 'watch-data') {
         this.onEvent(message.event, message.payload);
       }
       return;
@@ -271,10 +272,15 @@ function sendBackendEvent(eventName, payload) {
   }
 }
 
+const watches = new DesktopWatchService(backendDataDirectory, sendBackendEvent);
 const backend = new BackendProcess({
   executable: backendExecutablePath(),
   appDataDirectory: backendDataDirectory,
-  onEvent: sendBackendEvent,
+  onEvent(eventName, payload) {
+    if (eventName === 'watch-data') { watches.feed(payload); return; }
+    if (eventName === 'serial-status') watches.status(payload);
+    sendBackendEvent(eventName, payload);
+  },
   onUnexpectedExit(reason) {
     if (shutdownStarted || crashDialogShown) return;
     crashDialogShown = true;
@@ -416,6 +422,7 @@ async function forceReload() {
   shutdownStarted = true;
   await disposeRendererResources();
   await backend.stop();
+  await watches.stop().catch((error) => console.warn(errorMessage(error)));
   shutdownComplete = true;
 
   // The development launcher owns Vite. Give it a restart-only exit code so
@@ -442,6 +449,12 @@ ipcMain.handle(invokeChannel, async (event, command, args = {}) => {
     throw new Error(`Unsupported desktop command: ${String(command)}`);
   }
   requirePlainArguments(args);
+
+  if (watchCommands.includes(command)) {
+    await watches.start();
+    await backend.invoke('set_watch_feed', { enabled: true });
+    return watches.invoke(command, args);
+  }
 
   if (command === 'open_capture_analysis') return captureAnalyses.open(args);
   if (command === 'read_capture_analysis_chunk') return captureAnalyses.read(args);
@@ -682,6 +695,7 @@ async function beginShutdown() {
   shutdownStarted = true;
   await disposeRendererResources();
   await backend.stop();
+  await watches.stop().catch((error) => console.warn(errorMessage(error)));
   shutdownComplete = true;
   app.quit();
 }
@@ -712,6 +726,11 @@ app.whenReady().then(async () => {
     registerPackagedApplicationProtocol();
     fs.mkdirSync(backendDataDirectory, { recursive: true });
     await backend.start();
+    // Watch failure must never prevent serial capture or application startup.
+    try {
+      await watches.start();
+      await backend.invoke('set_watch_feed', { enabled: true });
+    } catch (error) { console.error('Watch monitoring unavailable:', errorMessage(error)); }
     await createMainWindow();
   } catch (error) {
     dialog.showErrorBox(

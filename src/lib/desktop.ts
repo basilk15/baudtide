@@ -1,4 +1,4 @@
-export type DesktopEventName = 'serial-data' | 'serial-status';
+export type DesktopEventName = 'serial-data' | 'serial-status' | 'watch-event' | 'watch-state';
 export type DesktopUnlisten = () => void;
 
 /** Return the narrow API exposed by Electron's context-isolated preload. */
