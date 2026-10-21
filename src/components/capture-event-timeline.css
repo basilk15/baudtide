@@ -1,0 +1,69 @@
+.bt-event-timeline { border-top: 1px solid var(--bt-analysis-rule); color: var(--bt-analysis-ink); }
+.theme-light .bt-event-timeline { --bt-analysis-muted: var(--color-ink-muted); --bt-analysis-aqua: var(--color-accent); }
+.bt-event-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 16px; }
+.bt-event-heading > div { min-width: 0; }
+.bt-event-heading h3 { margin: 0; font-size: 18px; font-weight: 650; overflow-wrap: anywhere; }
+.bt-event-inspection h3 { scroll-margin-block: 80px; }
+.bt-event-heading p { margin: 6px 0 0; color: var(--bt-analysis-muted); font-size: 12px; line-height: 1.5; }
+.bt-event-heading .sd-secondary-button { flex-shrink: 0; }
+.bt-event-empty, .bt-event-error, .bt-event-loading, .bt-event-timing-note { margin: 0; padding: 8px 16px 16px; font-size: 14px; line-height: 1.5; }
+.bt-event-error { color: var(--color-danger); }
+.bt-event-loading { display: flex; align-items: center; gap: 8px; color: var(--bt-analysis-muted); }
+.bt-event-timing-note { color: var(--color-warning); }
+.bt-event-list { margin: 0; padding: 0; list-style: none; max-height: 260px; overflow-y: auto; scrollbar-color: var(--bt-analysis-rule) var(--bt-analysis-bench); }
+.bt-event-list li + li { border-top: 1px solid var(--bt-analysis-rule-soft); }
+.bt-event-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto auto; align-items: center; gap: 12px; width: 100%; padding: 12px 16px; border: 0; background: transparent; color: var(--bt-analysis-soft); text-align: left; cursor: pointer; }
+.bt-event-row:hover { background: var(--bt-analysis-raised); }
+.bt-event-row.is-selected { background: var(--bt-analysis-aqua-soft); }
+.bt-event-row > span { min-width: 0; }
+.bt-event-row strong, .bt-event-row small { display: block; overflow-wrap: anywhere; }
+.bt-event-row strong { color: var(--bt-analysis-ink); font-size: 14px; }
+.bt-event-row small { margin-top: 4px; color: var(--bt-analysis-soft); font-size: 12px; white-space: pre-wrap; }
+.bt-event-row time { color: var(--bt-analysis-muted); font: 12px/1.4 var(--font-data); font-variant-numeric: tabular-nums; }
+.bt-event-inspect-label { color: var(--bt-analysis-aqua); font-size: 12px; }
+.bt-event-breach-icon { color: var(--color-warning); }
+.bt-marker-form { display: grid; gap: 12px; padding: 0 16px 16px; }
+.bt-marker-fields { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
+.bt-marker-form label, .bt-event-window label { display: flex; flex-wrap: wrap; gap: 6px; color: var(--bt-analysis-soft); font-size: 12px; }
+.bt-marker-form input, .bt-marker-form textarea, .bt-event-window input { box-sizing: border-box; width: 100%; min-width: 0; border: 1px solid var(--bt-analysis-rule); border-radius: var(--radius-control); background: var(--bt-analysis-bench); color: var(--bt-analysis-ink); padding: 10px; font: 14px/1.4 var(--font-body); caret-color: var(--bt-analysis-aqua); }
+.bt-marker-form textarea { resize: vertical; }
+.bt-marker-form input::placeholder, .bt-marker-form textarea::placeholder { color: var(--bt-analysis-muted); }
+.bt-event-timeline :is(input, textarea, button, [tabindex]):focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.bt-event-timeline button:disabled { cursor: not-allowed; opacity: .55; }
+.bt-event-optional { color: var(--bt-analysis-muted); }
+.bt-marker-time { display: grid; align-content: start; gap: 6px; font-size: 12px; }
+.bt-marker-time small { color: var(--bt-analysis-muted); }
+.bt-event-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.bt-event-actions > span { margin-left: auto; font-size: 12px; color: var(--bt-analysis-muted); }
+.bt-event-more { margin: 12px 16px; }
+.bt-event-inspection { border-top: 1px solid var(--bt-analysis-rule); background: var(--bt-analysis-bench); }
+.bt-event-heading .bt-event-note { color: var(--bt-analysis-soft); white-space: pre-wrap; overflow-wrap: anywhere; }
+.bt-event-window { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; padding: 0 16px 16px; }
+.bt-event-window label { width: 140px; }
+.bt-event-context-heading { display: flex; justify-content: space-between; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--bt-analysis-rule-soft); font-size: 12px; }
+.bt-event-context-heading > span { color: var(--bt-analysis-muted); }
+.bt-event-context { position: relative; max-height: 300px; overflow: auto; padding: 8px 0; scrollbar-color: var(--bt-analysis-rule) var(--bt-analysis-bench); }
+.bt-event-context > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 12px; padding: 4px 16px; }
+.bt-event-context [data-nearest="true"] { background: var(--bt-analysis-aqua-soft); }
+.bt-event-context time, .bt-event-context pre { font: 12px/1.5 var(--font-data); font-variant-numeric: tabular-nums; }
+.bt-event-context time { color: var(--bt-analysis-muted); text-align: right; }
+.bt-event-context pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--bt-analysis-ink); }
+.bt-event-context ::selection { background: var(--bt-analysis-aqua-soft); color: var(--bt-analysis-ink); }
+@media (max-width: 760px) {
+  .bt-event-row { grid-template-columns: 16px minmax(0, 1fr) auto; gap: 8px; }
+  .bt-event-row time { grid-column: 2; grid-row: 2; }
+  .bt-event-inspect-label { grid-column: 3; grid-row: 1 / 3; }
+  .bt-marker-fields { grid-template-columns: minmax(0, 1fr); }
+  .bt-event-context-heading { flex-direction: column; gap: 4px; }
+}
+@media (max-width: 480px) {
+  .bt-event-heading { flex-wrap: wrap; }
+  .bt-event-heading .sd-secondary-button { min-height: 44px; }
+  .bt-event-window label { flex: 1 1 110px; }
+  .bt-marker-form input, .bt-marker-form textarea, .bt-event-window input { font-size: 16px; min-height: 44px; }
+  .bt-event-actions > span { width: 100%; margin: 0; }
+  .bt-event-context > div { grid-template-columns: 68px minmax(0, 1fr); gap: 8px; padding-inline: 12px; }
+}
+
+.bt-analysis-breach-toast .bt-breach-inspect { width: fit-content; height: auto; min-height: 36px; padding: 6px 10px; margin-top: 8px; border: 1px solid var(--bt-analysis-rule); background: var(--bt-analysis-panel); color: var(--bt-analysis-ink); font-size: 14px; }
+@media (max-width: 480px) { .bt-analysis-breach-toast .bt-breach-inspect { min-height: 44px; } }

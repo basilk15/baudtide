@@ -17,10 +17,13 @@ BaudTide is an open-source Linux desktop serial monitor for ESP32, Arduino, and 
 
 ## Made for the bench
 
-- **Multiple devices, one workspace.** Discover ports and monitor boards in tabs or side-by-side terminals. Send text or hex, save command presets, and repeat commands with an explicit Stop control.
+- **Multiple devices, one workspace.** Discover ports and monitor boards in tabs or side-by-side terminals. Send text or hex, save command presets, and repeat commands with an explicit Stop control. Save command sequences with response checks, timeouts, delays, and capture-linked step results.
 - **Signals from serial output.** Plot JSON, key/value, CSV, and TSV telemetry. Map custom numeric columns with reusable decoder profiles.
 - **Capture now, investigate later.** Keep searchable raw logs locally, replay recordings, inspect time ranges, and export selected telemetry to CSV or JSON.
+- **Put events in context.** Inspect a watch breach in its capture, see nearby serial output and chart markers, and save timestamped notes about changes on the bench.
 - **Watches for long runs.** Set signal boundaries, sustained conditions, and recovery margins. Keep breach history across restarts and export it when needed.
+- **Messages that matter.** Save per-device text-match rules with cooldowns and optional desktop alerts. Log events persist locally and open the surrounding capture context from the notification inbox.
+- **Measure a firmware change.** Compare a baseline and candidate capture, match signals with the same units, and align on capture events. Inspect full-interval statistics, a shared measurement scale, and export a CSV summary. Comparison settings are retained in saved analyses.
 - **A setup worth saving.** Restore reviewed device connections, terminal layouts, decoders, and saved analyses. Identified USB devices can reconnect across port-name changes; ambiguous devices require review.
 - **Your bench on your phone.** Scan a QR code to view output on a trusted local network. Sharing is read-only by default; remote control is opt-in.
 

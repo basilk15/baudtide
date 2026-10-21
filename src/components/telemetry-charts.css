@@ -42,11 +42,13 @@
 .bt-telemetry-stack-title {
   display: flex;
   align-items: baseline;
+  flex-wrap: wrap;
   gap: 0.75rem;
   min-width: 0;
 }
 
 .bt-telemetry-stack-title strong {
+  white-space: nowrap;
   color: var(--color-ink-soft);
   font-size: var(--text-sm);
   font-weight: 650;
@@ -61,7 +63,10 @@
 
 .bt-telemetry-stack-hint {
   color: var(--color-ink-dim);
-  white-space: nowrap;
+  flex: 0 0 auto;
+  max-width: 200px;
+  text-align: right;
+  line-height: 1.5;
 }
 
 .bt-telemetry-plot-stack {
@@ -232,6 +237,8 @@
 
   .bt-telemetry-stack-hint {
     white-space: normal;
+    max-width: none;
+    text-align: left;
   }
 
   .bt-telemetry-plot-stack {

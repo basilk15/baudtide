@@ -1,5 +1,6 @@
 import { normalizeTelemetryDecoderProfile, type TelemetryDecoderProfile } from './telemetryDecoders';
 import { watchOptionsError, type TelemetryAlertRule } from './telemetryAlerts';
+import { normalizeCaptureComparison, type CaptureComparisonSettings } from './captureComparison';
 
 const STORAGE_KEY = 'baudtide.analysis-workspaces.v1';
 export type AnalysisSourcePreset = {
@@ -13,6 +14,7 @@ export type AnalysisSourcePreset = {
 };
 export type AnalysisWatchPreset = Omit<TelemetryAlertRule, 'id' | 'sessionKey'> & { sourceKey: string };
 export type SavedAnalysisWorkspace = {
+  comparison?: CaptureComparisonSettings;
   id: string; name: string; updatedAt: number;
   alignment: 'elapsed' | 'clock'; chartMode: 'compare' | 'lanes'; windowMs: number; replayRate: number;
   sources: AnalysisSourcePreset[]; watches: AnalysisWatchPreset[];
@@ -91,7 +93,9 @@ export function normalizeAnalysisWorkspace(value: unknown): SavedAnalysisWorkspa
       ...(watch.staleAfterMs === undefined ? {} : { staleAfterMs: watch.staleAfterMs as number }), ...(watch.unit === undefined ? {} : { unit: watch.unit as string }),
       ...(watch.condition === 'outsideRange' ? { min: watch.min as number, max: watch.max as number } : { threshold: watch.threshold as number }) });
   }
-  return { id: value.id, name: value.name.trim(), updatedAt: value.updatedAt, alignment: value.alignment as SavedAnalysisWorkspace['alignment'],
+  const comparison = value.comparison === undefined ? undefined : normalizeCaptureComparison(value.comparison);
+  if (value.comparison !== undefined && !comparison) return null;
+  return { ...(comparison ? { comparison } : {}), id: value.id, name: value.name.trim(), updatedAt: value.updatedAt, alignment: value.alignment as SavedAnalysisWorkspace['alignment'],
     chartMode: value.chartMode as SavedAnalysisWorkspace['chartMode'], windowMs: value.windowMs, replayRate: Number(value.replayRate), sources, watches };
 }
 

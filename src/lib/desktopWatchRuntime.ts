@@ -5,6 +5,7 @@ import { normalizeTelemetryDecoderProfile, type TelemetryDecoderProfile } from '
 import { stableTerminalSessionIdentity } from './sessionWorkspaces';
 import type { SerialDataEvent, SerialStatusEvent, StartedSerialSession } from './serial';
 import type { WatchHistoryRow } from './watchHistory';
+export { DesktopLogRuntime } from './logRules';
 
 export type DesktopWatch = { rule: TelemetryAlertRule; decoder?: TelemetryDecoderProfile; sourceName: string };
 export type DesktopWatchState = {

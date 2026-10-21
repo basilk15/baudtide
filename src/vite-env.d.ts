@@ -4,7 +4,7 @@ interface BaudTideDesktopBridge {
   readonly platform: string;
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   listen<T>(
-    eventName: 'serial-data' | 'serial-status' | 'watch-event' | 'watch-state',
+    eventName: 'serial-data' | 'serial-status' | 'watch-event' | 'watch-state' | 'log-event' | 'log-state' | 'bench-event' | 'bench-inspect',
     callback: (payload: T) => void,
   ): () => void;
 }

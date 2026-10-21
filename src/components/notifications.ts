@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import type { CaptureEvent } from '../lib/captureEvents';
 
 const STORAGE_KEY = 'baudtide.notifications.v1';
 const MAX_NOTIFICATIONS = 60;
@@ -6,6 +7,7 @@ const MAX_NOTIFICATIONS = 60;
 export type NotificationKind = 'connection' | 'error' | 'export' | 'alert';
 
 export type AppNotification = {
+  captureEvent?: CaptureEvent;
   id: string;
   title: string;
   detail: string;

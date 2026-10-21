@@ -1,7 +1,8 @@
 import { Worker } from 'node:worker_threads';
 
 export const watchCommands = Object.freeze(['watch_snapshot', 'watch_put', 'watch_remove', 'watch_decoder',
-  'watch_history_import', 'watch_history_summary', 'watch_history_latest', 'watch_history_page']);
+  'watch_history_import', 'watch_history_summary', 'watch_history_latest', 'watch_history_page',
+  'log_rules_snapshot', 'log_rule_put', 'bench_events_list', 'bench_event_append']);
 
 /** Owns the worker for the application lifetime, including renderer reloads. */
 export class DesktopWatchService {
@@ -23,7 +24,10 @@ export class DesktopWatchService {
         this.worker = null; this.starting = null; this.feedBytes = 0; this.gapQueued = false;
         for (const request of this.pending.values()) { clearTimeout(request.timeout); request.reject(error); }
         this.pending.clear(); reject(error);
-        if (!this.stopping) this.onEvent('watch-state', { unavailable: true, interruption: 'Watch monitoring stopped. Raw capture continues. Retry monitoring to resume.', historyError: error.message });
+        if (!this.stopping) {
+          this.onEvent('watch-state', { unavailable: true, interruption: 'Watch monitoring stopped. Raw capture continues. Retry monitoring to resume.', historyError: error.message });
+          this.onEvent('log-state', { rules: [], error: 'Log monitoring stopped. Raw capture continues. Retry monitoring to resume.', interruption: error.message });
+        }
       };
       worker.on('error', fail);
       worker.on('exit', (code) => { if (!this.stopping) fail(new Error(`Watch monitor exited (${code}).`)); });

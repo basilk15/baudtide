@@ -1,6 +1,7 @@
 import { listenDesktop } from './lib/desktop';
 import { watchSnapshot, setDesktopWatchDecoder } from './lib/desktopWatches';
 import type { WatchHistoryRow } from './lib/watchHistory';
+import type { CaptureEvent } from './lib/captureEvents';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppStartupScreen } from './components/AppStartupScreen';
 import { CommandPalette, type CommandPaletteAction } from './components/CommandPalette';
@@ -16,6 +17,7 @@ import { BenchRestoreDialog, type BenchRestoreChoice } from './components/BenchR
 import { liveTelemetryStore } from './lib/telemetry';
 import { planBenchRestore, type BenchConnectionPreset } from './lib/benchSetup';
 import { CaptureStorageBanner } from './components/CaptureStorageBanner';
+import { saveCommandSequences } from './lib/commandSequences';
 import { saveCommandPresets } from './lib/serialCommands';
 import { SessionWorkspaceManager } from './components/SessionWorkspaceManager';
 import { PortDiscoveryDashboard } from './components/PortDiscoveryDashboard';
@@ -140,6 +142,8 @@ function App() {
   const benchRestoreBusy = useRef(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [visualizeCapturePath, setVisualizeCapturePath] = useState<string | null>(null);
+  const [requestedEvent, setRequestedEvent] = useState<{ event: CaptureEvent; revision: number } | null>(null);
+  const inspectCaptureEvent = (event: CaptureEvent) => { setRequestedEvent({ event, revision: Date.now() }); navigate('visualize'); };
   const [visualizeVisited, setVisualizeVisited] = useState(() => Boolean(loadAnalysisWorkspaces().activeId));
   const [theme, setTheme] = useState<AppTheme>('dark');
   const [preferences, setPreferences] = useState<BaudTidePreferences>(defaultPreferences);
@@ -166,8 +170,12 @@ function App() {
     const unlisten = listenDesktop<WatchHistoryRow>('watch-event', (event) => {
       publishNotification({ kind: 'alert', title: `Watch triggered · ${event.fieldKey}`, detail: `${event.sourceName} · ${event.value}${event.unit ? ` ${event.unit}` : ''}.` });
     });
+    const unlistenLog = listenDesktop<CaptureEvent>('log-event', (event) => {
+      publishNotification({ kind: 'alert', title: event.label, detail: `${event.sourceName} · ${event.note}`, captureEvent: event });
+    });
+    const unlistenInspect = listenDesktop<CaptureEvent>('bench-inspect', (event) => { setRequestedEvent({ event, revision: Date.now() }); setVisualizeVisited(true); setPage('visualize'); setWelcomeVisible(false); });
     void watchSnapshot().then((snapshot) => { if (mounted && snapshot.watches.length) setVisualizeVisited(true); }).catch(() => undefined);
-    return () => { mounted = false; unlisten(); };
+    return () => { mounted = false; unlisten(); unlistenLog(); unlistenInspect(); };
   }, [publishNotification]);
   const sessions = useMemo(() => Object.values(liveSessions), [liveSessions]);
   const visualizeSessions = useMemo(() => sessions.map<VisualizeSession>((session) => ({ id: session.id, uiKey: session.uiKey, sessionName: session.sessionName, port: session.port, connectionState: session.connectionState, capturePath: session.logPath, identity: session.workspaceIdentity, legacyIdentity: session.legacyWorkspaceIdentity, deviceIdentity: session.deviceIdentity, baudRate: session.baudRate, settings: session.settings })), [sessions]);
@@ -521,6 +529,7 @@ function App() {
   };
 
   const disconnectSession = async (sessionId: string) => {
+    monitorRefs.current[sessionId]?.stopCommandSequence?.();
     const session = liveSessionsRef.current[sessionId];
     if (!session) return;
     // Disconnect is intentional, so cancel a pending automatic retry before
@@ -904,6 +913,10 @@ function App() {
           liveTelemetryStore.setDecoderProfile(uiKey, preset.decoder);
           if (nativeRuntime) void setDesktopWatchDecoder(next.workspaceIdentity, preset.decoder).catch((error) => publishNotification({ kind: 'error', title: 'Watch decoder was not restored', detail: error.message }));
           if (current && monitorRefs.current[current.id]) { monitorRefs.current[next.id] = monitorRefs.current[current.id]; delete monitorRefs.current[current.id]; }
+          if (preset.sequences !== undefined) {
+            try { saveCommandSequences(next.workspaceIdentity, preset.sequences); }
+            catch { publishNotification({ kind: 'error', title: 'Command sequences were not restored', detail: `${preset.sessionName} connected, but sequence storage is unavailable.` }); }
+          }
           if (preset.commands !== undefined) {
             try { saveCommandPresets(next.workspaceIdentity, preset.commands); }
             catch { publishNotification({ kind: 'error', title: 'Command presets were not restored', detail: `${preset.sessionName} connected, but command storage is unavailable.` }); }
@@ -938,11 +951,11 @@ function App() {
         </div>
         <div className="signaldeck-breadcrumb"><span>BaudTide</span><b>/</b><strong>{page === 'sessions' && selectedSession ? selectedSession.sessionName : pageNames[page]}</strong></div>
         <div className={`signaldeck-preview-label ${nativeRuntime ? 'native' : ''}`}>{nativeRuntime ? 'Desktop mode · serial backend ready' : 'Browser preview · no serial backend'}</div>
-        <div className="signaldeck-topbar-actions"><CommandPalette actions={commandActions} onAction={runCommand} /><TopThemeToggle theme={theme} onThemeChange={(nextTheme) => { setTheme(nextTheme); void saveAppPreferences({ ...preferences, appearance: { theme: nextTheme } }); }} /><NotificationsPanel notifications={notifications} onMarkRead={markRead} onMarkAllRead={markAllRead} /><WorkspaceProfileMenu onPreferences={() => navigate('preferences')} /></div>
+        <div className="signaldeck-topbar-actions"><CommandPalette actions={commandActions} onAction={runCommand} /><TopThemeToggle theme={theme} onThemeChange={(nextTheme) => { setTheme(nextTheme); void saveAppPreferences({ ...preferences, appearance: { theme: nextTheme } }); }} /><NotificationsPanel onInspectEvent={inspectCaptureEvent} notifications={notifications} onMarkRead={markRead} onMarkAllRead={markAllRead} /><WorkspaceProfileMenu onPreferences={() => navigate('preferences')} /></div>
       </header>
       <div className="signaldeck-content">
         <div hidden={page !== 'sessions'}><SessionsWorkspace layout={terminalLayout} onLayoutChange={setTerminalLayout} onRestoreWorkspace={setRestoreWorkspace} restoreBusy={Boolean(restoreWorkspace)} workspaceVisible={page === 'sessions'} storageLimit={preferences.storage.storageLimitBytes} logDirectory={preferences.storage.logDirectory} onStorageWarning={(title, detail) => publishNotification({ kind: 'error', title, detail })} onStorageSettings={() => navigate('preferences')} onSavedLogs={() => navigate('logs')} sessions={sessions} selectedSessionId={selectedSessionId} onSelect={setSelectedSessionId} onRequestConnection={openConnectionDialog} onDisconnect={disconnectSession} onReconnect={reconnectSession} onReconnectSetup={(sessionId) => { const session = liveSessionsRef.current[sessionId]; if (session) openReconnectSetup({ port: session.port, baudRate: session.baudRate, sessionName: session.sessionName, settings: session.settings, setupNotice: 'Check the intended device and select its current port before connecting.' }); }} onAutoReconnectChange={setSessionAutoReconnect} onLineEndingChange={setSessionLineEnding} onClose={closeSession} onConnectionStateChange={updateSessionState} onNativeSessionEnded={markNativeSessionEnded} onNativeStorageLimit={markNativeStorageLimit} onNativeSessionStartupFailure={releaseNativeSessionAfterStartupFailure} onMonitorRef={(sessionId, monitor) => { monitorRefs.current[sessionId] = monitor; }} /></div>
-        {visualizeVisited && <div hidden={page !== 'visualize'}><VisualizeScreen workspaceVisible={page === 'visualize'} nativeEnabled={nativeRuntime} sessions={visualizeSessions} selectedSessionId={selectedSessionId} onSelectSession={setSelectedSessionId} onRequestConnection={openConnectionDialog} onTelemetryAlert={(alert) => publishNotification({ kind: 'alert', ...alert })} requestedAnalysis={requestedAnalysis} onRequestedAnalysisRestored={() => setRequestedAnalysis(null)} requestedCapturePath={visualizeCapturePath} onRequestedCaptureOpened={() => setVisualizeCapturePath(null)} /></div>}
+        {visualizeVisited && <div hidden={page !== 'visualize'}><VisualizeScreen requestedEvent={requestedEvent} onRequestedEventHandled={() => setRequestedEvent(null)} workspaceVisible={page === 'visualize'} nativeEnabled={nativeRuntime} sessions={visualizeSessions} selectedSessionId={selectedSessionId} onSelectSession={setSelectedSessionId} onRequestConnection={openConnectionDialog} onTelemetryAlert={(alert) => publishNotification({ kind: 'alert', ...alert })} requestedAnalysis={requestedAnalysis} onRequestedAnalysisRestored={() => setRequestedAnalysis(null)} requestedCapturePath={visualizeCapturePath} onRequestedCaptureOpened={() => setVisualizeCapturePath(null)} /></div>}
         {page !== 'sessions' && (page === 'preferences' ? <PreferencesScreen preferences={preferences} nativeEnabled={nativeRuntime} onSave={saveAppPreferences} onThemePreview={setTheme} onChooseLogDirectory={chooseLogDirectory} />
           : page === 'help' ? <HelpFeedbackPanel nativeEnabled={nativeRuntime} openSessionCount={sessions.length} activeSessionCount={sessions.filter((session) => session.native && session.connectionState === 'connected').length} />
             : page === 'logs' ? <SavedLogsScreen nativeEnabled={nativeRuntime} activeLogPath={activeLogPath} onRequestConnection={openConnectionDialog} onReconnectWithSettings={openReconnectSetup} onOpenInVisualize={(log) => { setVisualizeCapturePath(log.path); navigate('visualize'); }} />
@@ -1033,7 +1046,7 @@ function SessionsWorkspace({ onStorageWarning, storageLimit, logDirectory, onSto
         reconnectWhenDeviceReturns: session.reconnectWhenDeviceReturns, decoder: liveTelemetryStore.getSnapshot(session.uiKey).decoderProfile,
       } satisfies BenchConnectionPreset }))} selectedSessionId={selectedSessionId} onApply={applySavedWorkspace} onRestore={onRestoreWorkspace} restoreBusy={restoreBusy} /><span className="sd-session-count"><i className={activeCount ? 'is-active' : ''} /> {activeCount} active</span><button ref={newTerminalButtonRef} className="sd-primary-button" type="button" onClick={onRequestConnection}><Radio size={16} /> New terminal</button></div></header>
     <CaptureStorageBanner onWarning={onStorageWarning} nativeEnabled={nativeRuntime} limit={storageLimit} directory={logDirectory} stoppedCount={sessions.filter((session) => session.autoReconnectBlockedReason === 'storage-limit').length} onSettings={onStorageSettings} onLogs={onSavedLogs} onRetry={async () => { const failures: string[] = []; for (const session of sessions.filter((s) => s.autoReconnectBlockedReason === 'storage-limit')) { try { await onReconnect(session.id); } catch (error) { failures.push(`${session.sessionName}: ${error instanceof Error ? error.message : String(error)}`); } } if (failures.length) throw new Error(failures.join(' · ')); }} />
-    {!sessions.length && <article className="sd-sessions-empty-panel"><div className="sd-sessions-empty-icon"><TerminalSquare size={21} /></div><div><h2>No terminal tabs are open.</h2><p>Use <strong>New terminal</strong> to add a live serial monitor to this workspace.</p></div></article>}
+    {!sessions.length && <article className="sd-sessions-empty-panel"><div className="sd-sessions-empty-icon" aria-hidden="true"><TerminalSquare size={24} /></div><div><h2>Connect your first device</h2><p>Open a serial port to watch incoming data, send commands, and record a local capture.</p></div><button className="sd-primary-button" type="button" onClick={onRequestConnection}><Radio size={16} /> Connect a device</button></article>}
     {sessions.length > 0 && <>
       <div className="sd-session-tabs" role={activeView === 'tabs' ? 'tablist' : 'list'} aria-label={activeView === 'tabs' ? 'Open serial terminals' : 'Open serial terminals; select one for terminal actions'}>
         {sessions.map((session, index) => <div className={`sd-session-tab ${session.id === selectedSessionId ? 'is-selected' : ''}`} role={activeView === 'tiled' ? 'listitem' : undefined} key={session.id}>

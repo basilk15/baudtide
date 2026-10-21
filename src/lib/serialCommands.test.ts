@@ -23,6 +23,11 @@ describe('saved serial commands', () => {
     const preset = { ...connection, identity: stableTerminalSessionIdentity(connection), lineEnding: 'lf', displayEncoding: 'utf8', showTimestamps: true, reconnectWhenDeviceReturns: false, commands: [command] };
     expect(normalizeBenchConnection(preset)?.commands).toEqual([command]);
     expect(normalizeBenchConnection({ ...preset, commands: undefined })?.commands).toBeUndefined();
+    const sequence = { id: 'sequence', name: 'Calibration check', steps: [{ id: 'read', name: 'Read calibration', command,
+      expect: 'OK', timeoutMs: 5000, delayMs: 100 }] };
+    const withSequences = normalizeBenchConnection({ ...preset, sequences: [sequence] });
+    expect(withSequences?.sequences?.[0].steps[0]).toMatchObject({ name: 'Read calibration', expect: 'OK', timeoutMs: 5000 });
+    expect(normalizeBenchConnection({ ...preset, sequences: [{ ...sequence, steps: [{ ...sequence.steps[0], timeoutMs: null }] }] })).toBeNull();
     const saved = { id: 'bench', name: 'Bench', layout: 'tabs', sessionIdentities: [preset.identity], selectedSessionIdentity: null, connections: [preset], createdAt: 100, updatedAt: 100 };
     expect(normalizeSessionWorkspaces({ version: 1, workspaces: [saved] })[0]?.connections?.[0].commands).toEqual([command]);
     expect(normalizeSessionWorkspaces({ version: 1, workspaces: [{ ...saved, connections: [{ ...preset, commands: [{}] }] }] })).toEqual([]);

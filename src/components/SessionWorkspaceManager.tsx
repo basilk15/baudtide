@@ -1,3 +1,4 @@
+import { loadCommandSequences } from '../lib/commandSequences';
 import { loadCommandPresets } from '../lib/serialCommands';
 import { BookmarkPlus, FolderOpen, Pencil, Trash2, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -93,8 +94,8 @@ export function SessionWorkspaceManager({ layout, sessions, selectedSessionId, o
       return;
     }
     let connections;
-    try { connections = sessions.map((session) => ({ ...session.preset, commands: loadCommandPresets(session.identity) })); }
-    catch { setStatus('Command presets could not be read. The saved setup has not been changed.'); return; }
+    try { connections = sessions.map((session) => ({ ...session.preset, commands: loadCommandPresets(session.identity), sequences: loadCommandSequences(session.identity) })); }
+    catch { setStatus('Commands or sequences could not be read. The saved setup has not been changed.'); return; }
     const selected = sessions.find((session) => session.id === selectedSessionId);
     const snapshot = {
       name: draftName,

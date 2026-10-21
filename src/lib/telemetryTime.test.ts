@@ -12,4 +12,8 @@ describe('elapsed telemetry time', () => {
     expect(formatTelemetryElapsedTime(origin + 60_027, origin, true)).toBe('+1m 00.027s');
     expect(formatTelemetryElapsedTime(origin - 1, origin, true)).toBe('+0.000s');
   });
+  it('shows signed time before an alignment event only when explicitly requested', () => {
+    expect(formatTelemetryElapsedTime(origin - 12001, origin, true, true)).toBe('−12.001s');
+    expect(formatTelemetryElapsedTime(origin + 12001, origin, true, true)).toBe('+12.001s');
+  });
 });

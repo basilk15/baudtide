@@ -8,6 +8,8 @@ import './live-monitor.css';
 import './live-monitor-preferences.css';
 import { commandBytes, type SerialCommand } from '../lib/serialCommands';
 import { CommandPresetsPanel } from './CommandPresetsPanel';
+import { LogRulesPanel } from './LogRulesPanel';
+import { CommandSequencePanel } from './CommandSequencePanel';
 import { TerminalRowGroups } from '../lib/terminalRows';
 import { useDocumentVisible } from '../lib/useDocumentVisible';
 
@@ -235,6 +237,7 @@ export type LiveMonitorProps = {
 };
 
 export type LiveMonitorHandle = {
+  stopCommandSequence?: () => void;
   toggleDisplayPause: () => void;
   requestClear: () => void;
   focusFind: () => void;
@@ -321,6 +324,10 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   const [sendError, setSendError] = useState<string | null>(null);
   const [isSending, setSending] = useState(false);
   const [isRepeating, setRepeating] = useState(false);
+  const [isSequenceRunning, setSequenceRunning] = useState(false);
+  const [sequenceReadySession, setSequenceReadySession] = useState<string>();
+  const sequenceObserverRef = useRef<((event: SerialDataEvent) => void) | null>(null);
+  const stopSequenceRef = useRef<(() => void) | null>(null);
   const sendInFlightRef = useRef(false);
   const stopRepeatingRef = useRef<(() => void) | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -496,6 +503,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   }, [onNativeSessionStartupFailure]);
 
   const updateConnectionState = (state: MonitorConnectionState) => {
+    if (state !== 'connected') stopSequenceRef.current?.();
     setConnectionState(state);
     onConnectionStateChangeRef.current?.(state);
   };
@@ -733,6 +741,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
       // the buffered startup replay. Sequence numbers make both paths one
       // ordered stream, avoiding a missing prefix or duplicate render.
       const processOrderedSerialEvent = (event: SerialDataEvent) => {
+        try { sequenceObserverRef.current?.(event); } catch { stopSequenceRef.current?.(); }
         // This is the sole serial-event handoff into telemetry. It runs only
         // after startup replay and live delivery have been merged by native
         // sequence number, so telemetry cannot create another listener or
@@ -857,6 +866,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
               ? handoff.nextSequence
               : Math.min(handoff.nextSequence, ...pendingEvents.keys());
             continueAfterSequence(resumeSequence);
+            setSequenceReadySession(sessionId);
           })
           .catch(() => {
             if (!disposed) reportFrontendStartupFailure();
@@ -949,7 +959,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
 
   const send = async (event: FormEvent) => {
     event.preventDefault();
-    if (!outgoing.trim() || isSending || isRepeating) return;
+    if (!outgoing.trim() || isSending || isRepeating || isSequenceRunning) return;
     try {
       await transmitCommand({ payload: outgoing, mode: sendMode, lineEnding: sendLineEnding });
       setOutgoing(''); setHistoryIndex(null); historyDraftRef.current = ''; modeDraftsRef.current[sendMode] = '';
@@ -1023,6 +1033,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   };
 
   const disconnect = async () => {
+    stopSequenceRef.current?.();
     try {
       await onDisconnect?.();
       flushFinalPartialLine();
@@ -1057,6 +1068,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   };
 
   const close = async () => {
+    stopSequenceRef.current?.();
     flushFinalPartialLine();
     await onClose?.();
   };
@@ -1112,6 +1124,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   };
 
   useImperativeHandle(ref, () => ({
+    stopCommandSequence: () => stopSequenceRef.current?.(),
     toggleDisplayPause,
     requestClear: () => setShowClearConfirm(true),
     focusFind,
@@ -1253,6 +1266,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
             <button className="sd-monitor-icon-button" type="button" onClick={() => setShowClearConfirm(true)} aria-label="Clear monitor display" title="Clear display"><Eraser size={16} /></button>
           </div>
         </div>
+        {isSequenceRunning && <button type="button" className="sd-monitor-danger-button" onClick={() => stopSequenceRef.current?.()}>Stop sequence</button>}
         {isRepeating && <button type="button" className="sd-monitor-danger-button" onClick={() => stopRepeatingRef.current?.()}>Stop command repeat</button>}
         <div className={`sd-terminal-logging ${nativeSession ? connectionState : 'preview'}`}>
           {nativeSession ? <CaptureIcon className={connectionState === 'reconnecting' ? 'sd-spin' : ''} size={13} /> : <Check size={13} />}
@@ -1332,11 +1346,11 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
               placeholder={connectionState === 'connected'
                 ? sendMode === 'hex' ? '48 65 6C 6C 6F or 0x48, 0x65…' : 'Type a command…'
                 : 'Reconnect to send a command'}
-              disabled={connectionState !== 'connected' || isSending || isRepeating}
+              disabled={connectionState !== 'connected' || isSending || isRepeating || isSequenceRunning}
             />
-            <label className="sd-send-mode"><span>Mode</span><ThemedSelect compact label="Send mode" value={sendMode} placeholder="Choose mode" options={[{ value: 'text', label: 'Text' }, { value: 'hex', label: 'Hex' }]} onChange={(value) => changeSendMode(value as SendMode)} disabled={connectionState !== 'connected' || isSending || isRepeating} /></label>
-            {sendMode === 'text' && <label className="sd-send-ending"><span>Ending</span><ThemedSelect compact label="Line ending" value={sendLineEnding} placeholder="Choose ending" options={(['lf', 'crlf', 'cr', 'none'] as LineEnding[]).map((ending) => ({ value: ending, label: lineEndingLabel(ending) }))} onChange={(value) => setSendLineEnding(value as LineEnding)} disabled={connectionState !== 'connected' || isSending || isRepeating} /></label>}
-            <button className="sd-primary-button" type="submit" disabled={!outgoing.trim() || isSending || isRepeating || connectionState !== 'connected'}>{isSending ? <LoaderCircle className="sd-spin" size={16} /> : <Send size={16} />} Send</button>
+            <label className="sd-send-mode"><span>Mode</span><ThemedSelect compact label="Send mode" value={sendMode} placeholder="Choose mode" options={[{ value: 'text', label: 'Text' }, { value: 'hex', label: 'Hex' }]} onChange={(value) => changeSendMode(value as SendMode)} disabled={connectionState !== 'connected' || isSending || isRepeating || isSequenceRunning} /></label>
+            {sendMode === 'text' && <label className="sd-send-ending"><span>Ending</span><ThemedSelect compact label="Line ending" value={sendLineEnding} placeholder="Choose ending" options={(['lf', 'crlf', 'cr', 'none'] as LineEnding[]).map((ending) => ({ value: ending, label: lineEndingLabel(ending) }))} onChange={(value) => setSendLineEnding(value as LineEnding)} disabled={connectionState !== 'connected' || isSending || isRepeating || isSequenceRunning} /></label>}
+            <button className="sd-primary-button" type="submit" disabled={!outgoing.trim() || isSending || isRepeating || isSequenceRunning || connectionState !== 'connected'}>{isSending ? <LoaderCircle className="sd-spin" size={16} /> : <Send size={16} />} Send</button>
           </div>
           {sendError && <span className="sd-send-error" id={sendErrorId} role="alert">{sendError}</span>}
           <span id={sendHintId}>{nativeSession
@@ -1347,9 +1361,13 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
               ? 'Browser preview only · hex payloads are not transmitted · use two-digit bytes separated by spaces or commas'
               : `Browser preview only · ${lineEndingLabel(sendLineEnding)} selected for desktop sends · ↑/↓ recalls text commands`}</span>
         </form>
-        <CommandPresetsPanel stopRef={stopRepeatingRef} identity={commandIdentity ?? telemetrySessionKey ?? sessionId ?? sessionName} sessionId={sessionId} enabled={nativeSession && connectionState === 'connected' && displayActive}
+        <CommandPresetsPanel stopRef={stopRepeatingRef} identity={commandIdentity ?? telemetrySessionKey ?? sessionId ?? sessionName} sessionId={sessionId} enabled={nativeSession && connectionState === 'connected' && displayActive && !isSequenceRunning}
           draft={{ payload: outgoing, mode: sendMode, lineEnding: sendLineEnding }} onSend={transmitCommand} onRepeatingChange={setRepeating}
           onLoad={(command) => { setOutgoing(command.payload); setSendMode(command.mode); setSendLineEnding(command.lineEnding); setHistoryIndex(null); setSendError(null); }} />
+        {nativeSession && commandIdentity && <CommandSequencePanel identity={commandIdentity} sessionId={sessionId} capturePath={capturePath} sourceName={sessionName}
+          enabled={connectionState === 'connected' && displayActive && documentVisible && sequenceReadySession === sessionId} blocked={isSending || isRepeating}
+          draft={{ payload: outgoing, mode: sendMode, lineEnding: sendLineEnding }} observerRef={sequenceObserverRef} stopRef={stopSequenceRef} onSend={transmitCommand} onRunningChange={setSequenceRunning} />}
+        {nativeSession && commandIdentity && <LogRulesPanel identity={commandIdentity} sourceName={sessionName} enabled={nativeSession} />}
       </article>
 
       {showClearConfirm && <div className="sd-inline-confirm" role="alertdialog" aria-label="Confirm clear display"><div><AlertTriangle size={18} /><p><strong>Clear this display?</strong><span>This only clears the visible panel. The session log is unaffected.</span></p></div><div><button className="sd-monitor-secondary" type="button" onClick={() => setShowClearConfirm(false)}>Cancel</button><button className="sd-monitor-danger-button" type="button" onClick={clear}>Clear</button></div></div>}

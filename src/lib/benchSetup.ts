@@ -1,3 +1,4 @@
+import { normalizeCommandSequences, type CommandSequence } from './commandSequences';
 import { normalizeCommandPresets, type SerialCommand } from './serialCommands';
 import type { NativeSerialPort, SerialConnectionSettings, SerialDeviceIdentity } from './serial';
 import type { DisplayEncoding, LineEnding } from './preferences';
@@ -7,7 +8,7 @@ export type BenchConnectionPreset = {
   identity: string; port: string; baudRate: number; sessionName: string;
   settings: SerialConnectionSettings; deviceIdentity?: SerialDeviceIdentity | null;
   lineEnding: LineEnding; displayEncoding: DisplayEncoding; showTimestamps: boolean;
-  reconnectWhenDeviceReturns: boolean; commands?: SerialCommand[]; decoder?: TelemetryDecoderProfile;
+  reconnectWhenDeviceReturns: boolean; commands?: SerialCommand[]; sequences?: CommandSequence[]; decoder?: TelemetryDecoderProfile;
 };
 
 export function normalizeBenchConnection(value: unknown): BenchConnectionPreset | null {
@@ -29,11 +30,13 @@ export function normalizeBenchConnection(value: unknown): BenchConnectionPreset 
     || (d.stablePath !== null && (typeof d.stablePath !== 'string' || !/^\/dev\/serial\/by-id\/[^/]+$/u.test(d.stablePath) || d.stablePath.length > 256)))) return null;
   const commands = p.commands === undefined ? undefined : normalizeCommandPresets(p.commands);
   if (commands === null) return null;
+  const sequences = p.sequences === undefined ? undefined : normalizeCommandSequences(p.sequences);
+  if (sequences === null) return null;
   const decoder = p.decoder === undefined ? undefined : normalizeTelemetryDecoderProfile(p.decoder);
   if (p.decoder !== undefined && !decoder) return null;
   return { identity: p.identity, port: p.port, baudRate: p.baudRate, sessionName: p.sessionName.trim(), settings: { ...s },
     ...(d ? { deviceIdentity: { ...d } } : {}), lineEnding: p.lineEnding, displayEncoding: p.displayEncoding,
-    showTimestamps: p.showTimestamps, reconnectWhenDeviceReturns: p.reconnectWhenDeviceReturns, ...(decoder ? { decoder } : {}), ...(commands ? { commands } : {}) };
+    showTimestamps: p.showTimestamps, reconnectWhenDeviceReturns: p.reconnectWhenDeviceReturns, ...(decoder ? { decoder } : {}), ...(commands ? { commands } : {}), ...(sequences ? { sequences } : {}) };
 }
 
 export type BenchOpenSession = { id: string; identity: string; legacyIdentity?: string; port: string; connected: boolean };

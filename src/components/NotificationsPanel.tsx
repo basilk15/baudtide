@@ -7,6 +7,7 @@ type NotificationsPanelProps = {
   notifications: AppNotification[];
   onMarkRead: (id: string) => void;
   onMarkAllRead: () => void;
+  onInspectEvent?: (event: NonNullable<AppNotification['captureEvent']>) => void;
 };
 
 function formatTime(value: string) {
@@ -19,7 +20,7 @@ function NoticeIcon({ kind }: { kind: AppNotification['kind'] }) {
   return <i className={`sd-notice-icon ${kind}`}><Icon size={15} /></i>;
 }
 
-export function NotificationsPanel({ notifications, onMarkRead, onMarkAllRead }: NotificationsPanelProps) {
+export function NotificationsPanel({ notifications, onMarkRead, onMarkAllRead, onInspectEvent }: NotificationsPanelProps) {
   const [open, setOpen] = useState(false);
   const unread = useMemo(() => notifications.filter((notification) => !notification.read).length, [notifications]);
   useEffect(() => {
@@ -30,6 +31,6 @@ export function NotificationsPanel({ notifications, onMarkRead, onMarkAllRead }:
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
   return <div className="sd-notifications"><button className="sd-icon-control sd-notification-trigger" type="button" onClick={() => setOpen((value) => !value)} aria-label={unread ? `Notifications, ${unread} unread` : 'Notifications'} aria-expanded={open} aria-haspopup="dialog"><Bell size={18} />{unread > 0 && <b aria-hidden="true">{unread > 9 ? '9+' : unread}</b>}</button>
-    {open && <section className="sd-notification-panel" role="dialog" aria-label="Notifications"><header><div><strong>Notifications</strong><small>{unread ? `${unread} unread` : notifications.length ? 'All caught up' : 'No activity yet'}</small></div>{unread > 0 && <button type="button" onClick={onMarkAllRead}>Mark all read</button>}</header>{notifications.length ? <div className="sd-notice-list">{notifications.map((notification) => <button type="button" className={notification.read ? '' : 'is-unread'} key={notification.id} onClick={() => onMarkRead(notification.id)}><NoticeIcon kind={notification.kind} /><span><strong>{notification.title}</strong><small>{notification.detail}</small><time>{formatTime(notification.createdAt)}</time></span>{!notification.read && <i aria-label="Unread" />}</button>)}</div> : <div className="sd-notice-list sd-notice-empty">Connection, logging, export, and signal-watch events will appear here.</div>}</section>}
+    {open && <section className="sd-notification-panel" role="dialog" aria-label="Notifications"><header><div><strong>Notifications</strong><small>{unread ? `${unread} unread` : notifications.length ? 'All caught up' : 'No activity yet'}</small></div>{unread > 0 && <button type="button" onClick={onMarkAllRead}>Mark all read</button>}</header>{notifications.length ? <div className="sd-notice-list">{notifications.map((notification) => <button type="button" className={notification.read ? '' : 'is-unread'} key={notification.id} onClick={() => { onMarkRead(notification.id); if (notification.captureEvent && onInspectEvent) { onInspectEvent(notification.captureEvent); setOpen(false); } }}><NoticeIcon kind={notification.kind} /><span><strong>{notification.title}</strong><small>{notification.detail}</small><time>{formatTime(notification.createdAt)}{notification.captureEvent ? ' · Inspect event →' : ''}</time></span>{!notification.read && <i aria-label="Unread" />}</button>)}</div> : <div className="sd-notice-list sd-notice-empty">Connection, logging, export, and signal-watch events will appear here.</div>}</section>}
   </div>;
 }

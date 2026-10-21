@@ -46,9 +46,13 @@ const commands = Object.freeze([
   'watch_history_summary',
   'watch_history_latest',
   'watch_history_page',
+  'log_rules_snapshot',
+  'log_rule_put',
+  'bench_events_list',
+  'bench_event_append',
 ]);
 
-const events = Object.freeze(['serial-data', 'serial-status', 'watch-event', 'watch-state']);
+const events = Object.freeze(['serial-data', 'serial-status', 'watch-event', 'watch-state', 'log-event', 'log-state', 'bench-event', 'bench-inspect']);
 
 module.exports = Object.freeze({
   commands,

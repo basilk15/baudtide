@@ -1,3 +1,6 @@
+import { CaptureComparisonPanel } from './CaptureComparisonPanel';
+import type { CaptureComparisonSettings } from '../lib/captureComparison';
+import { useBenchEvents } from '../lib/useBenchEvents';
 import { useDocumentVisible } from '../lib/useDocumentVisible';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
@@ -51,6 +54,9 @@ import { TelemetryWatchEngine } from '../lib/telemetryWatchEngine';
 import { TelemetryProjectionCache } from '../lib/telemetryProjection';
 import type { TelemetryDecoderProfile } from '../lib/telemetryDecoders';
 import { telemetrySeriesColor } from '../lib/telemetryChart';
+import { breachCaptureEvent, loadCaptureMarkers, saveCaptureMarker, eventInspectionRange, projectEventMarkers, type CaptureEvent, type CaptureMarker } from '../lib/captureEvents';
+import { readCaptureContext } from '../lib/captureContext';
+import { CaptureEventTimeline, type EventInspection, type MarkerSource } from './CaptureEventTimeline';
 import { TelemetryCharts, type ChartMode } from './TelemetryECharts';
 import { TelemetryDecoderPanel, type TelemetryDecoderSource } from './TelemetryDecoderPanel';
 import { ThemedSelect } from './ThemedSelect';
@@ -260,6 +266,8 @@ function FieldControl({ field, checked, disabled, onToggle }: {
 }
 
 export type TelemetryAnalysisWorkspaceProps = VisualizeScreenProps & {
+  requestedEvent?: { event: CaptureEvent; revision: number } | null;
+  onRequestedEventHandled?: () => void;
   requestedAnalysis?: { id: string; revision: number } | null;
   onRequestedAnalysisRestored?: () => void;
   requestedCapturePath?: string | null;
@@ -268,6 +276,7 @@ export type TelemetryAnalysisWorkspaceProps = VisualizeScreenProps & {
 
 export function TelemetryAnalysisWorkspace({
   workspaceVisible = true,
+  requestedEvent, onRequestedEventHandled,
   nativeEnabled,
   sessions,
   selectedSessionId,
@@ -331,6 +340,7 @@ export function TelemetryAnalysisWorkspace({
   const [fieldQuery, setFieldQuery] = useState('');
   const [fieldsConfigured, setFieldsConfigured] = useState(false);
   const [alignment, setAlignment] = useState<AlignmentMode>('elapsed');
+  const [comparisonSettings, setComparisonSettings] = useState<CaptureComparisonSettings | undefined>();
   const [windowMs, setWindowMs] = useState(0);
   const [customWindow, setCustomWindow] = useState<CustomWindow | null>(null);
   const [customWindowOpen, setCustomWindowOpen] = useState(false);
@@ -357,6 +367,14 @@ export function TelemetryAnalysisWorkspace({
   const [watchEvents, setWatchEvents] = useState<WatchEventRow[]>([]);
   const [watchBreachCounts, setWatchBreachCounts] = useState<Record<string, number>>({});
   const [activeBreach, setActiveBreach] = useState<WatchEventRow | null>(null);
+  const [markerLibrary, setMarkerLibrary] = useState<{ markers: CaptureMarker[]; error: string }>(() => {
+    try { return { markers: loadCaptureMarkers(), error: '' }; }
+    catch (error) { return { markers: [], error: error instanceof Error ? error.message : 'Could not read saved markers.' }; }
+  });
+  const [markerSaveError, setMarkerSaveError] = useState('');
+  const [inspection, setInspection] = useState<EventInspection | null>(null);
+  const inspectionRead = useRef<AbortController | null>(null);
+  useEffect(() => () => inspectionRead.current?.abort(), []);
   const [watchFieldId, setWatchFieldId] = useState('');
   const [watchCondition, setWatchCondition] = useState<TelemetryAlertCondition>('above');
   const [watchThreshold, setWatchThreshold] = useState('');
@@ -475,7 +493,8 @@ export function TelemetryAnalysisWorkspace({
     };
   }, [resolvedViewedSourceId, displayPaused, displayVisible]);
 
-  const loadCapture = useCallback(async (log: SavedLog, profile?: TelemetryDecoderProfile, replace = false, requestedRange?: CaptureRange) => {
+  const loadCapture = useCallback(async (log: SavedLog, profile?: TelemetryDecoderProfile, replace = false, requestedRange?: CaptureRange, signal?: AbortSignal) => {
+    signal?.throwIfAborted();
     const id = recordedSourceId(log.path);
     if (recordedSources[id] && !replace) {
       setActiveSourceIds((current) => current.includes(id) ? current : [...current, id]);
@@ -484,6 +503,7 @@ export function TelemetryAnalysisWorkspace({
     }
     captureLoad.current?.abort();
     const abort = new AbortController(); captureLoad.current = abort;
+    const cancel = () => abort.abort(); signal?.addEventListener('abort', cancel, { once: true });
     setLoadingPath(log.path); setLoadProgress(0); setLibraryError('');
     try {
       const result = await analyzeNativeCapture(id, log, { profile, signal: abort.signal, onProgress: setLoadProgress });
@@ -506,6 +526,7 @@ export function TelemetryAnalysisWorkspace({
       if (!abort.signal.aborted) setLibraryError(reason instanceof Error ? reason.message : 'Could not open that capture for analysis.');
       return undefined;
     } finally {
+      signal?.removeEventListener('abort', cancel);
       if (captureLoad.current === abort) { captureLoad.current = null; setLoadingPath(null); }
     }
   }, [recordedSources]);
@@ -589,6 +610,7 @@ export function TelemetryAnalysisWorkspace({
     setRangeError('');
   }, [rangedCapture?.id, rangedCapture?.selection.start, rangedCapture?.selection.end]);
   const applyCaptureRange = (all = false) => {
+    closeInspection();
     if (!rangedCapture) return;
     const from = all ? 0 : Number(rangeStart);
     const to = all ? (rangedCapture.index.range.end - rangedCapture.index.range.start) / 1000 : Number(rangeEnd);
@@ -625,6 +647,7 @@ export function TelemetryAnalysisWorkspace({
   const availableTerminals = liveSources.filter((source) => !activeSourceIds.includes(source.id));
 
   const addChosenSource = () => {
+    closeInspection();
     if (!sourceChoice) return;
     const source = sourcesById.get(sourceChoice);
     if (source) {
@@ -641,6 +664,7 @@ export function TelemetryAnalysisWorkspace({
   };
 
   const applyDecoder = async (sourceId: string, profile?: TelemetryDecoderProfile) => {
+    closeInspection();
     const source = sourcesById.get(sourceId);
     if (!source) return;
     if (source.kind === 'live') {
@@ -705,6 +729,7 @@ export function TelemetryAnalysisWorkspace({
   };
 
   const removeSource = (source: AnalysisSource) => {
+    closeInspection();
     pendingSelections.current.delete(source.id);
     setActiveSourceIds((current) => current.filter((id) => id !== source.id));
     setSelectedFields((current) => {
@@ -771,6 +796,7 @@ export function TelemetryAnalysisWorkspace({
   const visibleFields = useMemo(() => displayFields.filter((field) => field.sourceId === viewedSource?.id), [displayFields, viewedSource?.id]);
   const visibleSelectedFields = useMemo(() => visibleFields.filter((field) => selectedFieldSet.has(field.id)), [visibleFields, selectedFieldSet]);
   const chooseViewedSource = (source: AnalysisSource) => {
+    closeInspection();
     const fields = displayFields.filter((field) => field.sourceId === source.id);
     if (!activeWorkspaceId && fields.length && !configuredSources.current.has(source.id)) {
       configuredSources.current.add(source.id);
@@ -952,7 +978,7 @@ export function TelemetryAnalysisWorkspace({
         ...(profile ? { decoder: profile } : {}), ...(source.kind === 'recorded' ? { rangeSeconds: { start: (source.selection.start - source.index.range.start) / 1000, end: (source.selection.end - source.index.range.start) / 1000 } } : {}) };
     });
     let workspace: SavedAnalysisWorkspace = { id: existing?.id ?? freshWatchId(), name, updatedAt: Date.now(), alignment, chartMode, windowMs, replayRate,
-      sources, watches: watchRules.flatMap((rule) => {
+      ...(comparisonSettings ? { comparison: comparisonSettings } : {}), sources, watches: watchRules.flatMap((rule) => {
         const ordinal = activeSources.findIndex((source) => source.kind === 'live' && source.session.uiKey === rule.sessionKey);
         if (ordinal < 0) return [];
         const { id: _id, sessionKey: _key, ...settings } = rule;
@@ -975,6 +1001,7 @@ export function TelemetryAnalysisWorkspace({
   };
 
   const restoreAnalysisWorkspace = async (workspace: SavedAnalysisWorkspace) => {
+    closeInspection();
     const generation = ++restoreGeneration.current;
     captureLoad.current?.abort(); exportAbort.current?.abort();
     restoreIntent.current = { workspace, pendingLives: workspace.sources.filter((source) => source.kind === 'live'), bindings: new Map(), removedCapturePaths: new Set() };
@@ -983,6 +1010,7 @@ export function TelemetryAnalysisWorkspace({
     setActiveSourceIds([]); setRestoreRevision((value) => value + 1);
     setRestoringWorkspace(true); setSelectedFields([]); setFieldsConfigured(true);
     if (!desktopWatchesEnabled) { watchEngine.setRules([]); setWatchRules([]); }
+    setComparisonSettings(workspace.comparison);
     setAlignment(workspace.alignment); setChartMode(workspace.chartMode); setWindowMs(workspace.windowMs); setReplayRate(workspace.replayRate);
     setCustomWindow(WINDOW_OPTIONS.some((option) => option.value === workspace.windowMs) || workspace.windowMs === 0 ? null : { amount: workspace.windowMs / 60000, unit: 'minutes' });
     setDisplayPaused(false); frozenLiveSnapshots.current = {}; setReplayPlaying(false); setReplayProgress(1);
@@ -1214,6 +1242,85 @@ export function TelemetryAnalysisWorkspace({
     .map((source) => ({ id: source.id, start: source.selection.start, end: source.selection.end, origin: source.index.range.start })), alignment, replayProgress), [activeSources, alignment, replayProgress]);
   const recordedDuration = replayTimeline.duration;
 
+  const benchEvents = useBenchEvents(activeSources.map((source) => source.kind === 'recorded' ? source.log.path : source.session.capturePath ?? '').filter(Boolean), nativeEnabled);
+  const captureEvents = useMemo(() => [...watchEvents.map(breachCaptureEvent), ...markerLibrary.markers, ...benchEvents.events], [watchEvents, markerLibrary.markers, benchEvents.events]);
+  const viewedCapturePath = viewedSource?.kind === 'recorded' ? viewedSource.log.path : viewedSource?.session.capturePath;
+  const timelineEvents = useMemo(() => captureEvents.filter((event) => viewedCapturePath && event.capturePath === viewedCapturePath), [captureEvents, viewedCapturePath]);
+  const sourceRange = viewedSource ? analysisSourceRange(viewedSource) : { start: 0, end: 0, duration: 0 };
+  const chartMarkers = useMemo(() => projectEventMarkers(captureEvents, viewedCapturePath, sourceRange, alignment, ANALYSIS_EPOCH_MS, inspection?.event.id),
+    [captureEvents, viewedCapturePath, sourceRange.start, sourceRange.end, alignment, inspection?.event.id]);
+  const markerSource: MarkerSource | undefined = viewedSource && viewedCapturePath ? {
+    capturePath: viewedCapturePath, sourceName: viewedSource.name, live: viewedSource.kind === 'live',
+    startMs: viewedSource.kind === 'recorded' ? Math.min(Date.parse(viewedSource.log.startedAt ?? viewedSource.log.modifiedAt) || 0, viewedSource.index.range.start || Infinity) : sourceRange.start,
+    endMs: viewedSource.kind === 'recorded' ? Math.max(Date.parse(viewedSource.log.endedAt ?? '') || 0, viewedSource.index.range.end) : Date.now(),
+    currentMs: viewedSource.kind === 'recorded' ? (replayTimeline.sourceEnds.get(viewedSource.id) ?? viewedSource.selection.end) : Date.now(),
+  } : undefined;
+
+  const closeInspection = () => { inspectionRead.current?.abort(); setInspection(null); };
+  const inspectEvent = async (event: CaptureEvent, before = 10, after = 10) => {
+    inspectionRead.current?.abort();
+    const abort = new AbortController(); inspectionRead.current = abort;
+    setInspection({ event, loading: true, error: '' });
+    try {
+      const range = eventInspectionRange(event.timestamp, before, after);
+      if (!event.capturePath) throw new Error('This event has no linked capture. New breaches include capture context when recording is available.');
+      // Refresh the library: a live capture may have appeared since the last visit.
+      const freshLogs = await listNativeSavedLogs();
+      abort.signal.throwIfAborted();
+      const log = freshLogs.find((candidate) => candidate.path === event.capturePath);
+      if (!log) throw new Error('The linked capture is unavailable. Restore the capture to the local library and inspect this event again.');
+      const previous = recordedSources[recordedSourceId(log.path)];
+      const live = sessions.find((session) => session.capturePath === log.path);
+      const decoder = previous?.decoderProfile ?? (live ? liveTelemetryStore.getSnapshot(live.uiKey).decoderProfile : undefined);
+      // Reindex active recordings to include everything received since their last analysis.
+      const source = await loadCapture(log, decoder, log.state === 'capturing', range, abort.signal);
+      abort.signal.throwIfAborted();
+      if (!source) throw new Error('The linked capture could not be opened. Inspect this event again to retry.');
+      setRecordedSources((current) => current[source.id] ? { ...current, [source.id]: { ...current[source.id], selection: range } } : current);
+      setViewedSourceId(source.id); setRangeSourceId(source.id);
+      configuredSources.current.add(source.id);
+      setSelectedFields((current) => {
+        const keys = event.fieldKey && source.snapshot.fields.some((field) => field.key === event.fieldKey)
+          ? [event.fieldKey] : source.snapshot.fields.slice(0, 3).map((field) => field.key);
+        return [...current.filter((id) => !id.startsWith(`${source.id}\u0000`)), ...keys.map((key) => sourceFieldId(source.id, key))];
+      });
+      setReplayPlaying(false); setReplayProgress(1); setWindowMs(0); setCustomWindow(null); setChartResetRevision((value) => value + 1);
+      setWatchOpen(false);
+      setNotice(`Inspecting ${event.label} · ${before}s before and ${after}s after. Capture and watches continue running.`);
+      const context = await readCaptureContext(log, range, Date.parse(event.timestamp), abort.signal);
+      abort.signal.throwIfAborted();
+      setInspection({ event, loading: false, error: '', context });
+    } catch (error) {
+      if (!abort.signal.aborted) setInspection({ event, loading: false, error: error instanceof Error ? error.message : 'Could not inspect this event.' });
+    }
+  };
+
+  const requestedEventHandled = useRef<number | null>(null);
+  useEffect(() => {
+    if (!nativeEnabled || !requestedEvent || requestedEventHandled.current === requestedEvent.revision) return;
+    // Let the mount settle before consuming a notification. React StrictMode
+    // replays mount effects and cleanup aborts active inspection reads.
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (!active || requestedEventHandled.current === requestedEvent.revision) return;
+      requestedEventHandled.current = requestedEvent.revision;
+      void inspectEvent(requestedEvent.event);
+      onRequestedEventHandled?.();
+    });
+    return () => { active = false; };
+  }, [requestedEvent?.revision, nativeEnabled]);
+
+  const addCaptureMarker = (label: string, note: string, timestampMs: number) => {
+    if (!markerSource) return false;
+    try {
+      const marker: CaptureMarker = { id: freshWatchId(), kind: 'note', capturePath: markerSource.capturePath,
+        sourceName: markerSource.sourceName, timestamp: new Date(timestampMs).toISOString(), label, note };
+      setMarkerLibrary({ markers: saveCaptureMarker(marker), error: '' });
+      setMarkerSaveError(''); setNotice(`Saved marker “${label}” with this capture.`);
+      return true;
+    } catch (error) { setMarkerSaveError(error instanceof Error ? error.message : 'Could not save this marker.'); return false; }
+  };
+
   useEffect(() => {
     if (!replayPlaying || !recordedDuration || !workspaceVisible) return undefined;
     let previous = performance.now();
@@ -1414,7 +1521,7 @@ export function TelemetryAnalysisWorkspace({
 
     {activeBreach ? <aside className="bt-analysis-breach-toast" role="alert" aria-label={`Watch breach for ${activeBreach.fieldKey}`}>
       <AlertTriangle size={18} aria-hidden="true" />
-      <div><strong>Watch breach · {activeBreach.fieldKey}</strong><span>{activeBreach.sourceName} · {formatWatchEvent(activeBreach)}</span><time dateTime={activeBreach.timestamp}>Breach {activeBreach.occurrence} · {formatWatchTimestamp(activeBreach.timestamp)}</time></div>
+      <div><strong>Watch breach · {activeBreach.fieldKey}</strong><span>{activeBreach.sourceName} · {formatWatchEvent(activeBreach)}</span><time dateTime={activeBreach.timestamp}>Breach {activeBreach.occurrence} · {formatWatchTimestamp(activeBreach.timestamp)}</time><button className="sd-secondary-button bt-breach-inspect" type="button" disabled={Boolean(loadingPath) || exporting || restoringWorkspace} onClick={() => void inspectEvent(breachCaptureEvent(activeBreach))}>Inspect breach</button></div>
       <button type="button" onClick={() => setActiveBreach(null)} aria-label="Dismiss breach alert" title="Dismiss breach alert"><X size={16} /></button>
     </aside> : null}
 
@@ -1566,7 +1673,7 @@ export function TelemetryAnalysisWorkspace({
               <div className="bt-analysis-history-actions"><ThemedSelect compact menuPlacement="top" value={exportFormat} options={[{ value: 'csv', label: 'CSV' }, { value: 'json', label: 'JSON' }]} placeholder="CSV" label="Breach history export format" onChange={(value) => setExportFormat(value as ExportFormat)} /><button type="button" className="sd-secondary-button" disabled={historyLoading || historyExporting || !historyCount} onClick={() => void exportWatchHistory()}><Download size={14} /> {historyExporting ? 'Exporting…' : 'Export saved history'}</button>{historyExporting && <button type="button" className="sd-secondary-button" onClick={() => historyExportAbort.current?.abort()}>Cancel history export</button>}</div>
               {historyWriteError && <p className="bt-analysis-watch-error" role="alert">{historyWriteError} Some breaches from this run are only in the displayed history.</p>}
               {historyError && <p className="bt-analysis-watch-error" role="alert">{historyError} <button type="button" className="sd-secondary-button" disabled={historyLoading} onClick={() => void refreshWatchHistory()}>Retry history</button></p>}
-              {watchEvents.length ? <div>{watchEvents.map((event) => <article key={event.id}><AlertTriangle size={14} aria-hidden="true" /><span><strong>{event.sourceName} · {event.fieldKey}</strong><small>{formatWatchEvent(event)} · Breach {event.occurrence}</small><time dateTime={event.timestamp}>{formatWatchTimestamp(event.timestamp)}</time></span></article>)}</div> : <p className="bt-analysis-watch-empty">Every future re-armed breach will be recorded here.</p>}
+              {watchEvents.length ? <div>{watchEvents.map((event) => <article key={event.id}><AlertTriangle size={14} aria-hidden="true" /><span><strong>{event.sourceName} · {event.fieldKey}</strong><small>{formatWatchEvent(event)} · Breach {event.occurrence}</small><time dateTime={event.timestamp}>{formatWatchTimestamp(event.timestamp)}</time><button className="sd-secondary-button" type="button" disabled={Boolean(loadingPath) || exporting || restoringWorkspace} onClick={() => void inspectEvent(breachCaptureEvent(event))} aria-label={`Inspect breach for ${event.fieldKey} at ${formatWatchTimestamp(event.timestamp)}`}>Inspect breach</button></span></article>)}</div> : <p className="bt-analysis-watch-empty">Every future re-armed breach will be recorded here.</p>}
             </section>
           </div>
         </section> : null}
@@ -1580,7 +1687,24 @@ export function TelemetryAnalysisWorkspace({
           <div className="bt-analysis-rate"><span>Rate</span><ThemedSelect compact value={String(replayRate)} options={[1, 2, 4, 16].map((rate) => ({ value: String(rate), label: `${rate}×` }))} placeholder="1×" label="Replay rate" onChange={(value) => setReplayRate(Number(value))} /></div>
         </section> : null}
 
-        <TelemetryCharts visible={displayVisible} key={chartResetRevision} samples={combined.samples} fields={combined.fields} gaps={combined.gaps} selectedFieldKeys={combined.selectedChartKeys} windowMs={windowMs} paused={displayPaused || replayPlaying} mode={chartMode} timeline={chartTimeline} />
+        <TelemetryCharts visible={displayVisible} key={chartResetRevision} samples={combined.samples} fields={combined.fields} gaps={combined.gaps} selectedFieldKeys={combined.selectedChartKeys} windowMs={windowMs} paused={displayPaused || replayPlaying} mode={chartMode} timeline={chartTimeline} markers={chartMarkers} />
+
+        <CaptureComparisonPanel sources={activeSources.filter((source): source is RecordedSource => source.kind === 'recorded').map((source) => ({ path: source.log.path, name: source.name, index: source.index, selection: source.selection, fields: source.snapshot.fields, gaps: source.snapshot.gaps }))}
+          captures={logs.map((log) => ({ path: log.path, name: log.sessionName }))} onLoadCapture={async (path) => {
+            const log = logs.find((candidate) => candidate.path === path);
+            if (!log) throw new Error('This capture is no longer in the library. Choose another capture.');
+            const source = await loadCapture(log);
+            if (!source) throw new Error('Could not open this capture. Choose it again to retry.');
+            return { path: source.log.path, name: source.name, index: source.index, selection: source.selection, fields: source.snapshot.fields, gaps: source.snapshot.gaps };
+          }}
+          events={captureEvents} settings={comparisonSettings} onChange={setComparisonSettings} visible={displayVisible} busy={Boolean(loadingPath) || exporting || restoringWorkspace || querying} nativeEnabled={nativeEnabled} />
+
+        <CaptureEventTimeline events={timelineEvents} source={markerSource} inspection={inspection} markerError={markerLibrary.error}
+          busy={Boolean(loadingPath) || exporting || restoringWorkspace} onInspect={(event, before, after) => void inspectEvent(event, before, after)}
+          onCloseInspection={closeInspection} onSaveMarker={addCaptureMarker} />
+        {benchEvents.error && <p className="bt-event-error" role="alert">{benchEvents.error}</p>}
+        {viewedCapturePath && benchEvents.pages[viewedCapturePath]?.nextBefore && <button className="sd-secondary-button bt-event-more" type="button" disabled={benchEvents.loadingOlder} onClick={() => void benchEvents.loadOlder(viewedCapturePath)}>{benchEvents.loadingOlder ? 'Loading…' : 'Load older log and command events'}</button>}
+        {markerSaveError && <p className="bt-event-error" role="alert">{markerSaveError}</p>}
 
         <footer className="bt-analysis-footer">
           <div><span><strong>{visibleSources.length}</strong> viewed source{visibleSources.length === 1 ? '' : 's'}</span><span><strong>{combined.samples.length.toLocaleString()}</strong> overview records</span><span><strong>{combined.selectedChartKeys.length}</strong> selected</span></div>

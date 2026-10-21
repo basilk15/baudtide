@@ -11,6 +11,8 @@ describe('desktop telemetry contracts and exports', () => {
     const preload = await fs.readFile(new URL('./preload.cjs', import.meta.url), 'utf8');
     const list = preload.match(/const commands = Object\.freeze\(\[([\s\S]*?)\]\)/)[1];
     expect([...list.matchAll(/'([^']+)'/g)].map((match) => match[1]).sort()).toEqual([...contract.commands].sort());
+    const eventList = preload.match(/const events = Object\.freeze\(\[([\s\S]*?)\]\)/)[1];
+    expect([...eventList.matchAll(/'([^']+)'/g)].map((match) => match[1]).sort()).toEqual([...contract.events].sort());
   });
   it('publishes bounded chunks atomically and cancellation preserves an existing destination', async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'baudtide-export-regression-'));

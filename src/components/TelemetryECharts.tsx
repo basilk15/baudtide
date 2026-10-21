@@ -21,6 +21,7 @@ import {
 import './telemetry-charts.css';
 import { frameScheduler } from '../lib/frameScheduler';
 import { formatTelemetryElapsedTime, type TelemetryTimeline } from '../lib/telemetryTime';
+import type { ChartEventMarker } from '../lib/captureEvents';
 
 echarts.use([
   AxisPointerComponent,
@@ -42,6 +43,8 @@ export type TelemetryChartsProps = {
   mode?: ChartMode;
   timeline?: TelemetryTimeline;
   visible?: boolean;
+  markers?: readonly ChartEventMarker[];
+  absoluteOverlay?: boolean;
 };
 
 type TooltipItem = {
@@ -139,6 +142,8 @@ function chartOption({
   isSage = false,
   mode,
   timeline,
+  markers = [],
+  absoluteOverlay = false,
 }: {
   fields: readonly TelemetryField[];
   series: readonly ReturnType<typeof prepareTelemetryCharts>['groups'][number]['series'][number][];
@@ -150,6 +155,8 @@ function chartOption({
   isSage?: boolean;
   mode: ChartMode;
   timeline?: TelemetryTimeline;
+  markers?: readonly ChartEventMarker[];
+  absoluteOverlay?: boolean;
 }): EChartsOption {
   const palette = isSage ? {
     axis: 'rgba(61, 80, 66, 0.3)',
@@ -199,7 +206,7 @@ function chartOption({
   );
   const hasZoom = aligned.timestamps.length > 80;
   const axisTime = (timestamp: number) => timeline?.kind === 'elapsed'
-    ? formatTelemetryElapsedTime(timestamp, timeline.originMs, chartEndMs - (chartStartMs ?? chartEndMs) < 5_000)
+    ? formatTelemetryElapsedTime(timestamp, timeline.originMs, chartEndMs - (chartStartMs ?? chartEndMs) < 5_000, timeline.signed)
     : timeline?.kind === 'clock' ? formatChartTime(timestamp) : formatAxisTime(timestamp, chartStartMs, chartEndMs);
   const isLanes = mode === 'lanes';
   const lastSeriesIndex = Math.max(0, series.length - 1);
@@ -260,8 +267,9 @@ function chartOption({
     })
     : {
       type: 'value' as const,
-      min: 0,
-      max: 100,
+      min: absoluteOverlay ? undefined : 0,
+      max: absoluteOverlay ? undefined : 100,
+      scale: absoluteOverlay,
       splitNumber: 4,
       axisLine: { show: false },
       axisTick: { show: false },
@@ -269,7 +277,7 @@ function chartOption({
         color: palette.muted,
         fontFamily: CHART_DATA_FONT,
         fontSize: 10,
-        formatter: (value: number) => `${Math.round(value)}%`,
+        formatter: (value: number) => absoluteOverlay ? formatTelemetryValue(value) : `${Math.round(value)}%`,
       },
       splitLine: {
         show: true,
@@ -347,7 +355,11 @@ function chartOption({
     const normalizedValues = values.map((value) => typeof value === 'number' ? normalizeValue(value, rawRanges[seriesIndex]) : null);
     const scopedGaps = gaps.filter((gap) => !gap.fieldKeys || gap.fieldKeys.includes(currentSeries.key));
     const markerGaps = isLanes ? scopedGaps : gaps;
-    const lineData: Array<[number, number | null]> = aligned.timestamps.map((timestamp, index) => [timestamp * 1_000, isLanes ? values[index] ?? null : normalizedValues[index]]);
+    // Separate runs have separate sample identities and clocks. Plot each run's
+    // actual points so the other run's timestamps do not introduce false gaps.
+    const lineData: Array<[number, number | null]> = absoluteOverlay
+      ? currentSeries.points.map((point) => [point.timestampMs, point.value])
+      : aligned.timestamps.map((timestamp, index) => [timestamp * 1_000, isLanes ? values[index] ?? null : normalizedValues[index]]);
     scopedGaps.forEach((gap) => lineData.push([gap.timestampMs - 0.001, null]));
     lineData.sort((a, b) => a[0] - b[0]);
     return {
@@ -358,7 +370,7 @@ function chartOption({
       yAxisIndex: isLanes ? seriesIndex : 0,
       // A small curve removes the angular, bead-like appearance without
       // hiding fast telemetry changes behind aggressive smoothing.
-      smooth: isLanes ? 0.14 : 0.1,
+      smooth: absoluteOverlay ? 0 : isLanes ? 0.14 : 0.1,
       showSymbol: false,
       showAllSymbol: false,
       symbol: 'circle',
@@ -383,12 +395,21 @@ function chartOption({
         lineStyle: { width: isLanes ? 3 : 2.8 },
       },
       data: lineData,
-      markLine: markerGaps.length && (isLanes || seriesIndex === 0) ? {
-        silent: true,
+      markLine: (markerGaps.length || markers.length) && (isLanes || seriesIndex === 0) ? {
+        silent: false,
         symbol: 'none',
         lineStyle: { color: telemetrySeriesColor(2, isLight), type: 'dashed', width: 1, opacity: 0.62 },
         label: { show: false },
-        data: markerGaps.map((gap) => ({ xAxis: gap.timestampMs })),
+        data: [...markerGaps.map((gap) => ({ xAxis: gap.timestampMs })), ...markers
+          .filter((marker) => marker.timestampMs >= (chartStartMs ?? -Infinity) && marker.timestampMs <= chartEndMs)
+          .map((marker) => ({
+            name: marker.label, xAxis: marker.timestampMs,
+            lineStyle: { color: marker.kind === 'breach' ? telemetrySeriesColor(2, isLight) : palette.navigatorHandle,
+              type: marker.kind === 'breach' ? 'dashed' : 'solid', width: marker.selected ? 2 : 1, opacity: marker.selected ? 1 : 0.75 },
+            label: { show: !!marker.selected, formatter: ({ breach: 'Breach', note: 'Note', log: 'Log event', command: 'Command' })[marker.kind], color: palette.tooltipText,
+              backgroundColor: palette.tooltipBackground, padding: [3, 5], fontSize: 11 },
+            tooltip: { formatter: escapeHtml(marker.label) },
+          }))],
       } : undefined,
     };
   });
@@ -450,18 +471,18 @@ function chartOption({
               : series.findIndex((currentSeries) => currentSeries.key === item.seriesName);
             const dataIndex = Number.isInteger(item.dataIndex) ? item.dataIndex! : 0;
             const rawValue = aligned.values[seriesIndex]?.[dataIndex];
-            const value = typeof rawValue === 'number' ? rawValue : pair[1];
+            const value = absoluteOverlay ? pair[1] : typeof rawValue === 'number' ? rawValue : pair[1];
             const currentSeries = series[seriesIndex];
             const name = escapeHtml(readableFieldName(item.seriesName ?? 'signal'));
             const color = item.color ?? '#9fd6c5';
             const unit = currentSeries?.unit ? `<small>${escapeHtml(currentSeries.unit)}</small>` : '';
-            const relative = mode === 'compare' ? `<small>${Math.round(pair[1])}% range</small>` : '';
+            const relative = mode === 'compare' && !absoluteOverlay ? `<small>${Math.round(pair[1])}% range</small>` : '';
             return `<div class="bt-telemetry-tooltip-row"><span><i style="background:${color}"></i>${name}</span><strong>${formatTelemetryValue(value)}${unit}${relative}</strong></div>`;
           })
           .filter(Boolean)
           .join('');
         const time = Number.isFinite(timestamp) ? timeline?.kind === 'elapsed'
-          ? `Elapsed ${formatTelemetryElapsedTime(timestamp, timeline.originMs, true)}` : formatChartTime(timestamp, true) : 'Telemetry';
+          ? `${timeline.signed ? 'Relative' : 'Elapsed'} ${formatTelemetryElapsedTime(timestamp, timeline.originMs, true, timeline.signed)}` : formatChartTime(timestamp, true) : 'Telemetry';
         return `<div class="bt-telemetry-tooltip-time">${time}</div>${rows}`;
       },
     },
@@ -471,8 +492,8 @@ function chartOption({
         type: 'inside',
         xAxisIndex: 'all',
         filterMode: 'none',
-        throttle: 40,
-        zoomOnMouseWheel: 'shift',
+        throttle: 16,
+        zoomOnMouseWheel: true,
         moveOnMouseWheel: false,
         moveOnMouseMove: true,
       },
@@ -584,13 +605,13 @@ function EChartsSurface({ option, structureKey, ariaLabel, visible }: { option: 
     resizeWorkRef.current = resizeWork;
     const resizeObserver = new ResizeObserver(() => resizeWork.schedule());
     const preventPageScroll = (event: WheelEvent) => {
-      // Shift+wheel is the deliberate chart-zoom gesture. Leave an ordinary
-      // wheel available for page scrolling, especially in the taller lane
-      // view with several selected signals.
-      if (!event.shiftKey) return;
+      // Keep a wheel gesture on this plot. ECharts anchors its inside zoom
+      // to the pointer; other plots and the surrounding page stay still.
+      if (!visibleRef.current || !event.deltaY) return;
       event.preventDefault();
       event.stopPropagation();
     };
+    const resetZoom = () => chart.dispatchAction({ type: 'dataZoom', start: 0, end: 100 });
     const scroller = host.closest('.bt-analysis')?.closest<HTMLElement>('.signaldeck-main');
     const onScroll = () => {
       if (host.closest('[hidden]')) return;
@@ -607,10 +628,12 @@ function EChartsSurface({ option, structureKey, ariaLabel, visible }: { option: 
     };
     scroller?.addEventListener('scroll', onScroll, { passive: true });
     host.addEventListener('wheel', preventPageScroll, { passive: false });
+    host.addEventListener('dblclick', resetZoom);
     resizeObserver.observe(host);
     resizeWork.schedule();
     return () => {
       host.removeEventListener('wheel', preventPageScroll);
+      host.removeEventListener('dblclick', resetZoom);
       scroller?.removeEventListener('scroll', onScroll);
       if (scrollIdleTimerRef.current !== undefined) window.clearTimeout(scrollIdleTimerRef.current);
       scrollingRef.current = false;
@@ -643,7 +666,7 @@ function EChartsSurface({ option, structureKey, ariaLabel, visible }: { option: 
   return <div ref={hostRef} className="bt-telemetry-echarts" role="img" aria-label={ariaLabel} />;
 }
 
-export const TelemetryCharts = memo(function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, windowMs, paused, mode = 'lanes', timeline, visible = true }: TelemetryChartsProps) {
+export const TelemetryCharts = memo(function TelemetryCharts({ samples, fields, gaps, selectedFieldKeys, windowMs, paused, mode = 'lanes', timeline, visible = true, markers, absoluteOverlay = false }: TelemetryChartsProps) {
   const prepared = useMemo(() => prepareTelemetryCharts({
     samples,
     fields,
@@ -678,10 +701,11 @@ export const TelemetryCharts = memo(function TelemetryCharts({ samples, fields, 
         isSage: theme === 'sage',
         mode: 'lanes',
         timeline,
+        markers,
       })
       : null;
     return { series, aligned: plotAligned, option };
-  }) : [], [mode, fields, isLight, theme, prepared.endMs, prepared.gaps, prepared.startMs, selectedSeries, timeline]);
+  }) : [], [mode, fields, isLight, theme, prepared.endMs, prepared.gaps, prepared.startMs, selectedSeries, timeline, markers]);
   const chartablePlots = plots.filter((plot) => plot.option && plot.aligned.timestamps.length);
   const overlayOption = useMemo(() => mode === 'compare' && aligned.timestamps.length ? chartOption({
     fields,
@@ -693,8 +717,10 @@ export const TelemetryCharts = memo(function TelemetryCharts({ samples, fields, 
     isLight,
     isSage: theme === 'sage',
     mode: 'compare',
+    absoluteOverlay,
     timeline,
-  }) : null, [mode, aligned, fields, isLight, theme, prepared.endMs, prepared.gaps, prepared.startMs, selectedSeries, timeline]);
+    markers,
+  }) : null, [mode, absoluteOverlay, aligned, fields, isLight, theme, prepared.endMs, prepared.gaps, prepared.startMs, selectedSeries, timeline, markers]);
 
   if (!fields.length) {
     return <section className="bt-telemetry-view bt-telemetry-view-empty" role="status">
@@ -720,8 +746,8 @@ export const TelemetryCharts = memo(function TelemetryCharts({ samples, fields, 
   if (mode === 'compare' && overlayOption) {
     return <section className="bt-telemetry-view bt-telemetry-overlay" aria-label="Overlaid telemetry comparison" data-paused={paused || undefined}>
       <header className="bt-telemetry-stack-header">
-        <div className="bt-telemetry-stack-title"><strong>Normalized overlay</strong><span>{chartableSeries.length} selected · each signal mapped to its own 0–100% range</span></div>
-        <span className="bt-telemetry-stack-hint">Hover for raw values</span>
+        <div className="bt-telemetry-stack-title"><strong>{absoluteOverlay ? 'Baseline / candidate' : 'Normalized overlay'}</strong><span>{absoluteOverlay ? 'Shared scale · original measurement units' : `${chartableSeries.length} selected · each signal mapped to its own 0–100% range`}</span></div>
+        <span className="bt-telemetry-stack-hint">Scroll to zoom · double-click to reset</span>
       </header>
       <ul className="bt-telemetry-signal-legend" aria-label="Plotted signals">
         {selectedSeries.map((series) => <li key={series.key}><i aria-hidden="true" style={{ backgroundColor: colorForField(fields, series.key, isLight) }} /><span>{readableFieldName(series.key)}</span></li>)}
@@ -729,7 +755,7 @@ export const TelemetryCharts = memo(function TelemetryCharts({ samples, fields, 
       <div className="bt-telemetry-plot-stack">
         <article className="bt-telemetry-plot">
           <div className="bt-telemetry-plot-canvas">
-            <EChartsSurface visible={visible} option={overlayOption} structureKey={`overlay\u0000${selectedSeries.map((series) => series.key).join('\u0000')}`} ariaLabel="Normalized overlay of selected telemetry signals" />
+            <EChartsSurface visible={visible} option={overlayOption} structureKey={`overlay\u0000${selectedSeries.map((series) => series.key).join('\u0000')}`} ariaLabel={absoluteOverlay ? "Baseline and candidate on a shared measurement scale" : "Normalized overlay of selected telemetry signals"} />
           </div>
         </article>
       </div>
@@ -746,7 +772,7 @@ export const TelemetryCharts = memo(function TelemetryCharts({ samples, fields, 
         <strong>Signal plots</strong>
         <span>{chartablePlots.length} selected · independent scales</span>
       </div>
-      <span className="bt-telemetry-stack-hint">One plot per signal</span>
+      <span className="bt-telemetry-stack-hint">Scroll to zoom · double-click to reset</span>
     </header>
     <div className="bt-telemetry-plot-stack">
       {chartablePlots.map((plot) => {

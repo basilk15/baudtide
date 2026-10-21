@@ -246,6 +246,22 @@ The phone frame is a purposeful exception. It may retain device-specific silhoue
 - **Telemetry:** Keeps field selection in a ruled side rail and charts in a deeper plot surface; aqua identifies the primary live series and blue is secondary.
 - **Motion:** Page surfaces use one short 240ms settle. Routine hover and press feedback uses the 160ms timing. Reduced-motion replaces spatial movement with near-immediate opacity/state feedback.
 
+### Event timeline and inspection
+
+- **Timeline:** Extends the existing Operate working surface below the charts with a ruled, per-capture event list, newest first. Rows combine a breach or note icon, clear title, optional notes, mono timestamp, and Inspect action; hover uses the raised surface and selection uses aqua-soft backing. The list scrolls within a bounded region (260px), with older events revealed in groups of 50.
+- **Manual markers:** Add marker opens an inline form with a title, optional notes, and capture time. Live markers use the save time; saved captures accept seconds from capture start. Inputs retain the established bench fill, rule, control radius, and focus treatment; Save marker and Cancel close the form, with local-save context beneath the actions on narrow screens.
+- **Chart markers:** Breaches use amber dashed vertical lines; notes use aqua solid lines. The inspected event gets a stronger line (2px, full opacity) and a compact Breach or Note label, preserving the trace as the dominant content.
+- **Inspection:** A ruled bench section shows the event title, source, timestamp, and notes above Before and After controls (10 seconds each by default). Apply window updates the chart window and bounded serial context. Mono output scrolls within its own region (300px), displays signed time offsets, and highlights and reveals the nearest line with aqua-soft backing; line counts and approximate-timing guidance remain visible.
+- **Keyboard and themes:** Event rows are buttons with pressed state. Opening or completing inspection reveals and focuses its heading; the serial region is keyboard focusable. Controls, rows, and focusable regions use a visible focus outline (2px). Light mode uses the stronger existing muted-ink and accent tokens for metadata and Inspect text; dark and Sage retain their established semantic roles.
+- **Narrow screens:** At a 390px viewport, marker fields stack, event timestamps move below titles, context headings stack, and long notes and output wrap. Form text grows to 16px and inputs and heading actions meet the 44px target at 480px and below; the breach toast's Inspect breach action also stays at least 44px high.
+
+### Bench workflows
+
+- **Log rules and command sequences:** Collapsible, ruled tools beneath the terminal composer. Summaries expose the armed or saved count; expanded tools group configuration, explicit execution actions, and feedback. Ubuntu Sans carries labels and guidance; Ubuntu Mono is reserved for command payloads, cooldowns, step numbers, readings, and timestamps. Controls inherit the semantic Dark, Light, and Sage tokens.
+- **Sequence editor and results:** Named steps form one continuous list. Each step groups its command, text/hex mode, response check, timeout, and delay. Run results retain the numbered structure, with aqua for passed steps, fault red for failed or stopped steps, and a visible Stop action above the terminal and within the tool while running. Removing a draft step requires confirmation.
+- **Run comparison:** Baseline and candidate occupy paired columns, marked with aqua and blue respectively. Each side owns its capture, signal, and alignment event. An interval bar leads into a compact statistics table and a shared original-unit chart. Signed time labels support inspection before an event. The paired controls stack below 700px; long selections truncate within their field and the statistics table scrolls within its own region.
+- **Responsive controls:** New fields and actions meet the 44px target at 480px and below. Labels and selectors have explicit shrinking grid tracks so long capture names and event titles cannot widen the working surface. All keyboard controls retain a visible focus outline.
+
 ### Dialogs and Menus
 
 - **Style:** Structured sheets with a clear title, supporting text, contextual label after the heading content, grouped controls, and fixed action closure.

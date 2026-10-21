@@ -14,6 +14,7 @@ import {
   dialog,
   ipcMain,
   Menu,
+  Notification,
   protocol,
   shell,
 } from 'electron';
@@ -264,11 +265,29 @@ let shutdownStarted = false;
 let shutdownComplete = false;
 let crashDialogShown = false;
 
+const desktopAlerts = new Set();
 function sendBackendEvent(eventName, payload) {
   if (!allowedEvents.has(eventName)) return;
   const channel = `${eventChannelPrefix}${eventName}`;
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send(channel, payload);
+  }
+  if (eventName === 'log-event' && payload.desktopAlert && Notification.isSupported() && desktopAlerts.size < 5) {
+    try {
+      const alert = new Notification({ title: `${payload.sourceName} · ${payload.label}`, body: payload.note.slice(0, 300), silent: true });
+      desktopAlerts.add(alert);
+      alert.once('close', () => desktopAlerts.delete(alert));
+      alert.once('failed', () => desktopAlerts.delete(alert));
+      alert.once('click', () => {
+        desktopAlerts.delete(alert);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.restore(); mainWindow.show(); mainWindow.focus();
+          sendBackendEvent('bench-inspect', payload);
+        }
+      });
+      alert.show();
+      const release = setTimeout(() => desktopAlerts.delete(alert), 60_000); release.unref();
+    } catch (error) { console.error('Desktop log alert unavailable:', errorMessage(error)); }
   }
 }
 
