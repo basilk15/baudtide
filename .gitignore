@@ -1,14 +1,46 @@
+# Dependencies
 node_modules/
-dist/
-release/
+
+# Compiled app, installers, native builds, and generated worker bundle
+/dist/
+/release/
 target/
-__pycache__/
-.playwright-cli/
-output/playwright/
+/electron/watch-runtime/
+
+# Build caches and generated TypeScript configuration
+/.cache/
 *.tsbuildinfo
-vite.config.js
-vite.config.d.ts
+/vite.config.js
+/vite.config.d.ts
+__pycache__/
+*.py[cod]
 
-electron/watch-runtime/
+# Local test reports, screenshots, traces, and scratch exports
+/coverage/
+/test-results/
+/playwright-report/
+/.playwright-cli/
+/output/
 
-.impeccable/review/
+# Local design-tool reports and attachment state
+/.hallmark/
+/.impeccable/
+/.kanna/
+
+# Local environment files; examples remain shareable
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Package-manager diagnostics and editor/OS leftovers
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~

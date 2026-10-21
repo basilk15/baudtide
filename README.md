@@ -52,10 +52,36 @@ The launcher builds the native backend and starts the desktop app. `npm run dev`
 | --- | --- |
 | Formatting, linting, and production build | `npm run check` |
 | Frontend and native tests | `npm test` |
+| Telemetry parser and chart tests | `npm run test:telemetry` |
 | Production dependency audit | `npm run audit:prod` |
 | Linux release packages in `release/` | `npm run desktop:dist -- --publish never` |
-| Simulated serial device | `python3 scripts/test-monitor.py` |
+| Simulated serial device | `npm run simulate:serial` |
+| Supported telemetry format simulator | `npm run simulate:formats` |
+| Isolated desktop/PTY smoke server | `npm run smoke:desktop` |
 
 For the simulated device, enter the printed `/dev/pts/N` path in BaudTide and use 115200 baud.
+
+## Repository layout
+
+```text
+src/
+  components/       UI grouped by app, connection, terminal, telemetry,
+                    captures, mobile, preferences, workspaces, and shared UI
+  hooks/            React hooks shared across screens
+  lib/              Domain logic grouped by captures, serial, telemetry,
+                    preferences, and workspaces; shared bridge/utilities at root
+  styles/           Global styles, design tokens, and themes
+  assets/           Application images
+electron/           Desktop bridge, worker services, and their tests
+src-native/         Rust serial backend and embedded mobile companion assets
+scripts/
+  desktop/          Development launcher and desktop integration
+  fixtures/         Python serial-device simulators
+  testing/          Desktop and watch smoke checks
+docs/               Design system and contributor guides
+build/icons/        Versioned packaging icons
+```
+
+Tests stay beside the code they exercise. Generated builds, caches, screenshots, and local tool reports are ignored. See [Repository guide](docs/repository.md) for where to add code and how to run the smoke checks, and [Design system](docs/design.md) for UI conventions.
 
 Built with **Electron, React, TypeScript, and Rust**. [Release notes](RELEASE_NOTES.md) · [MIT license](LICENSE).

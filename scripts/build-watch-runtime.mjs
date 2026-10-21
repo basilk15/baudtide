@@ -6,7 +6,7 @@ await build({
   configFile: false,
   logLevel: 'warn',
   build: {
-    ssr: 'src/lib/desktopWatchRuntime.ts',
+    ssr: 'src/lib/telemetry/desktopWatchRuntime.ts',
     outDir: 'electron/watch-runtime',
     emptyOutDir: false,
     target: 'node22',

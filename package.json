@@ -19,8 +19,8 @@
     "build": "npm run typecheck && vite build && npm run watch:build",
     "watch:build": "node scripts/build-watch-runtime.mjs",
     "preview": "vite preview",
-    "electron": "node scripts/install-dev-desktop-entry.mjs && node scripts/run-electron.mjs",
-    "electron:dev": "node scripts/install-dev-desktop-entry.mjs && node scripts/run-electron.mjs",
+    "electron": "node scripts/desktop/install-dev-desktop-entry.mjs && node scripts/desktop/run-electron.mjs",
+    "electron:dev": "node scripts/desktop/install-dev-desktop-entry.mjs && node scripts/desktop/run-electron.mjs",
     "native:build": "cargo build --manifest-path src-native/Cargo.toml --locked",
     "native:release": "cargo build --manifest-path src-native/Cargo.toml --release --locked",
     "desktop:pack": "npm run build && npm run native:release && electron-builder --linux --dir",
@@ -29,11 +29,14 @@
     "lint:rust": "cargo clippy --manifest-path src-native/Cargo.toml --all-targets --locked -- -D warnings",
     "test:rust": "cargo test --manifest-path src-native/Cargo.toml --locked",
     "test:frontend": "npm run watch:build && vitest run",
-    "test:telemetry": "vitest run src/lib/telemetry.test.ts src/lib/telemetryChart.test.ts src/lib/telemetryFixtures.test.ts src/lib/telemetryDecoders.test.ts",
+    "test:telemetry": "vitest run src/lib/telemetry/telemetry.test.ts src/lib/telemetry/telemetryChart.test.ts src/lib/telemetry/telemetryFixtures.test.ts src/lib/telemetry/telemetryDecoders.test.ts",
     "test": "npm run test:frontend && npm run test:rust",
     "check": "npm run format:check && npm run lint:rust && npm run build",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
-    "smoke:desktop": "npm run native:build && npm run watch:build && node scripts/desktop-smoke-server.mjs"
+    "smoke:desktop": "npm run native:build && npm run watch:build && node scripts/testing/desktop-smoke-server.mjs",
+    "smoke:watches": "node scripts/testing/watch-smoke.mjs",
+    "simulate:serial": "python3 scripts/fixtures/test-monitor.py",
+    "simulate:formats": "python3 scripts/fixtures/test-telemetry-formats.py"
   },
   "dependencies": {
     "echarts": "^6.1.0",

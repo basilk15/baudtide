@@ -49,7 +49,7 @@ describe('Electron desktop bridge', () => {
       invoke: async <T,>() => undefined as T,
       listen,
     });
-    const { listenForSerialData } = await import('./serial');
+    const { listenForSerialData } = await import('./serial/serial');
     const firstEvents: number[] = [];
     const secondEvents: number[] = [];
     const unlistenFirst = await listenForSerialData('first', (event) => firstEvents.push(event.sequence));

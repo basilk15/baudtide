@@ -1,0 +1,1377 @@
+import { forwardRef, memo, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { AlertTriangle, Check, ChevronDown, ChevronsDown, CirclePause, CirclePlay, Copy, Eraser, LoaderCircle, PlugZap, RotateCw, Search, Send, SlidersHorizontal, TerminalSquare, WifiOff, X } from 'lucide-react';
+import { listenForSerialData, listenForSerialStatus, takePendingNativeSerialData, type SerialDataEvent } from '../../lib/serial/serial';
+import { liveTelemetryStore } from '../../lib/telemetry/telemetry';
+import { lineEndingText, type DisplayEncoding, type LineEnding } from '../../lib/preferences/preferences';
+import { ThemedSelect } from '../ui/ThemedSelect';
+import './live-monitor.css';
+import './live-monitor-preferences.css';
+import { commandBytes, type SerialCommand } from '../../lib/serial/serialCommands';
+import { CommandPresetsPanel } from './CommandPresetsPanel';
+import { LogRulesPanel } from './LogRulesPanel';
+import { CommandSequencePanel } from './CommandSequencePanel';
+import { TerminalRowGroups } from '../../lib/serial/terminalRows';
+import { useDocumentVisible } from '../../hooks/useDocumentVisible';
+
+export type MonitorConnectionState = 'connected' | 'reconnecting' | 'disconnected' | 'error';
+export type AutoReconnectStatus = { attempt: number; nextRetryAt: number };
+
+export type MonitorLine = {
+  id: string;
+  timestamp: string;
+  text: string;
+  kind?: 'data' | 'system' | 'error';
+};
+
+type DisplayChange = {
+  line: MonitorLine;
+  type: 'append' | 'replace';
+};
+
+type OutputFilterPreset = 'all' | 'errors' | 'wifi' | 'custom';
+type SendMode = 'text' | 'hex';
+type CommandHistory = Record<SendMode, string[]>;
+type PersistedComposerState = {
+  version: 1;
+  sendMode: SendMode;
+  lineEnding: LineEnding;
+  commandHistory: CommandHistory;
+};
+
+// The terminal keeps at most 500 rendered rows. Bound an unfinished logical
+// line as well: serial devices are free to send a continuous stream without a
+// CR or LF, and hexadecimal rendering expands every byte into three characters.
+const MAX_VISIBLE_DATA_LINE_CHARACTERS = 4096;
+const CONTINUATION_PREFIX = '↪ ';
+const CONTINUATION_SUFFIX = ' ↪ continued';
+const MAX_QUEUED_DISPLAY_CHANGES = 2_048;
+const MAX_PENDING_DISPLAY_EVENTS = 512;
+const MAX_PENDING_DISPLAY_BYTES = 2 * 1024 * 1024;
+const MAX_PENDING_SERIAL_EVENTS = 256;
+const MAX_COMMAND_HISTORY = 50;
+const MAX_PERSISTED_HISTORY_CHARACTERS_PER_MODE = 32 * 1024;
+const COMPOSER_STORAGE_PREFIX = 'baudtide.serial-composer.';
+const ERROR_FILTER_SOURCE = String.raw`(?<![\p{L}\p{N}_])(?:error|err|fail(?:ed|ure)?|panic|fatal|exception|abort(?:ed)?)(?![\p{L}\p{N}_])`;
+const WIFI_FILTER_SOURCE = String.raw`(?<![\p{L}\p{N}_])(?:wi-?fi|wlan|ssid|bssid|rssi|ip address|disconnect(?:ed|ion)?|reconnect(?:ed|ing)?)(?![\p{L}\p{N}_])`;
+const ERROR_LINE_PATTERN = new RegExp(ERROR_FILTER_SOURCE, 'iu');
+const WIFI_LINE_PATTERN = new RegExp(WIFI_FILTER_SOURCE, 'iu');
+
+function literalPattern(text: string, global = false) {
+  const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(escaped, global ? 'giu' : 'iu');
+}
+
+function lineEndingLabel(value: LineEnding) {
+  return { lf: 'LF (\\n)', crlf: 'CRLF (\\r\\n)', cr: 'CR (\\r)', none: 'None' }[value];
+}
+
+function isLineEnding(value: unknown): value is LineEnding {
+  return value === 'lf' || value === 'crlf' || value === 'cr' || value === 'none';
+}
+
+function boundedPersistedHistory(value: unknown, remainingCharacters: { value: number }) {
+  if (!Array.isArray(value)) return [];
+  const retained: string[] = [];
+  for (let index = value.length - 1; index >= 0 && retained.length < MAX_COMMAND_HISTORY; index -= 1) {
+    const entry = value[index];
+    if (typeof entry !== 'string' || entry.length > remainingCharacters.value) continue;
+    retained.unshift(entry);
+    remainingCharacters.value -= entry.length;
+  }
+  return retained;
+}
+
+function loadComposerState(sessionId: string | undefined, fallbackLineEnding: LineEnding): PersistedComposerState {
+  const fallback: PersistedComposerState = {
+    version: 1,
+    sendMode: 'text',
+    lineEnding: fallbackLineEnding,
+    commandHistory: { text: [], hex: [] },
+  };
+  if (!sessionId || typeof window === 'undefined') return fallback;
+  try {
+    const stored = window.sessionStorage.getItem(`${COMPOSER_STORAGE_PREFIX}${sessionId}`);
+    if (!stored) return fallback;
+    const parsed = JSON.parse(stored) as Partial<PersistedComposerState>;
+    if (parsed.version !== 1) return fallback;
+    return {
+      version: 1,
+      sendMode: parsed.sendMode === 'hex' ? 'hex' : 'text',
+      lineEnding: isLineEnding(parsed.lineEnding) ? parsed.lineEnding : fallbackLineEnding,
+      commandHistory: {
+        text: boundedPersistedHistory(parsed.commandHistory?.text, { value: MAX_PERSISTED_HISTORY_CHARACTERS_PER_MODE }),
+        hex: boundedPersistedHistory(parsed.commandHistory?.hex, { value: MAX_PERSISTED_HISTORY_CHARACTERS_PER_MODE }),
+      },
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function persistComposerState(sessionId: string | undefined, state: PersistedComposerState) {
+  if (!sessionId || typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(`${COMPOSER_STORAGE_PREFIX}${sessionId}`, JSON.stringify({
+      ...state,
+      commandHistory: {
+        text: boundedPersistedHistory(state.commandHistory.text, { value: MAX_PERSISTED_HISTORY_CHARACTERS_PER_MODE }),
+        hex: boundedPersistedHistory(state.commandHistory.hex, { value: MAX_PERSISTED_HISTORY_CHARACTERS_PER_MODE }),
+      },
+    }));
+  } catch {
+    // Sending must remain available when storage is disabled or full.
+  }
+}
+
+
+function outputMatchPattern(preset: OutputFilterPreset, customFilter: string) {
+  if (preset === 'errors') return ERROR_LINE_PATTERN;
+  if (preset === 'wifi') return WIFI_LINE_PATTERN;
+  if (preset === 'custom' && customFilter) return literalPattern(customFilter);
+  return null;
+}
+
+function lineMatchesOutputFilter(line: MonitorLine, preset: OutputFilterPreset, pattern: RegExp | null) {
+  if (preset === 'all') return true;
+  if (preset === 'errors' && line.kind === 'error') return true;
+  return !pattern || pattern.test(line.text);
+}
+
+function outputHighlightPattern(preset: OutputFilterPreset, customFilter: string) {
+  if (preset === 'errors') return new RegExp(ERROR_FILTER_SOURCE, 'giu');
+  if (preset === 'wifi') return new RegExp(WIFI_FILTER_SOURCE, 'giu');
+  if (preset !== 'custom' || !customFilter) return null;
+  return literalPattern(customFilter, true);
+}
+
+function HighlightedOutput({ text, pattern }: { text: string; pattern: RegExp | null }) {
+  if (!pattern) return text;
+  const matches = [...text.matchAll(pattern)];
+  if (!matches.length) return text;
+  const output: ReactNode[] = [];
+  let cursor = 0;
+  matches.forEach((match, index) => {
+    const start = match.index ?? 0;
+    if (start > cursor) output.push(text.slice(cursor, start));
+    output.push(<mark className="sd-terminal-match" key={`${start}-${index}`}>{match[0]}</mark>);
+    cursor = start + match[0].length;
+  });
+  if (cursor < text.length) output.push(text.slice(cursor));
+  return <>{output}</>;
+}
+
+// Appending a reading leaves the other retained rows unchanged. Keep their
+// DOM and highlight work intact when the stream or surrounding controls update.
+const TerminalLine = memo(function TerminalLine({ line, showTimestamps, filtered, pattern }: {
+  line: MonitorLine;
+  showTimestamps: boolean;
+  filtered: boolean;
+  pattern: RegExp | null;
+}) {
+  return <div className={`sd-terminal-line ${line.kind ?? 'data'} ${filtered ? 'is-filtered' : ''}`}>
+    {showTimestamps && <time>{line.timestamp}</time>}
+    <code><HighlightedOutput text={line.text} pattern={pattern} /></code>
+  </div>;
+});
+
+const TerminalRowGroup = memo(function TerminalRowGroup({ rows, showTimestamps, filtered, pattern }: {
+  rows: readonly MonitorLine[];
+  showTimestamps: boolean;
+  filtered: boolean;
+  pattern: RegExp | null;
+}) {
+  return <>{rows.map((line) => <TerminalLine key={line.id} line={line} showTimestamps={showTimestamps} filtered={filtered} pattern={pattern} />)}</>;
+});
+
+function sliceWithoutSplittingSurrogatePair(text: string, maxLength: number) {
+  let end = Math.min(text.length, maxLength);
+  if (end > 0 && end < text.length) {
+    const finalCharacter = text.charCodeAt(end - 1);
+    const followingCharacter = text.charCodeAt(end);
+    const endsWithHighSurrogate = finalCharacter >= 0xD800 && finalCharacter <= 0xDBFF;
+    const startsWithLowSurrogate = followingCharacter >= 0xDC00 && followingCharacter <= 0xDFFF;
+    if (endsWithHighSurrogate && startsWithLowSurrogate) end -= 1;
+  }
+  return text.slice(0, end);
+}
+
+export type LiveMonitorProps = {
+  sessionName: string;
+  commandIdentity?: string;
+  port: string;
+  baudRate: number;
+  lineEnding?: LineEnding;
+  /** Report the current per-terminal choice for saved bench setups. */
+  onLineEndingChange?: (lineEnding: LineEnding) => void;
+  displayEncoding?: DisplayEncoding;
+  showTimestamps?: boolean;
+  initialLines?: MonitorLine[];
+  initialConnectionState?: MonitorConnectionState;
+  onSend?: (text: string) => void | Promise<void>;
+  onSendBytes?: (bytes: number[]) => void | Promise<void>;
+  onReconnect?: () => void | Promise<void>;
+  /** Per-session automatic reconnect is controlled by the workspace owner. */
+  autoReconnectEnabled?: boolean;
+  autoReconnectStatus?: AutoReconnectStatus;
+  autoReconnectBlockedReason?: 'storage-limit' | 'device-identity';
+  autoReconnectBlockedDetail?: string;
+  onReconnectSetup?: () => void;
+  onAutoReconnectChange?: (enabled: boolean) => void;
+  onDisconnect?: () => void | Promise<void>;
+  onClear?: () => void;
+  onClose?: () => void;
+  onConnectionStateChange?: (state: MonitorConnectionState) => void;
+  /** Called when the native backend reports a terminal reader/logging failure. */
+  onNativeSessionEnded?: (sessionId: string) => void;
+  onNativeStorageLimit?: (sessionId: string) => void;
+  /** Called when the renderer cannot finish its listener/startup handoff. */
+  onNativeSessionStartupFailure?: () => void | Promise<void>;
+  sessionId?: string;
+  /** Stable App-owned identity; unlike sessionId, it survives a native reconnect. */
+  telemetrySessionKey?: string;
+  nativeSession?: boolean;
+  /** Keep serial ingestion alive while pausing expensive display work for hidden tabs. */
+  displayActive?: boolean;
+  /** Absolute local path returned for a desktop session's raw capture. */
+  capturePath?: string;
+};
+
+export type LiveMonitorHandle = {
+  stopCommandSequence?: () => void;
+  toggleDisplayPause: () => void;
+  requestClear: () => void;
+  focusFind: () => void;
+};
+
+function currentTimestamp() {
+  const now = new Date();
+  const pad = (value: number, width = 2) => String(value).padStart(width, '0');
+  return `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${pad(now.getMilliseconds(), 3)}`;
+}
+
+function timestampForEvent(event: SerialDataEvent) {
+  const date = new Date(event.timestamp);
+  return Number.isNaN(date.getTime()) ? currentTimestamp() : `${date.toTimeString().slice(0, 8)}.${String(date.getMilliseconds()).padStart(3, '0')}`;
+}
+
+function displayTextForEvent(event: SerialDataEvent, encoding: DisplayEncoding, decoder: TextDecoder) {
+  if (encoding === 'utf8') return decoder.decode(Uint8Array.from(event.bytes), { stream: true });
+  if (encoding === 'ascii') {
+    return event.bytes.map((byte) => {
+      if (byte === 13) return '\r';
+      if (byte === 10) return '\n';
+      if (byte === 9) return '\t';
+      return byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : `\\x${byte.toString(16).padStart(2, '0').toUpperCase()}`;
+    }).join('');
+  }
+  // Keep raw CR/LF delimiters so the terminal's streaming line parser works the
+  // same in hexadecimal mode. All other bytes are represented without changing
+  // the raw capture written by the backend.
+  return event.bytes.map((byte) => byte === 13 ? '\r' : byte === 10 ? '\n' : `${byte.toString(16).padStart(2, '0').toUpperCase()} `).join('');
+}
+
+export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(function LiveMonitor({
+  sessionName,
+  commandIdentity,
+  port,
+  baudRate,
+  lineEnding = 'lf',
+  onLineEndingChange,
+  displayEncoding = 'utf8',
+  showTimestamps = true,
+  initialLines,
+  initialConnectionState = 'connected',
+  onSend,
+  onSendBytes,
+  onReconnect,
+  autoReconnectEnabled = false,
+  autoReconnectStatus,
+  autoReconnectBlockedReason,
+  autoReconnectBlockedDetail,
+  onReconnectSetup,
+  onAutoReconnectChange,
+  onDisconnect,
+  onClear,
+  onClose,
+  onConnectionStateChange,
+  onNativeSessionEnded,
+  onNativeStorageLimit,
+  onNativeSessionStartupFailure,
+  sessionId,
+  telemetrySessionKey,
+  nativeSession = false,
+  displayActive = true,
+  capturePath,
+}: LiveMonitorProps, ref) {
+  const documentVisible = useDocumentVisible();
+  const renderActive = displayActive && documentVisible;
+  const [initialComposerState] = useState(() => loadComposerState(sessionId, lineEnding));
+  const [connectionState, setConnectionState] = useState<MonitorConnectionState>(nativeSession ? initialConnectionState : 'disconnected');
+  const [lines, setLines] = useState<MonitorLine[]>(() => (initialLines ?? []).slice(-500));
+  const [isPaused, setPaused] = useState(false);
+  const [pausedLines, setPausedLines] = useState<MonitorLine[]>([]);
+  const [waitingLines, setWaitingLines] = useState(0);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [outgoing, setOutgoing] = useState('');
+  const [sendMode, setSendMode] = useState<SendMode>(initialComposerState.sendMode);
+  // The session setting is the starting point; this selector is deliberately
+  // local so changing it while working does not rewrite the app-wide default.
+  const [sendLineEnding, setSendLineEnding] = useState<LineEnding>(initialComposerState.lineEnding);
+  const [commandHistory, setCommandHistory] = useState<CommandHistory>(initialComposerState.commandHistory);
+  const [composerSessionId, setComposerSessionId] = useState(sessionId);
+  const onLineEndingChangeRef = useRef(onLineEndingChange);
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [isSending, setSending] = useState(false);
+  const [isRepeating, setRepeating] = useState(false);
+  const [isSequenceRunning, setSequenceRunning] = useState(false);
+  const [sequenceReadySession, setSequenceReadySession] = useState<string>();
+  const sequenceObserverRef = useRef<((event: SerialDataEvent) => void) | null>(null);
+  const stopSequenceRef = useRef<(() => void) | null>(null);
+  const sendInFlightRef = useRef(false);
+  const stopRepeatingRef = useRef<(() => void) | null>(null);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
+  const [isReconnecting, setReconnecting] = useState(false);
+  const [isFindOpen, setFindOpen] = useState(false);
+  const [filterPreset, setFilterPreset] = useState<OutputFilterPreset>('all');
+  const [outputFilter, setOutputFilter] = useState('');
+  const [capturePathCopyStatus, setCapturePathCopyStatus] = useState<'idle' | 'copied' | 'error'>('idle');
+  const [retryClock, setRetryClock] = useState(() => Date.now());
+  const filterPanelId = useId();
+  const filterInputId = useId();
+  const filterStatusId = useId();
+  const sendInputId = useId();
+
+  useEffect(() => {
+    if (!autoReconnectStatus) return undefined;
+    setRetryClock(Date.now());
+    const interval = window.setInterval(() => setRetryClock(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [autoReconnectStatus]);
+  const sendHintId = useId();
+  const sendErrorId = useId();
+  const outputRef = useRef<HTMLDivElement>(null);
+  const filterButtonRef = useRef<HTMLButtonElement>(null);
+  const findInputRef = useRef<HTMLInputElement>(null);
+  // A serial read is an arbitrary byte chunk, so a terminal line can span many
+  // events. Keep the visible, unfinished line separate from line termination.
+  const currentDataLineRef = useRef<MonitorLine | null>(null);
+  const skipNextLineFeedRef = useRef(false);
+  const displayActiveRef = useRef(renderActive);
+  const pendingDisplayEventsRef = useRef<SerialDataEvent[]>([]);
+  const pendingDisplayBytesRef = useRef(0);
+  const displayBacklogDroppedRef = useRef(false);
+  const lineIdRef = useRef(0);
+  const pausedRef = useRef(false);
+  const queuedChangesRef = useRef<DisplayChange[]>([]);
+  const renderFrameRef = useRef<number | null>(null);
+  const autoScrollRef = useRef(true);
+  const autoScrollFrameRef = useRef<number | null>(null);
+  const userScrollIntentRef = useRef(false);
+  const userScrollIntentFrameRef = useRef<number | null>(null);
+  const pointerScrollRef = useRef(false);
+  const onConnectionStateChangeRef = useRef(onConnectionStateChange);
+  const onNativeSessionEndedRef = useRef(onNativeSessionEnded);
+  const onNativeStorageLimitRef = useRef(onNativeStorageLimit);
+  const onNativeSessionStartupFailureRef = useRef(onNativeSessionStartupFailure);
+  const utf8DecoderRef = useRef<TextDecoder | null>(null);
+  const displayOverloadReportedRef = useRef(false);
+  const historyDraftRef = useRef('');
+  const modeDraftsRef = useRef<Record<SendMode, string>>({ text: '', hex: '' });
+  const capturePathCopyResetRef = useRef<number | undefined>(undefined);
+
+  const setAutoScrollState = (next: boolean) => {
+    if (autoScrollRef.current === next) return;
+    autoScrollRef.current = next;
+    setAutoScroll(next);
+  };
+
+  const cancelScheduledAutoScroll = () => {
+    if (autoScrollFrameRef.current === null) return;
+    window.cancelAnimationFrame(autoScrollFrameRef.current);
+    autoScrollFrameRef.current = null;
+  };
+
+  const clearUserScrollIntent = () => {
+    if (userScrollIntentFrameRef.current !== null) {
+      window.cancelAnimationFrame(userScrollIntentFrameRef.current);
+      userScrollIntentFrameRef.current = null;
+    }
+    userScrollIntentRef.current = false;
+  };
+
+  const noteUserScrollIntent = () => {
+    userScrollIntentRef.current = true;
+    if (pointerScrollRef.current) return;
+    if (userScrollIntentFrameRef.current !== null) window.cancelAnimationFrame(userScrollIntentFrameRef.current);
+    userScrollIntentFrameRef.current = window.requestAnimationFrame(() => {
+      userScrollIntentFrameRef.current = null;
+      userScrollIntentRef.current = false;
+    });
+  };
+
+  const beginPointerScroll = () => {
+    pointerScrollRef.current = true;
+    clearUserScrollIntent();
+    userScrollIntentRef.current = true;
+  };
+
+  const endPointerScroll = () => {
+    pointerScrollRef.current = false;
+    clearUserScrollIntent();
+  };
+
+  const scrollOutputToEnd = () => {
+    const output = outputRef.current;
+    if (!output) return;
+    const maximumScrollTop = Math.max(0, output.scrollHeight - output.clientHeight);
+    if (output.scrollTop >= maximumScrollTop - 1) {
+      return;
+    }
+    output.scrollTop = maximumScrollTop;
+  };
+
+  const scheduleAutoScroll = (force = false) => {
+    if (force) cancelScheduledAutoScroll();
+    if (autoScrollFrameRef.current !== null) return;
+    autoScrollFrameRef.current = window.requestAnimationFrame(() => {
+      autoScrollFrameRef.current = null;
+      if (pausedRef.current || !autoScrollRef.current) return;
+      scrollOutputToEnd();
+    });
+  };
+
+  // A mounted monitor normally keeps the same id across reconnects. If React
+  // ever reuses it for another session, restore only that session's bounded
+  // composer state instead of leaking commands across the boundary.
+  useEffect(() => {
+    if (composerSessionId === sessionId) return;
+    const restored = loadComposerState(sessionId, lineEnding);
+    setOutgoing('');
+    setSendMode(restored.sendMode);
+    setSendLineEnding(restored.lineEnding);
+    setCommandHistory(restored.commandHistory);
+    setHistoryIndex(null);
+    historyDraftRef.current = '';
+    modeDraftsRef.current = { text: '', hex: '' };
+    setSendError(null);
+    setComposerSessionId(sessionId);
+  }, [composerSessionId, lineEnding, sessionId]);
+
+  useEffect(() => {
+    setCapturePathCopyStatus('idle');
+  }, [capturePath]);
+
+  useEffect(() => () => {
+    if (capturePathCopyResetRef.current !== undefined) window.clearTimeout(capturePathCopyResetRef.current);
+    if (autoScrollFrameRef.current !== null) window.cancelAnimationFrame(autoScrollFrameRef.current);
+    if (userScrollIntentFrameRef.current !== null) window.cancelAnimationFrame(userScrollIntentFrameRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (composerSessionId !== sessionId) return;
+    persistComposerState(sessionId, {
+      version: 1,
+      sendMode,
+      lineEnding: sendLineEnding,
+      commandHistory,
+    });
+  }, [commandHistory, composerSessionId, sendLineEnding, sendMode, sessionId]);
+
+  useEffect(() => { onLineEndingChangeRef.current = onLineEndingChange; }, [onLineEndingChange]);
+  useEffect(() => {
+    // Wait for composer restoration when a reconnect replaces the native ID.
+    // Also report sessionStorage's choice when recovering after a renderer reload.
+    if (composerSessionId === sessionId) onLineEndingChangeRef.current?.(sendLineEnding);
+  }, [composerSessionId, sendLineEnding, sessionId]);
+
+  useEffect(() => {
+    onConnectionStateChangeRef.current = onConnectionStateChange;
+  }, [onConnectionStateChange]);
+
+  useEffect(() => {
+    onNativeSessionEndedRef.current = onNativeSessionEnded;
+  }, [onNativeSessionEnded]);
+
+  useEffect(() => {
+    onNativeStorageLimitRef.current = onNativeStorageLimit;
+  }, [onNativeStorageLimit]);
+
+  useEffect(() => {
+    onNativeSessionStartupFailureRef.current = onNativeSessionStartupFailure;
+  }, [onNativeSessionStartupFailure]);
+
+  const updateConnectionState = (state: MonitorConnectionState) => {
+    if (state !== 'connected') stopSequenceRef.current?.();
+    setConnectionState(state);
+    onConnectionStateChangeRef.current?.(state);
+  };
+
+  const visibleLines = useMemo(() => isPaused ? pausedLines : lines, [isPaused, lines, pausedLines]);
+  const normalizedOutputFilter = outputFilter.trim();
+  const matchPattern = useMemo(() => outputMatchPattern(filterPreset, normalizedOutputFilter), [filterPreset, normalizedOutputFilter]);
+  const filteredLines = useMemo(() => {
+    return visibleLines.filter((line) => lineMatchesOutputFilter(line, filterPreset, matchPattern));
+  }, [filterPreset, matchPattern, visibleLines]);
+  const highlightPattern = useMemo(() => outputHighlightPattern(filterPreset, normalizedOutputFilter), [filterPreset, normalizedOutputFilter]);
+  const filterIsActive = filterPreset !== 'all' && (filterPreset !== 'custom' || Boolean(normalizedOutputFilter));
+  const [rowGroups] = useState(() => new TerminalRowGroups<MonitorLine>());
+  const groupedLines = useMemo(() => rowGroups.group(filteredLines), [filteredLines, rowGroups]);
+
+  const applyQueuedDisplayChanges = () => {
+    const batch = queuedChangesRef.current.splice(0);
+    if (!batch.length) return;
+    const appendedLines = batch.filter((change) => change.type === 'append').length;
+    if (pausedRef.current && appendedLines) setWaitingLines((count) => Math.min(500, count + appendedLines));
+    setLines((current) => {
+      const next = [...current];
+      const lineIndexes = new Map(next.map((line, index) => [line.id, index]));
+      for (const change of batch) {
+        if (change.type === 'append') {
+          lineIndexes.set(change.line.id, next.length);
+          next.push(change.line);
+          continue;
+        }
+        const index = lineIndexes.get(change.line.id);
+        if (index !== undefined) next[index] = change.line;
+      }
+      return next.slice(-500);
+    });
+  };
+
+  const queueDisplayChanges = (changes: DisplayChange[]) => {
+    if (!changes.length) return;
+    if (queuedChangesRef.current.length + changes.length > MAX_QUEUED_DISPLAY_CHANGES) {
+      if (!displayOverloadReportedRef.current) {
+        displayOverloadReportedRef.current = true;
+        currentDataLineRef.current = null;
+        skipNextLineFeedRef.current = false;
+        queuedChangesRef.current = [{ type: 'append', line: {
+          id: `display-overload-${Date.now()}`,
+          timestamp: currentTimestamp(),
+          text: 'Live display fell behind and skipped output. The raw capture contains all persisted bytes.',
+          kind: 'error',
+        } }];
+      }
+      return;
+    }
+    queuedChangesRef.current.push(...changes);
+    if (renderFrameRef.current !== null) return;
+    renderFrameRef.current = window.requestAnimationFrame(() => {
+      renderFrameRef.current = null;
+      applyQueuedDisplayChanges();
+    });
+  };
+
+  const flushDisplayChanges = () => {
+    if (renderFrameRef.current !== null) {
+      window.cancelAnimationFrame(renderFrameRef.current);
+      renderFrameRef.current = null;
+    }
+    applyQueuedDisplayChanges();
+  };
+
+  const appendDataText = (text: string, timestamp: string, session: string) => {
+    let remainingText = text;
+    let startsContinuation = false;
+
+    do {
+      let current = currentDataLineRef.current;
+      if (!current) {
+        current = {
+          id: `${session}-${++lineIdRef.current}`,
+          timestamp,
+          text: startsContinuation ? CONTINUATION_PREFIX : '',
+          kind: 'data' as const,
+        };
+        currentDataLineRef.current = current;
+        queueDisplayChanges([{ type: 'append', line: current }]);
+      }
+
+      // Reserve room for the marker until the logical line is actually
+      // terminated. That lets a later read turn this row into a clear visual
+      // continuation without ever exceeding the per-row display bound.
+      const availableCharacters = MAX_VISIBLE_DATA_LINE_CHARACTERS
+        - CONTINUATION_SUFFIX.length
+        - current.text.length;
+      if (remainingText.length <= availableCharacters) {
+        if (remainingText) {
+          const line = { ...current, text: `${current.text}${remainingText}` };
+          currentDataLineRef.current = line;
+          queueDisplayChanges([{ type: 'replace', line }]);
+        }
+        return;
+      }
+
+      const visibleText = sliceWithoutSplittingSurrogatePair(remainingText, availableCharacters);
+      if (visibleText) {
+        current = { ...current, text: `${current.text}${visibleText}` };
+        currentDataLineRef.current = current;
+        queueDisplayChanges([{ type: 'replace', line: current }]);
+      }
+      const continuedLine = { ...current, text: `${current.text}${CONTINUATION_SUFFIX}` };
+      currentDataLineRef.current = continuedLine;
+      queueDisplayChanges([{ type: 'replace', line: continuedLine }]);
+      remainingText = remainingText.slice(visibleText.length);
+      currentDataLineRef.current = null;
+      startsContinuation = true;
+    } while (remainingText.length);
+  };
+
+  const terminateDataLine = (timestamp: string, session: string) => {
+    // A delimiter with no preceding text is still an empty terminal line.
+    if (!currentDataLineRef.current) appendDataText('', timestamp, session);
+    currentDataLineRef.current = null;
+  };
+
+  const renderSerialChunk = (event: SerialDataEvent) => {
+    const timestamp = timestampForEvent(event);
+    const displayText = displayTextForEvent(event, displayEncoding, utf8DecoderRef.current ?? new TextDecoder());
+    let textStart = 0;
+
+    // CRLF can be split between reads. A CR always terminates the current line;
+    // this flag makes a subsequent LF a part of that same delimiter instead of
+    // creating an extra empty line.
+    if (skipNextLineFeedRef.current) {
+      skipNextLineFeedRef.current = false;
+      if (displayText.startsWith('\n')) textStart = 1;
+    }
+
+    let segmentStart = textStart;
+    for (let index = textStart; index < displayText.length; index += 1) {
+      const character = displayText[index];
+      if (skipNextLineFeedRef.current) {
+        skipNextLineFeedRef.current = false;
+        if (character === '\n') {
+          segmentStart = index + 1;
+          continue;
+        }
+      }
+      if (character === '\r') {
+        if (index > segmentStart) appendDataText(displayText.slice(segmentStart, index), timestamp, event.sessionId);
+        terminateDataLine(timestamp, event.sessionId);
+        skipNextLineFeedRef.current = true;
+      } else if (character === '\n') {
+        if (index > segmentStart) appendDataText(displayText.slice(segmentStart, index), timestamp, event.sessionId);
+        terminateDataLine(timestamp, event.sessionId);
+      }
+      if (character === '\r' || character === '\n') segmentStart = index + 1;
+    }
+    if (segmentStart < displayText.length) appendDataText(displayText.slice(segmentStart), timestamp, event.sessionId);
+  };
+
+  const flushFinalPartialLine = () => {
+    const decoderTail = utf8DecoderRef.current?.decode();
+    if (decoderTail) appendDataText(decoderTail, currentTimestamp(), 'terminal');
+    // The partial line is already represented in the display as it is received.
+    // Force its pending render batch through before a terminal state/unmount can
+    // cancel the animation frame, then close out parser-only delimiter state.
+    flushDisplayChanges();
+    currentDataLineRef.current = null;
+    skipNextLineFeedRef.current = false;
+  };
+
+  const appendDisplayLine = (line: MonitorLine) => {
+    setLines((current) => [...current, line].slice(-500));
+  };
+
+  const queueInactiveDisplayEvent = (event: SerialDataEvent) => {
+    const pending = pendingDisplayEventsRef.current;
+    pending.push(event);
+    pendingDisplayBytesRef.current += event.bytes.length;
+    if (pending.length <= MAX_PENDING_DISPLAY_EVENTS && pendingDisplayBytesRef.current <= MAX_PENDING_DISPLAY_BYTES) return;
+    pending.length = 0;
+    pendingDisplayBytesRef.current = 0;
+    displayBacklogDroppedRef.current = true;
+  };
+
+  const replayInactiveDisplayEvents = () => {
+    const pending = pendingDisplayEventsRef.current.splice(0);
+    pendingDisplayBytesRef.current = 0;
+    if (displayBacklogDroppedRef.current) {
+      currentDataLineRef.current = null;
+      skipNextLineFeedRef.current = false;
+      utf8DecoderRef.current = new TextDecoder();
+      appendDisplayLine({
+        id: `display-hidden-overload-${Date.now()}`,
+        timestamp: currentTimestamp(),
+        text: 'Live display fell behind while this terminal was hidden. The raw capture contains all persisted bytes.',
+        kind: 'error',
+      });
+      displayBacklogDroppedRef.current = false;
+    }
+    for (const event of pending) renderSerialChunk(event);
+  };
+
+  useEffect(() => {
+    const wasActive = displayActiveRef.current;
+    displayActiveRef.current = renderActive;
+    if (!renderActive) {
+      if (renderFrameRef.current !== null) {
+        window.cancelAnimationFrame(renderFrameRef.current);
+        renderFrameRef.current = null;
+      }
+      return;
+    }
+    if (!wasActive) {
+      flushDisplayChanges();
+      replayInactiveDisplayEvents();
+    }
+  }, [renderActive]);
+
+  useEffect(() => {
+    if (nativeSession && sessionId) {
+      let unlistenData: (() => void) | undefined;
+      let unlistenStatus: (() => void) | undefined;
+      let disposed = false;
+      let terminalFailureReported = false;
+      let startupFailureReported = false;
+      let nextSequence = 1;
+      const pendingEvents = new Map<number, SerialDataEvent>();
+      currentDataLineRef.current = null;
+      skipNextLineFeedRef.current = false;
+      utf8DecoderRef.current = new TextDecoder();
+      displayOverloadReportedRef.current = false;
+      pendingDisplayEventsRef.current = [];
+      pendingDisplayBytesRef.current = 0;
+      displayBacklogDroppedRef.current = false;
+
+      // Native reads can arrive between registering the listener and receiving
+      // the buffered startup replay. Sequence numbers make both paths one
+      // ordered stream, avoiding a missing prefix or duplicate render.
+      const processOrderedSerialEvent = (event: SerialDataEvent) => {
+        try { sequenceObserverRef.current?.(event); } catch { stopSequenceRef.current?.(); }
+        // This is the sole serial-event handoff into telemetry. It runs only
+        // after startup replay and live delivery have been merged by native
+        // sequence number, so telemetry cannot create another listener or
+        // observe a different ordering than the terminal.
+        if (displayActiveRef.current) renderSerialChunk(event);
+        else queueInactiveDisplayEvent(event);
+        try {
+          if (telemetrySessionKey) liveTelemetryStore.ingestOrderedSerialEvent(telemetrySessionKey, event);
+        } catch {
+          // Telemetry is best-effort. A parser or subscriber failure must
+          // never interrupt the ordered terminal stream or raw capture.
+        }
+      };
+      const acceptSerialEvent = (event: SerialDataEvent) => {
+        if (event.sequence < nextSequence) return;
+        if (!pendingEvents.has(event.sequence) && pendingEvents.size >= MAX_PENDING_SERIAL_EVENTS) {
+          // A missing event must not turn a display-ordering safeguard into an
+          // unbounded memory queue. The raw capture remains authoritative.
+          pendingEvents.clear();
+          flushFinalPartialLine();
+          appendDisplayLine({
+            id: `display-sync-${sessionId}-${event.sequence}`,
+            timestamp: currentTimestamp(),
+            text: 'Live display skipped out-of-order data while resynchronizing. The raw capture contains all persisted bytes.',
+            kind: 'error',
+          });
+          nextSequence = event.sequence;
+        }
+        pendingEvents.set(event.sequence, event);
+        while (pendingEvents.has(nextSequence)) {
+          const next = pendingEvents.get(nextSequence);
+          pendingEvents.delete(nextSequence);
+          nextSequence += 1;
+          if (next) processOrderedSerialEvent(next);
+        }
+      };
+      const continueAfterSequence = (sequence: number) => {
+        if (sequence <= nextSequence) return;
+        nextSequence = sequence;
+        while (pendingEvents.has(nextSequence)) {
+          const next = pendingEvents.get(nextSequence);
+          pendingEvents.delete(nextSequence);
+          nextSequence += 1;
+          if (next) processOrderedSerialEvent(next);
+        }
+      };
+      const reportBackendTerminalFailure = () => {
+        if (terminalFailureReported) return;
+        terminalFailureReported = true;
+        flushFinalPartialLine();
+        updateConnectionState('error');
+        // Keep the event's physical session ID attached to the callback. A
+        // reconnect can replace the callback ref before an already queued
+        // status event from the old native session is delivered.
+        onNativeSessionEndedRef.current?.(sessionId);
+      };
+      const reportFrontendStartupFailure = () => {
+        if (startupFailureReported || disposed) return;
+        startupFailureReported = true;
+        flushFinalPartialLine();
+        unlistenData?.();
+        unlistenStatus?.();
+        updateConnectionState('error');
+        void onNativeSessionStartupFailureRef.current?.();
+      };
+      void Promise.allSettled([
+        listenForSerialData(sessionId, (event: SerialDataEvent) => {
+          acceptSerialEvent(event);
+        }),
+        listenForSerialStatus(sessionId, (event) => {
+          if (event.status === 'error') {
+            reportBackendTerminalFailure();
+          }
+          if (event.status === 'storage-limit') {
+            flushFinalPartialLine();
+            updateConnectionState('error');
+            appendDisplayLine({ id: `storage-limit-${sessionId}`, timestamp: currentTimestamp(), text: event.message, kind: 'error' });
+            onNativeStorageLimitRef.current?.(sessionId);
+          }
+          if (event.status === 'disconnected') {
+            flushFinalPartialLine();
+            updateConnectionState('disconnected');
+          }
+          if (event.status === 'connected') updateConnectionState('connected');
+        }),
+      ]).then((listeners) => {
+        const [dataResult, statusResult] = listeners;
+        if (disposed) {
+          if (dataResult.status === 'fulfilled') dataResult.value();
+          if (statusResult.status === 'fulfilled') statusResult.value();
+          return;
+        }
+        if (dataResult.status !== 'fulfilled' || statusResult.status !== 'fulfilled') {
+          if (dataResult.status === 'fulfilled') dataResult.value();
+          if (statusResult.status === 'fulfilled') statusResult.value();
+          reportFrontendStartupFailure();
+          return;
+        }
+        unlistenData = dataResult.value;
+        unlistenStatus = statusResult.value;
+        void takePendingNativeSerialData(sessionId)
+          .then((handoff) => {
+            if (disposed) return;
+            handoff.events.forEach(acceptSerialEvent);
+            if (handoff.droppedEventCount) {
+              // The raw capture remains complete. Close any visible partial
+              // line before resuming after the omitted startup chunks so text
+              // from opposite sides of the gap is never joined together.
+              flushFinalPartialLine();
+              appendDisplayLine({
+                id: `startup-overflow-${sessionId}`,
+                timestamp: currentTimestamp(),
+                text: `${handoff.droppedEventCount} startup data chunk${handoff.droppedEventCount === 1 ? '' : 's'} exceeded the live-display buffer; the raw log contains all received bytes.`,
+                kind: 'error',
+              });
+            }
+            // A recovered session may already have been in live-delivery mode
+            // when this renderer registered its listener. If an event reached
+            // that listener just before the handoff response, resume at that
+            // earliest queued sequence instead of advancing past it.
+            const resumeSequence = handoff.events.length
+              ? handoff.nextSequence
+              : Math.min(handoff.nextSequence, ...pendingEvents.keys());
+            continueAfterSequence(resumeSequence);
+            setSequenceReadySession(sessionId);
+          })
+          .catch(() => {
+            if (!disposed) reportFrontendStartupFailure();
+          });
+      });
+      return () => {
+        disposed = true;
+        flushFinalPartialLine();
+        unlistenData?.();
+        unlistenStatus?.();
+        utf8DecoderRef.current = null;
+      };
+    }
+    return undefined;
+  }, [nativeSession, sessionId, telemetrySessionKey]);
+
+  useEffect(() => () => {
+    flushFinalPartialLine();
+  }, []);
+
+  // App owns reconnection scheduling, including automatic retries after a
+  // device disappears. Keep this mounted monitor aligned with that external
+  // state so capture health does not remain stale until a new native ID exists.
+  useEffect(() => {
+    if (nativeSession) updateConnectionState(initialConnectionState);
+    else updateConnectionState('disconnected');
+  }, [initialConnectionState, nativeSession]);
+
+  useLayoutEffect(() => {
+    if (!isPaused && autoScroll) scrollOutputToEnd();
+  }, [filteredLines, isPaused, autoScroll]);
+
+  const toggleDisplayPause = () => {
+    if (isPaused) {
+      pausedRef.current = false;
+      setPaused(false);
+      setPausedLines([]);
+      setWaitingLines(0);
+      if (autoScrollRef.current) scheduleAutoScroll(true);
+      return;
+    }
+    pausedRef.current = true;
+    setPausedLines(lines);
+    setWaitingLines(0);
+    setPaused(true);
+  };
+
+  const toggleAutoScroll = (next: boolean) => {
+    setAutoScrollState(next);
+    if (!next) {
+      cancelScheduledAutoScroll();
+      return;
+    }
+    scrollOutputToEnd();
+    scheduleAutoScroll(true);
+  };
+
+  const goToEnd = () => {
+    pausedRef.current = false;
+    setPaused(false);
+    setPausedLines([]);
+    setWaitingLines(0);
+    setAutoScrollState(true);
+    scrollOutputToEnd();
+    scheduleAutoScroll(true);
+  };
+
+  const transmitCommand = async (command: Pick<SerialCommand, 'payload' | 'mode' | 'lineEnding'>) => {
+    if (sendInFlightRef.current) throw new Error('A serial write is still in progress.');
+    if (!nativeSession || connectionState !== 'connected') throw new Error('Reconnect before sending a command.');
+    const bytes = commandBytes(command);
+    sendInFlightRef.current = true;
+    setSendError(null); setSending(true);
+    try {
+      if (command.mode === 'hex') {
+        if (!onSendBytes) throw new Error('Serial byte sending is unavailable.');
+        await onSendBytes(bytes);
+      } else {
+        if (!onSend) throw new Error('Serial text sending is unavailable.');
+        await onSend(command.payload + lineEndingText(command.lineEnding));
+      }
+      const preview = command.mode === 'hex' ? bytes.map((byte) => byte.toString(16).padStart(2, '0').toUpperCase()).join(' ') : command.payload;
+      appendDisplayLine({ id: `sent-${Date.now()}`, timestamp: currentTimestamp(), text: `> ${command.mode === 'hex' ? '[hex] ' : ''}${preview}`, kind: 'system' });
+      setCommandHistory((history) => {
+        const previous = history[command.mode];
+        return previous[previous.length - 1] === command.payload ? history : { ...history, [command.mode]: [...previous, command.payload].slice(-MAX_COMMAND_HISTORY) };
+      });
+    } finally { sendInFlightRef.current = false; setSending(false); }
+  };
+
+  const send = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!outgoing.trim() || isSending || isRepeating || isSequenceRunning) return;
+    try {
+      await transmitCommand({ payload: outgoing, mode: sendMode, lineEnding: sendLineEnding });
+      setOutgoing(''); setHistoryIndex(null); historyDraftRef.current = ''; modeDraftsRef.current[sendMode] = '';
+    } catch (error) { setSendError(error instanceof Error ? error.message : 'Could not send command.'); }
+  };
+
+  const changeOutgoing = (value: string) => {
+    setOutgoing(value);
+    if (historyIndex !== null) setHistoryIndex(null);
+    historyDraftRef.current = value;
+    modeDraftsRef.current[sendMode] = value;
+    if (sendError) setSendError(null);
+  };
+
+  const changeSendMode = (mode: SendMode) => {
+    if (mode === sendMode) return;
+    modeDraftsRef.current[sendMode] = outgoing;
+    setSendMode(mode);
+    setOutgoing(modeDraftsRef.current[mode]);
+    setHistoryIndex(null);
+    historyDraftRef.current = modeDraftsRef.current[mode];
+    setSendError(null);
+  };
+
+  const browseCommandHistory = (event: KeyboardEvent<HTMLInputElement>) => {
+    const modeHistory = commandHistory[sendMode];
+    if (event.nativeEvent.isComposing || event.altKey || event.ctrlKey || event.metaKey || !modeHistory.length) return;
+    const input = event.currentTarget;
+    const caretIsCollapsed = input.selectionStart === input.selectionEnd;
+    const canMoveBack = caretIsCollapsed && input.selectionStart === 0;
+    const canMoveForward = caretIsCollapsed && input.selectionStart === outgoing.length;
+
+    if (event.key === 'ArrowUp' && canMoveBack) {
+      event.preventDefault();
+      if (historyIndex === null) historyDraftRef.current = outgoing;
+      const nextIndex = historyIndex === null ? modeHistory.length - 1 : Math.max(0, historyIndex - 1);
+      setHistoryIndex(nextIndex);
+      setOutgoing(modeHistory[nextIndex]);
+      return;
+    }
+
+    if (event.key === 'ArrowDown' && historyIndex !== null && canMoveForward) {
+      event.preventDefault();
+      const nextIndex = historyIndex + 1;
+      if (nextIndex >= modeHistory.length) {
+        setHistoryIndex(null);
+        setOutgoing(historyDraftRef.current);
+      } else {
+        setHistoryIndex(nextIndex);
+        setOutgoing(modeHistory[nextIndex]);
+      }
+    }
+  };
+
+  const reconnect = async () => {
+    if (!nativeSession) {
+      appendDisplayLine({ id: `preview-reconnect-${Date.now()}`, timestamp: currentTimestamp(), text: 'Browser preview cannot reconnect to a physical serial port. Open BaudTide desktop to connect.', kind: 'error' });
+      return;
+    }
+    setReconnecting(true);
+    updateConnectionState('reconnecting');
+    try {
+      await onReconnect?.();
+      updateConnectionState('connected');
+      appendDisplayLine({ id: `reconnected-${Date.now()}`, timestamp: currentTimestamp(), text: 'Connection restored. Logging resumed.', kind: 'system' });
+    } catch {
+      updateConnectionState('error');
+    } finally {
+      setReconnecting(false);
+    }
+  };
+
+  const disconnect = async () => {
+    stopSequenceRef.current?.();
+    try {
+      await onDisconnect?.();
+      flushFinalPartialLine();
+      updateConnectionState('disconnected');
+      setShowDisconnectConfirm(false);
+      appendDisplayLine({ id: `disconnect-${Date.now()}`, timestamp: currentTimestamp(), text: 'Disconnected by user. Local log remains available.', kind: 'system' });
+    } catch (error) {
+      flushFinalPartialLine();
+      const message = error instanceof Error ? error.message : 'Could not disconnect this serial session.';
+      updateConnectionState('error');
+      appendDisplayLine({ id: `disconnect-error-${Date.now()}`, timestamp: currentTimestamp(), text: message, kind: 'error' });
+    }
+  };
+
+  const clear = () => {
+    currentDataLineRef.current = null;
+    skipNextLineFeedRef.current = false;
+    utf8DecoderRef.current = new TextDecoder();
+    pendingDisplayEventsRef.current = [];
+    pendingDisplayBytesRef.current = 0;
+    displayBacklogDroppedRef.current = false;
+    if (renderFrameRef.current !== null) {
+      window.cancelAnimationFrame(renderFrameRef.current);
+      renderFrameRef.current = null;
+    }
+    queuedChangesRef.current = [];
+    setLines([]);
+    if (isPaused) setPausedLines([]);
+    setWaitingLines(0);
+    setShowClearConfirm(false);
+    onClear?.();
+  };
+
+  const close = async () => {
+    stopSequenceRef.current?.();
+    flushFinalPartialLine();
+    await onClose?.();
+  };
+
+  const focusFind = () => {
+    setFindOpen(true);
+    setFilterPreset('custom');
+    window.setTimeout(() => findInputRef.current?.focus(), 0);
+  };
+
+  const selectFilterPreset = (preset: OutputFilterPreset) => {
+    setFilterPreset(preset);
+    if (preset === 'custom') {
+      window.setTimeout(() => findInputRef.current?.focus(), 0);
+    }
+  };
+
+  const toggleFilterPanel = () => {
+    if (isFindOpen) {
+      setFindOpen(false);
+      return;
+    }
+    setFindOpen(true);
+    if (filterPreset === 'custom') {
+      window.setTimeout(() => findInputRef.current?.focus(), 0);
+    }
+  };
+
+  const closeFilterPanel = () => {
+    setFindOpen(false);
+    window.setTimeout(() => filterButtonRef.current?.focus(), 0);
+  };
+
+  const clearOutputFilter = () => {
+    setFilterPreset('all');
+    setOutputFilter('');
+  };
+
+  const copyCapturePath = async () => {
+    if (!capturePath) return;
+    if (capturePathCopyResetRef.current !== undefined) window.clearTimeout(capturePathCopyResetRef.current);
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard access is unavailable.');
+      await navigator.clipboard.writeText(capturePath);
+      setCapturePathCopyStatus('copied');
+    } catch {
+      setCapturePathCopyStatus('error');
+    }
+    capturePathCopyResetRef.current = window.setTimeout(() => {
+      setCapturePathCopyStatus('idle');
+      capturePathCopyResetRef.current = undefined;
+    }, 2_200);
+  };
+
+  useImperativeHandle(ref, () => ({
+    stopCommandSequence: () => stopSequenceRef.current?.(),
+    toggleDisplayPause,
+    requestClear: () => setShowClearConfirm(true),
+    focusFind,
+  }), [toggleDisplayPause]);
+
+  const connectionCopy = {
+    connected: { label: 'Connected', Icon: Check, detail: 'Port open · logging active' },
+    reconnecting: { label: 'Reconnecting', Icon: LoaderCircle, detail: 'Trying to restore the port…' },
+    disconnected: { label: 'Disconnected', Icon: WifiOff, detail: 'Logging is stopped' },
+    error: { label: 'Connection error', Icon: AlertTriangle, detail: 'The serial port could not be opened' },
+  }[connectionState];
+  const captureCopy = {
+    connected: { label: 'Raw capture active', detail: 'Incoming bytes are being saved locally.', Icon: Check },
+    reconnecting: { label: 'Raw capture waiting', detail: 'Capture resumes when the port reconnects.', Icon: LoaderCircle },
+    disconnected: { label: 'Raw capture disconnected', detail: 'The captured file is retained locally.', Icon: WifiOff },
+    error: { label: 'Raw capture error', detail: 'No new bytes can be recorded until this session recovers.', Icon: AlertTriangle },
+  }[connectionState];
+  const StatusIcon = connectionCopy.Icon;
+  const CaptureIcon = captureCopy.Icon;
+  const retrySecondsRemaining = autoReconnectStatus
+    ? Math.max(0, Math.ceil((autoReconnectStatus.nextRetryAt - retryClock) / 1_000))
+    : null;
+  const autoReconnectCopy = autoReconnectBlockedReason === 'storage-limit'
+    ? {
+        title: 'Automatic reconnect unavailable',
+        detail: 'Storage is full. Free space or raise the limit before reconnecting manually.',
+      }
+    : autoReconnectBlockedReason === 'device-identity'
+      ? { title: 'Check the device before reconnecting', detail: autoReconnectBlockedDetail ?? 'Choose the intended device in connection setup.' }
+    : autoReconnectEnabled
+      ? autoReconnectStatus
+        ? {
+            title: `Retry attempt ${autoReconnectStatus.attempt} queued`,
+            detail: retrySecondsRemaining
+              ? `Trying ${port} again in ${retrySecondsRemaining} second${retrySecondsRemaining === 1 ? '' : 's'} · exponential backoff.`
+              : `Starting retry attempt ${autoReconnectStatus.attempt} now.`,
+          }
+        : connectionState === 'reconnecting'
+          ? { title: 'Automatic reconnect is trying', detail: `Attempting to reopen ${port}.` }
+          : { title: 'Automatic reconnect is on', detail: 'This terminal will retry if its device becomes unavailable.' }
+      : { title: 'Automatic reconnect is paused', detail: 'Use Reconnect to try now, or resume retries for this terminal.' };
+
+  return (
+    <section className="sd-monitor" aria-label={`${sessionName} live serial monitor`}>
+      <header className="sd-monitor-header">
+        <div className="sd-monitor-heading">
+          <div className="sd-monitor-mark"><TerminalSquare size={19} /></div>
+          <div><h1>{sessionName}</h1></div>
+        </div>
+        <div className="sd-monitor-header-actions">
+          <button type="button" className="sd-monitor-secondary" onClick={reconnect} disabled={connectionState === 'connected' || isReconnecting}><RotateCw className={isReconnecting ? 'sd-spin' : ''} size={15} /> Reconnect</button>
+          <button type="button" className="sd-monitor-danger-button" onClick={() => setShowDisconnectConfirm(true)} disabled={connectionState !== 'connected'}><PlugZap size={15} /> Disconnect</button>
+          {onClose && <button className="sd-monitor-icon-button" type="button" onClick={() => void close()} aria-label="Close session"><X size={18} /></button>}
+        </div>
+      </header>
+
+      <div className="sd-monitor-meta-row">
+        <div className={`sd-monitor-status ${connectionState}`}><StatusIcon className={connectionState === 'reconnecting' ? 'sd-spin' : ''} size={14} /><strong>{connectionCopy.label}</strong><span>{connectionCopy.detail}</span></div>
+        <div className="sd-monitor-chip"><span>{port}</span><i /> {baudRate.toLocaleString()} baud</div>
+      </div>
+
+      {autoReconnectBlockedReason === 'device-identity' && <aside className="sd-device-recovery" role="status">
+        <AlertTriangle size={17} aria-hidden="true" />
+        <div><strong>Automatic reconnect paused</strong><span>{autoReconnectBlockedDetail ?? 'Check the intended device before reconnecting.'}</span></div>
+        {onReconnectSetup && <button type="button" className="sd-monitor-secondary" onClick={onReconnectSetup}>Connection setup</button>}
+      </aside>}
+
+      {nativeSession && <details className={`sd-session-details ${connectionState}`} aria-label="Session details">
+        <summary>
+          <span className="sd-session-details-title"><SlidersHorizontal size={15} aria-hidden="true" /> Session details</span>
+          <span className="sd-session-details-summary">
+            <span><CaptureIcon className={connectionState === 'reconnecting' ? 'sd-spin' : ''} size={13} aria-hidden="true" /> {captureCopy.label}</span>
+            <span><RotateCw size={13} aria-hidden="true" /> {autoReconnectEnabled ? 'Auto retry on' : 'Auto retry off'}</span>
+          </span>
+          <ChevronDown className="sd-session-details-chevron" size={16} aria-hidden="true" />
+        </summary>
+        <div className="sd-session-details-content">
+          <section className={`sd-session-detail sd-session-detail-capture ${connectionState}`}>
+            <div className="sd-session-detail-heading"><CaptureIcon className={connectionState === 'reconnecting' ? 'sd-spin' : ''} size={16} aria-hidden="true" /><div><strong>{captureCopy.label}</strong><span>{captureCopy.detail}</span></div></div>
+            {capturePath ? <div className="sd-capture-path">
+              <code title={capturePath}>{capturePath}</code>
+              <button className="sd-capture-copy" type="button" onClick={() => void copyCapturePath()} aria-label="Copy raw capture path" title="Copy raw capture path">
+                {capturePathCopyStatus === 'copied' ? <Check size={14} /> : <Copy size={14} />}
+                <span>{capturePathCopyStatus === 'copied' ? 'Copied' : capturePathCopyStatus === 'error' ? 'Copy failed' : 'Copy path'}</span>
+              </button>
+              <span className="sd-visually-hidden" role="status" aria-live="polite">{capturePathCopyStatus === 'copied' ? 'Raw capture path copied.' : capturePathCopyStatus === 'error' ? 'Could not copy the raw capture path.' : ''}</span>
+            </div> : <span className="sd-session-detail-note">The local capture path will appear when recording begins.</span>}
+          </section>
+          <section className={`sd-session-detail sd-session-detail-reconnect${autoReconnectBlockedReason ? ' is-unavailable' : ''}`}>
+            <div className="sd-session-detail-heading"><RotateCw size={16} aria-hidden="true" /><div><strong>{autoReconnectCopy.title}</strong><span>{autoReconnectCopy.detail}</span></div></div>
+            <button
+              type="button"
+              className="sd-monitor-secondary sd-session-retry-toggle"
+              onClick={() => onAutoReconnectChange?.(!autoReconnectEnabled)}
+              disabled={!onAutoReconnectChange || Boolean(autoReconnectBlockedReason)}
+              aria-pressed={autoReconnectEnabled}
+              title={autoReconnectBlockedReason ? 'Automatic reconnect needs attention' : autoReconnectEnabled ? 'Pause automatic reconnect attempts for this terminal' : 'Resume automatic reconnect attempts for this terminal'}
+            >
+              <RotateCw size={14} aria-hidden="true" /> {autoReconnectEnabled ? 'Pause retries' : 'Resume retries'}
+            </button>
+          </section>
+        </div>
+      </details>}
+
+      <article className="sd-terminal-card">
+        <div className="sd-terminal-toolbar">
+          <div className="sd-terminal-title"><span className="sd-terminal-led" /> Incoming data <em>{lines.length} lines in display</em></div>
+          <div className="sd-terminal-controls">
+            <button
+              className={`sd-autoscroll-toggle ${autoScroll ? 'is-on' : 'is-off'}`}
+              type="button"
+              role="switch"
+              aria-label="Auto-scroll"
+              aria-checked={autoScroll}
+              onClick={() => toggleAutoScroll(!autoScroll)}
+              title={autoScroll ? 'Auto-scroll is on. New output follows the latest line.' : 'Auto-scroll is off. Click to follow the latest line.'}
+            >
+              <span className="sd-autoscroll-switch" aria-hidden="true" />
+              <span className="sd-autoscroll-copy">Auto-scroll <strong>{autoScroll ? 'ON' : 'OFF'}</strong></span>
+            </button>
+            {(!autoScroll || isPaused) && <button className="sd-monitor-secondary sd-go-to-end" type="button" onClick={goToEnd} title="Resume the display and jump to the newest data"><ChevronsDown size={15} /> Go to end</button>}
+            <button className={`sd-monitor-secondary ${isPaused ? 'active' : ''}`} type="button" onClick={toggleDisplayPause} aria-pressed={isPaused}>{isPaused ? <CirclePlay size={15} /> : <CirclePause size={15} />}{isPaused ? 'Resume display' : 'Pause display'}</button>
+            <button
+              ref={filterButtonRef}
+              className={`sd-monitor-icon-button ${isFindOpen || filterIsActive ? 'active' : ''}`}
+              type="button"
+              onClick={toggleFilterPanel}
+              aria-controls={filterPanelId}
+              aria-expanded={isFindOpen}
+              aria-label={isFindOpen
+                ? 'Hide live output filters'
+                : filterIsActive
+                  ? `Open live output filters. ${filteredLines.length} of ${visibleLines.length} displayed lines match.`
+                  : 'Open live output filters'}
+              title={isFindOpen ? 'Hide filter controls' : 'Filter live output'}
+            >
+              <Search size={16} />
+            </button>
+            <button className="sd-monitor-icon-button" type="button" onClick={() => setShowClearConfirm(true)} aria-label="Clear monitor display" title="Clear display"><Eraser size={16} /></button>
+          </div>
+        </div>
+        {isSequenceRunning && <button type="button" className="sd-monitor-danger-button" onClick={() => stopSequenceRef.current?.()}>Stop sequence</button>}
+        {isRepeating && <button type="button" className="sd-monitor-danger-button" onClick={() => stopRepeatingRef.current?.()}>Stop command repeat</button>}
+        <div className={`sd-terminal-logging ${nativeSession ? connectionState : 'preview'}`}>
+          {nativeSession ? <CaptureIcon className={connectionState === 'reconnecting' ? 'sd-spin' : ''} size={13} /> : <Check size={13} />}
+          {nativeSession ? captureCopy.label : 'Browser preview — no local capture'}{isPaused ? <strong> · display paused</strong> : ''}
+        </div>
+        {isFindOpen && (
+          <section
+            className="sd-terminal-find"
+            id={filterPanelId}
+            aria-label="Live output filters"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') closeFilterPanel();
+            }}
+          >
+            <div className="sd-terminal-filter-row">
+              <span className="sd-terminal-filter-label"><Search size={15} aria-hidden="true" /> Live filters</span>
+              <div className="sd-terminal-filter-presets" role="group" aria-label="Filter preset">
+                <button className={filterPreset === 'all' ? 'active' : ''} type="button" aria-pressed={filterPreset === 'all'} onClick={() => selectFilterPreset('all')}>All</button>
+                <button className={filterPreset === 'errors' ? 'active error' : ''} type="button" aria-pressed={filterPreset === 'errors'} onClick={() => selectFilterPreset('errors')}>Errors</button>
+                <button className={filterPreset === 'wifi' ? 'active wifi' : ''} type="button" aria-pressed={filterPreset === 'wifi'} onClick={() => selectFilterPreset('wifi')}>Wi-Fi</button>
+                <button className={filterPreset === 'custom' ? 'active' : ''} type="button" aria-pressed={filterPreset === 'custom'} onClick={() => selectFilterPreset('custom')}>Custom</button>
+              </div>
+            </div>
+            {filterPreset === 'custom' && (
+              <div className="sd-terminal-filter-query">
+                <label htmlFor={filterInputId}><Search size={15} aria-hidden="true" /><span className="sd-visually-hidden">Custom filter text</span></label>
+                <input
+                  ref={findInputRef}
+                  id={filterInputId}
+                  value={outputFilter}
+                  onChange={(event) => setOutputFilter(event.target.value)}
+                  placeholder="Find ERROR, sensor name, or any text"
+                  aria-describedby={filterStatusId}
+                  maxLength={256}
+                />
+                <span aria-hidden="true">{normalizedOutputFilter ? `${filteredLines.length} match${filteredLines.length === 1 ? '' : 'es'}` : 'Type to filter'}</span>
+              </div>
+            )}
+            <div className="sd-terminal-filter-footer">
+              <span id={filterStatusId} role="status" aria-live="polite">
+                {filterIsActive
+                  ? `${filteredLines.length} of ${visibleLines.length} displayed lines match. Raw capture is unchanged.`
+                  : 'Choose a filter to focus the live display. Raw capture is unchanged.'}
+              </span>
+              <div className="sd-terminal-filter-actions">
+                {filterIsActive && <button className="sd-terminal-filter-clear" type="button" onClick={clearOutputFilter}>Clear filter</button>}
+                <button className="sd-terminal-filter-close" type="button" onClick={closeFilterPanel} aria-label="Hide live filter controls"><X size={15} /></button>
+              </div>
+            </div>
+          </section>
+        )}
+        <div className={`sd-terminal-output ${showTimestamps ? '' : 'no-timestamps'}`} ref={outputRef} tabIndex={0} onWheel={noteUserScrollIntent} onTouchMove={noteUserScrollIntent} onPointerDown={beginPointerScroll} onPointerUp={endPointerScroll} onPointerCancel={endPointerScroll} onKeyDown={(event) => {
+          if (['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' ', 'Spacebar'].includes(event.key)) noteUserScrollIntent();
+        }} onScroll={(event) => {
+          const target = event.currentTarget;
+          const isAtEnd = target.scrollHeight - target.scrollTop - target.clientHeight < 32;
+          if (!userScrollIntentRef.current) return;
+          clearUserScrollIntent();
+          if (!isAtEnd) cancelScheduledAutoScroll();
+          setAutoScrollState(isAtEnd);
+        }} role="log" aria-live={isPaused ? 'off' : 'polite'} aria-relevant="additions text" aria-label={showTimestamps ? 'Timestamped serial output' : 'Serial output'}>
+          {!visibleLines.length && <div className="sd-terminal-empty"><TerminalSquare size={23} /><strong>Display cleared</strong><span>New incoming bytes will appear here. The active log is still recording.</span></div>}
+          {visibleLines.length > 0 && !filteredLines.length && <div className="sd-terminal-empty"><Search size={23} /><strong>No matching output</strong><span>Try a different filter or clear the search.</span></div>}
+          {groupedLines.map((rows, index) => <TerminalRowGroup key={index === 0 ? 'head' : rows[0].id} rows={rows} showTimestamps={showTimestamps} filtered={filterIsActive} pattern={highlightPattern} />)}
+          {isPaused && <div className="sd-paused-note"><CirclePause size={15} /> Display paused. {waitingLines} {waitingLines === 1 ? 'new line is' : 'new lines are'} waiting.</div>}
+        </div>
+        <form className="sd-send-form" onSubmit={send}>
+          <label htmlFor={sendInputId}>Send {sendMode === 'hex' ? 'hex bytes' : 'text'}</label>
+          <div className="sd-send-row">
+            <input
+              id={sendInputId}
+              value={outgoing}
+              onChange={(event) => changeOutgoing(event.target.value)}
+              onKeyDown={browseCommandHistory}
+              aria-describedby={sendError ? `${sendHintId} ${sendErrorId}` : sendHintId}
+              aria-invalid={sendError ? true : undefined}
+              placeholder={connectionState === 'connected'
+                ? sendMode === 'hex' ? '48 65 6C 6C 6F or 0x48, 0x65…' : 'Type a command…'
+                : 'Reconnect to send a command'}
+              disabled={connectionState !== 'connected' || isSending || isRepeating || isSequenceRunning}
+            />
+            <label className="sd-send-mode"><span>Mode</span><ThemedSelect compact label="Send mode" value={sendMode} placeholder="Choose mode" options={[{ value: 'text', label: 'Text' }, { value: 'hex', label: 'Hex' }]} onChange={(value) => changeSendMode(value as SendMode)} disabled={connectionState !== 'connected' || isSending || isRepeating || isSequenceRunning} /></label>
+            {sendMode === 'text' && <label className="sd-send-ending"><span>Ending</span><ThemedSelect compact label="Line ending" value={sendLineEnding} placeholder="Choose ending" options={(['lf', 'crlf', 'cr', 'none'] as LineEnding[]).map((ending) => ({ value: ending, label: lineEndingLabel(ending) }))} onChange={(value) => setSendLineEnding(value as LineEnding)} disabled={connectionState !== 'connected' || isSending || isRepeating || isSequenceRunning} /></label>}
+            <button className="sd-primary-button" type="submit" disabled={!outgoing.trim() || isSending || isRepeating || isSequenceRunning || connectionState !== 'connected'}>{isSending ? <LoaderCircle className="sd-spin" size={16} /> : <Send size={16} />} Send</button>
+          </div>
+          {sendError && <span className="sd-send-error" id={sendErrorId} role="alert">{sendError}</span>}
+          <span id={sendHintId}>{nativeSession
+            ? sendMode === 'hex'
+              ? `Hex sends exact bytes with no text encoding or line ending · two-digit bytes separated by spaces or commas · ↑/↓ recalls up to ${MAX_COMMAND_HISTORY} hex sends`
+              : `This session sends ${lineEndingLabel(sendLineEnding)} · ↑/↓ recalls up to ${MAX_COMMAND_HISTORY} text commands · raw capture stays active while display is paused`
+            : sendMode === 'hex'
+              ? 'Browser preview only · hex payloads are not transmitted · use two-digit bytes separated by spaces or commas'
+              : `Browser preview only · ${lineEndingLabel(sendLineEnding)} selected for desktop sends · ↑/↓ recalls text commands`}</span>
+        </form>
+        <CommandPresetsPanel stopRef={stopRepeatingRef} identity={commandIdentity ?? telemetrySessionKey ?? sessionId ?? sessionName} sessionId={sessionId} enabled={nativeSession && connectionState === 'connected' && displayActive && !isSequenceRunning}
+          draft={{ payload: outgoing, mode: sendMode, lineEnding: sendLineEnding }} onSend={transmitCommand} onRepeatingChange={setRepeating}
+          onLoad={(command) => { setOutgoing(command.payload); setSendMode(command.mode); setSendLineEnding(command.lineEnding); setHistoryIndex(null); setSendError(null); }} />
+        {nativeSession && commandIdentity && <CommandSequencePanel identity={commandIdentity} sessionId={sessionId} capturePath={capturePath} sourceName={sessionName}
+          enabled={connectionState === 'connected' && displayActive && documentVisible && sequenceReadySession === sessionId} blocked={isSending || isRepeating}
+          draft={{ payload: outgoing, mode: sendMode, lineEnding: sendLineEnding }} observerRef={sequenceObserverRef} stopRef={stopSequenceRef} onSend={transmitCommand} onRunningChange={setSequenceRunning} />}
+        {nativeSession && commandIdentity && <LogRulesPanel identity={commandIdentity} sourceName={sessionName} enabled={nativeSession} />}
+      </article>
+
+      {showClearConfirm && <div className="sd-inline-confirm" role="alertdialog" aria-label="Confirm clear display"><div><AlertTriangle size={18} /><p><strong>Clear this display?</strong><span>This only clears the visible panel. The session log is unaffected.</span></p></div><div><button className="sd-monitor-secondary" type="button" onClick={() => setShowClearConfirm(false)}>Cancel</button><button className="sd-monitor-danger-button" type="button" onClick={clear}>Clear</button></div></div>}
+      {showDisconnectConfirm && <div className="sd-inline-confirm" role="alertdialog" aria-label="Confirm disconnect"><div><PlugZap size={18} /><p><strong>Disconnect {sessionName}?</strong><span>The local log will be retained, but incoming data will stop.</span></p></div><div><button className="sd-monitor-secondary" type="button" onClick={() => setShowDisconnectConfirm(false)}>Cancel</button><button className="sd-monitor-danger-button" type="button" onClick={disconnect}>Disconnect</button></div></div>}
+    </section>
+  );
+});

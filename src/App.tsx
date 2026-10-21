@@ -1,39 +1,39 @@
 import { listenDesktop } from './lib/desktop';
-import { watchSnapshot, setDesktopWatchDecoder } from './lib/desktopWatches';
-import type { WatchHistoryRow } from './lib/watchHistory';
-import type { CaptureEvent } from './lib/captureEvents';
+import { watchSnapshot, setDesktopWatchDecoder } from './lib/telemetry/desktopWatches';
+import type { WatchHistoryRow } from './lib/telemetry/watchHistory';
+import type { CaptureEvent } from './lib/captures/captureEvents';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppStartupScreen } from './components/AppStartupScreen';
-import { CommandPalette, type CommandPaletteAction } from './components/CommandPalette';
-import { ConnectionDialog, type ConnectionDialogDefaults, type ConnectionRequest } from './components/ConnectionDialog';
-import { HelpFeedbackPanel } from './components/HelpFeedbackPanel';
-import { LiveMonitor, type LiveMonitorHandle, type MonitorConnectionState } from './components/LiveMonitor';
-import { MobileShareScreen, type MobileShareSession } from './components/MobileShareScreen';
-import { NotificationsPanel } from './components/NotificationsPanel';
-import { useNotifications } from './components/notifications';
-import { PreferencesScreen } from './components/PreferencesScreen';
-import { SavedLogsScreen } from './components/SavedLogsScreen';
-import { BenchRestoreDialog, type BenchRestoreChoice } from './components/BenchRestoreDialog';
-import { liveTelemetryStore } from './lib/telemetry';
-import { planBenchRestore, type BenchConnectionPreset } from './lib/benchSetup';
-import { CaptureStorageBanner } from './components/CaptureStorageBanner';
-import { saveCommandSequences } from './lib/commandSequences';
-import { saveCommandPresets } from './lib/serialCommands';
-import { SessionWorkspaceManager } from './components/SessionWorkspaceManager';
-import { PortDiscoveryDashboard } from './components/PortDiscoveryDashboard';
-import { SidebarNavigation } from './components/SidebarNavigation';
-import { WelcomeScreen } from './components/WelcomeScreen';
-import { WorkspaceProfileMenu } from './components/WorkspaceProfileMenu';
-import { VisualizeScreen, type VisualizeSession } from './components/VisualizeScreen';
-import type { SignalDeckPage } from './components/phase3Types';
-import { defaultPreferences, loadPreferences, savePreferences, type AppTheme, type BaudTidePreferences, type DisplayEncoding, type LineEnding } from './lib/preferences';
-import { loadAnalysisWorkspaces } from './lib/analysisWorkspaces';
-import { stableTerminalSessionIdentity, type SavedSessionWorkspace, type TerminalLayout } from './lib/sessionWorkspaces';
+import { AppStartupScreen } from './components/app/AppStartupScreen';
+import { CommandPalette, type CommandPaletteAction } from './components/app/CommandPalette';
+import { ConnectionDialog, type ConnectionDialogDefaults, type ConnectionRequest } from './components/connection/ConnectionDialog';
+import { HelpFeedbackPanel } from './components/app/HelpFeedbackPanel';
+import { LiveMonitor, type LiveMonitorHandle, type MonitorConnectionState } from './components/terminal/LiveMonitor';
+import { MobileShareScreen, type MobileShareSession } from './components/mobile/MobileShareScreen';
+import { NotificationsPanel } from './components/app/NotificationsPanel';
+import { useNotifications } from './components/app/notifications';
+import { PreferencesScreen } from './components/preferences/PreferencesScreen';
+import { SavedLogsScreen } from './components/captures/SavedLogsScreen';
+import { BenchRestoreDialog, type BenchRestoreChoice } from './components/workspaces/BenchRestoreDialog';
+import { liveTelemetryStore } from './lib/telemetry/telemetry';
+import { planBenchRestore, type BenchConnectionPreset } from './lib/workspaces/benchSetup';
+import { CaptureStorageBanner } from './components/captures/CaptureStorageBanner';
+import { saveCommandSequences } from './lib/serial/commandSequences';
+import { saveCommandPresets } from './lib/serial/serialCommands';
+import { SessionWorkspaceManager } from './components/workspaces/SessionWorkspaceManager';
+import { PortDiscoveryDashboard } from './components/connection/PortDiscoveryDashboard';
+import { SidebarNavigation } from './components/app/SidebarNavigation';
+import { WelcomeScreen } from './components/app/WelcomeScreen';
+import { WorkspaceProfileMenu } from './components/app/WorkspaceProfileMenu';
+import { VisualizeScreen, type VisualizeSession } from './components/telemetry/VisualizeScreen';
+import type { SignalDeckPage } from './components/app/navigation';
+import { defaultPreferences, loadPreferences, savePreferences, type AppTheme, type BaudTidePreferences, type DisplayEncoding, type LineEnding } from './lib/preferences/preferences';
+import { loadAnalysisWorkspaces } from './lib/workspaces/analysisWorkspaces';
+import { stableTerminalSessionIdentity, type SavedSessionWorkspace, type TerminalLayout } from './lib/workspaces/sessionWorkspaces';
 import { isDesktopRuntime } from './lib/desktop';
 import { Leaf, Moon, Radio, Sun, TerminalSquare, X } from 'lucide-react';
 import baudTideMark from './assets/signaldeck-mark.png';
-import './light-theme.css';
-import './components/theme-toggle.css';
+import './styles/light-theme.css';
+import './styles/theme-toggle.css';
 import {
   defaultSerialConnectionSettings,
   disconnectNativeSerialSession,
@@ -45,7 +45,7 @@ import {
   startNativeSerialSession,
   type NativeSerialPort,
   type SerialDeviceIdentity,
-} from './lib/serial';
+} from './lib/serial/serial';
 
 const pageNames: Record<SignalDeckPage, string> = {
   dashboard: 'Overview', sessions: 'Live terminal', visualize: 'Visualize', logs: 'Saved logs', mobile: 'Mobile share', preferences: 'Preferences', help: 'Help & feedback',
