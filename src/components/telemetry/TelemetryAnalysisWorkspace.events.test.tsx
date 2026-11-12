@@ -113,6 +113,13 @@ describe('capture event workspace', () => {
     expect(container.querySelector('.bt-event-list')?.textContent).toContain('Motor started');
     expect(container.querySelector('.bt-event-list')?.textContent).toContain('Changed power supply');
   });
+  it('refreshes imported notes when an already mounted workspace becomes visible', async () => {
+    await inspect();
+    await act(async () => root.render(<TelemetryAnalysisWorkspace nativeEnabled workspaceVisible={false} sessions={[]} selectedSessionId={null} onSelectSession={() => {}} onRequestConnection={() => {}} />));
+    saveCaptureMarker({ id: 'imported-note', kind: 'note', capturePath: log.path, timestamp, sourceName: 'Board', label: 'Imported spike', note: 'From a bundle' });
+    await act(async () => root.render(<TelemetryAnalysisWorkspace nativeEnabled workspaceVisible sessions={[]} selectedSessionId={null} onSelectSession={() => {}} onRequestConnection={() => {}} />));
+    expect(container.querySelector('.bt-event-list')?.textContent).toContain('Imported spike');
+  });
   it('cancels context on close and ignores a late result', async () => {
     const context = deferred<Awaited<ReturnType<typeof readCaptureContext>>>(); vi.mocked(readCaptureContext).mockReturnValue(context.promise);
     await inspect();

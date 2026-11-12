@@ -1,6 +1,7 @@
 import { DesktopWatchService, watchCommands } from './watch-service.mjs';
 import { TelemetryExportStreams, assertExportDestinationSafe } from './telemetry-export.mjs';
 import { CaptureAnalysisReaders } from './capture-analysis.mjs';
+import { CaptureBundleService } from './capture-bundle-service.mjs';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
@@ -35,6 +36,12 @@ const allowedEvents = new Set(events);
 const electronOwnedCommands = new Set([
   'select_log_directory',
   'save_saved_log',
+  'inspect_capture_bundle',
+  'export_capture_bundle',
+  'import_capture_bundle',
+  'import_example_capture_bundle',
+  'pending_capture_bundle_imports',
+  'finish_capture_bundle_import',
   'export_telemetry_data',
   'begin_telemetry_export',
   'append_telemetry_export',
@@ -371,6 +378,29 @@ async function validateTelemetryDestination(destination) {
 }
 const telemetryExports = new TelemetryExportStreams(validateTelemetryDestination);
 const captureAnalyses = new CaptureAnalysisReaders((command, args) => backend.invoke(command, args));
+const captureBundles = new CaptureBundleService({
+  invoke: (command, args) => backend.invoke(command, args),
+  stagingRoot: path.join(backendDataDirectory, 'bundle-staging'),
+  validateDestination: validateTelemetryDestination,
+});
+
+async function exportCaptureBundleDialog(args) {
+  if (typeof args.sourcePath !== 'string' || !path.isAbsolute(args.sourcePath)) throw new Error('Choose a saved capture to export.');
+  const options = { title: 'Export capture bundle', defaultPath: `${path.parse(args.sourcePath).name}.btbundle`, buttonLabel: 'Export bundle',
+    filters: [{ name: 'BaudTide capture bundle', extensions: ['btbundle'] }], properties: ['showOverwriteConfirmation', 'createDirectory'] };
+  const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+  if (result.canceled || !result.filePath) return null;
+  const destination = path.resolve(path.extname(result.filePath) ? result.filePath : `${result.filePath}.btbundle`);
+  return captureBundles.exportBundle({ sourcePath: args.sourcePath, destination, metadata: args.metadata });
+}
+
+async function importCaptureBundleDialog() {
+  const options = { title: 'Import capture bundle', buttonLabel: 'Import bundle', properties: ['openFile'],
+    filters: [{ name: 'BaudTide capture bundle', extensions: ['btbundle'] }] };
+  const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+  if (result.canceled || !result.filePaths.length) return null;
+  return captureBundles.importBundle(path.resolve(result.filePaths[0]));
+}
 
 async function disposeRendererResources() {
   const results = await Promise.allSettled([telemetryExports.dispose(), captureAnalyses.dispose()]);
@@ -482,6 +512,14 @@ ipcMain.handle(invokeChannel, async (event, command, args = {}) => {
   if (electronOwnedCommands.has(command)) {
     if (command === 'select_log_directory') return chooseLogDirectory();
     if (command === 'save_saved_log') return saveLogCopy(args);
+    if (command === 'inspect_capture_bundle') return captureBundles.inspect(args.sourcePath);
+    if (command === 'export_capture_bundle') return exportCaptureBundleDialog(args);
+    if (command === 'import_capture_bundle') return importCaptureBundleDialog();
+    if (command === 'import_example_capture_bundle') return captureBundles.importBundle(app.isPackaged
+      ? path.join(process.resourcesPath, 'examples', 'temperature-demo.btbundle')
+      : path.join(electronDirectory, 'examples', 'temperature-demo.btbundle'));
+    if (command === 'pending_capture_bundle_imports') return backend.invoke(command, {});
+    if (command === 'finish_capture_bundle_import') return backend.invoke(command, { id: args.id });
     if (command === 'export_telemetry_data') return exportTelemetryData(args);
     if (command === 'begin_telemetry_export') {
       return telemetryExports.beginWithDestination(() => chooseTelemetryExportDestination(args));

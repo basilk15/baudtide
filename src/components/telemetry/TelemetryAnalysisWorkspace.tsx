@@ -1,4 +1,5 @@
 import { comparisonReloadOptions } from '../../lib/captures/comparisonReload';
+import { decoderForImportedCapture } from '../../lib/captures/captureBundleRecovery';
 import { CaptureComparisonPanel } from './CaptureComparisonPanel';
 import type { CaptureComparisonSettings } from '../../lib/captures/captureComparison';
 import { useBenchEvents } from '../../hooks/useBenchEvents';
@@ -375,6 +376,11 @@ export function TelemetryAnalysisWorkspace({
     catch (error) { return { markers: [], error: error instanceof Error ? error.message : 'Could not read saved markers.' }; }
   });
   const [markerSaveError, setMarkerSaveError] = useState('');
+  useEffect(() => {
+    if (!workspaceVisible) return;
+    try { setMarkerLibrary({ markers: loadCaptureMarkers(), error: '' }); }
+    catch (error) { setMarkerLibrary((current) => ({ markers: current.markers, error: error instanceof Error ? error.message : 'Could not read saved notes.' })); }
+  }, [workspaceVisible]);
   const [inspection, setInspection] = useState<EventInspection | null>(null);
   const inspectionRead = useRef<AbortController | null>(null);
   useEffect(() => () => inspectionRead.current?.abort(), []);
@@ -509,14 +515,15 @@ export function TelemetryAnalysisWorkspace({
     const cancel = () => abort.abort(); signal?.addEventListener('abort', cancel, { once: true });
     setLoadingPath(log.path); setLoadProgress(0); setLibraryError('');
     try {
-      const result = await analyzeNativeCapture(id, log, { profile, signal: abort.signal, onProgress: setLoadProgress });
+      const selectedProfile = profile ?? (!replace ? decoderForImportedCapture(log.path) : undefined);
+      const result = await analyzeNativeCapture(id, log, { profile: selectedProfile, signal: abort.signal, onProgress: setLoadProgress });
       abort.signal.throwIfAborted(); captureIndexes.current.add(result.index);
       const selection = requestedRange ? {
         start: Math.max(result.index.range.start, Math.min(result.index.range.end, requestedRange.start)),
         end: Math.max(result.index.range.start, Math.min(result.index.range.end, requestedRange.end)),
       } : result.index.range;
       const source: RecordedSource = { id, kind: 'recorded', name: log.sessionName, detail: log.port ?? log.fileName, log,
-        snapshot: result.snapshot, index: result.index, selection, timingMode: result.index.timingMode, decoderProfile: profile };
+        snapshot: result.snapshot, index: result.index, selection, timingMode: result.index.timingMode, decoderProfile: selectedProfile };
       setRecordedSources((current) => ({ ...current, [id]: source }));
       const previous = recordedSources[id];
       if (previous) { captureIndexes.current.delete(previous.index); void previous.index.dispose().catch(() => undefined); }

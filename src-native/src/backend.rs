@@ -736,6 +736,7 @@ struct ReaderContext {
 struct CaptureQuota {
     used_bytes: u64,
     limit_bytes: u64,
+    bundle_reserved_bytes: u64,
 }
 
 impl Default for CaptureQuota {
@@ -743,6 +744,7 @@ impl Default for CaptureQuota {
         Self {
             used_bytes: 0,
             limit_bytes: ApplicationSettings::default().storage.storage_limit_bytes,
+            bundle_reserved_bytes: 0,
         }
     }
 }
@@ -752,6 +754,9 @@ struct SerialState {
     capture_readers: Mutex<HashMap<String, crate::capture_reader::CaptureReader>>,
     sessions: Arc<Mutex<HashMap<String, ActiveSession>>>,
     closing_log_paths: Arc<Mutex<HashSet<String>>>,
+    bundle_export_leases: Mutex<HashMap<String, String>>,
+    bundle_import_lock: Mutex<()>,
+    bundle_import_reservations: Mutex<HashMap<String, u64>>,
     mobile_shares: Arc<Mutex<HashMap<String, ActiveMobileShare>>>,
     mobile_workspace_share: Arc<Mutex<Option<ActiveMobileWorkspaceShare>>>,
     saved_log_searches: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
@@ -1438,6 +1443,18 @@ fn delete_saved_log(
                 .into(),
         );
     }
+    if state
+        .bundle_export_leases
+        .lock()
+        .map_err(lock_error)?
+        .values()
+        .any(|path| path == &key)
+    {
+        return Err(
+            "This capture is being exported. Wait for the export to finish before deleting it."
+                .into(),
+        );
+    }
     let mut quota = state.capture_quota.lock().map_err(lock_error)?;
     std::fs::remove_file(&path)
         .map_err(|error| format!("Could not delete the saved log: {error}"))?;
@@ -1470,6 +1487,412 @@ fn delete_saved_log(
 
 fn release_capture_quota(quota: &mut CaptureQuota, deleted_bytes: u64) {
     quota.used_bytes = quota.used_bytes.saturating_sub(deleted_bytes);
+}
+
+/// Move a completed sibling into place without replacing an existing file.
+fn publish_new_bundle_file(source: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let from = std::ffi::CString::new(source.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid source path"))?;
+        let to = std::ffi::CString::new(destination.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid destination path"))?;
+        // renameat2 supports filesystems such as FAT that cannot create hard links.
+        let result = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                from.as_ptr(),
+                libc::AT_FDCWD,
+                to.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if result == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if !matches!(
+            error.raw_os_error(),
+            Some(libc::ENOSYS) | Some(libc::EINVAL)
+        ) {
+            return Err(error);
+        }
+    }
+    std::fs::hard_link(source, destination)?;
+    let _ = std::fs::remove_file(source);
+    Ok(())
+}
+
+/// A lease prevents an in-app deletion while Electron streams a stable capture.
+fn begin_capture_bundle_export(
+    app: &AppHandle,
+    state: &SerialState,
+    source: String,
+) -> CommandResult<serde_json::Value> {
+    let path = resolve_saved_log_path(app, &source)?;
+    let key = path_key(&path);
+    let sessions = state.sessions.lock().map_err(lock_error)?;
+    if sessions
+        .values()
+        .any(|session| path_key(Path::new(&session.info.log_path)) == key)
+        || state
+            .closing_log_paths
+            .lock()
+            .map_err(lock_error)?
+            .contains(&key)
+    {
+        return Err("Disconnect this capture and wait for it to finish before exporting.".into());
+    }
+    let reader = crate::capture_reader::CaptureReader::open(&path)
+        .map_err(|error| format!("Could not inspect the capture: {error}"))?;
+    let records = index_records_by_path(read_log_index_records(app)?);
+    let record = records.get(&key).map(|(_, record)| record);
+    let capture = saved_log_from_path(&path, record, None)?;
+    let id = Uuid::new_v4().to_string();
+    state
+        .bundle_export_leases
+        .lock()
+        .map_err(lock_error)?
+        .insert(id.clone(), key);
+    Ok(
+        serde_json::json!({ "id": id, "path": path.display().to_string(), "capture": capture,
+        "timingMode": if reader.recorded_timing() { "recorded" } else { "approximate" } }),
+    )
+}
+
+fn end_capture_bundle_export(state: &SerialState, id: &str) -> CommandResult<()> {
+    state
+        .bundle_export_leases
+        .lock()
+        .map_err(lock_error)?
+        .remove(id);
+    Ok(())
+}
+
+fn bundle_recovery_directory(app: &AppHandle) -> CommandResult<PathBuf> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(str::to_owned)?
+        .join("bundle-imports"))
+}
+
+fn bundle_recovery_path(app: &AppHandle, id: &str) -> CommandResult<PathBuf> {
+    Uuid::parse_str(id).map_err(|_| "Invalid import identity.".to_string())?;
+    Ok(bundle_recovery_directory(app)?.join(format!("{id}.json")))
+}
+
+fn pending_capture_bundle_imports(app: &AppHandle) -> CommandResult<Vec<serde_json::Value>> {
+    let directory = bundle_recovery_directory(app)?;
+    if !directory.exists() {
+        return Ok(Vec::new());
+    }
+    let mut pending = Vec::new();
+    for entry in
+        read_dir(directory).map_err(|error| format!("Could not read pending imports: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("Could not read pending imports: {error}"))?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let stat = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        if !stat.file_type().is_file() || stat.len() > 300 * 1024 {
+            return Err("Pending import metadata is invalid; existing data is preserved.".into());
+        }
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).map_err(|error| error.to_string())?)
+                .map_err(|_| {
+                    "Pending import metadata is invalid; existing data is preserved.".to_string()
+                })?;
+        let id = value
+            .get("id")
+            .and_then(|value| value.as_str())
+            .ok_or("Invalid pending import identity.")?;
+        if bundle_recovery_path(app, id)? != path {
+            return Err("Invalid pending import identity.".into());
+        }
+        let capture = value
+            .get("capturePath")
+            .and_then(|value| value.as_str())
+            .ok_or("Invalid pending capture path.")?;
+        if resolve_saved_log_path(app, capture).is_ok() {
+            pending.push(value);
+        }
+    }
+    Ok(pending)
+}
+
+fn finish_capture_bundle_import(app: &AppHandle, id: &str) -> CommandResult<()> {
+    let path = bundle_recovery_path(app, id)?;
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "Could not finish restoring the imported capture: {error}"
+        )),
+    }
+}
+
+fn reserve_capture_bundle_import(
+    app: &AppHandle,
+    state: &SerialState,
+    size: u64,
+) -> CommandResult<serde_json::Value> {
+    if size > 9 * GIBIBYTE {
+        return Err("The capture bundle is too large.".into());
+    }
+    let _sessions = state.sessions.lock().map_err(lock_error)?;
+    let on_disk = capture_library_usage(app)?;
+    let mut quota = state.capture_quota.lock().map_err(lock_error)?;
+    quota.limit_bytes = load_application_settings(app)?.storage.storage_limit_bytes;
+    quota.used_bytes = quota.used_bytes.max(on_disk);
+    if size > quota.limit_bytes.saturating_sub(quota.used_bytes) {
+        return Err(
+            "The capture library does not have enough space under its configured limit.".into(),
+        );
+    }
+    let id = Uuid::new_v4().to_string();
+    state
+        .bundle_import_reservations
+        .lock()
+        .map_err(lock_error)?
+        .insert(id.clone(), size);
+    quota.used_bytes += size;
+    quota.bundle_reserved_bytes += size;
+    Ok(serde_json::json!({ "id": id }))
+}
+
+fn release_capture_bundle_import(state: &SerialState, id: &str) -> CommandResult<()> {
+    let _sessions = state.sessions.lock().map_err(lock_error)?;
+    let mut quota = state.capture_quota.lock().map_err(lock_error)?;
+    if let Some(size) = state
+        .bundle_import_reservations
+        .lock()
+        .map_err(lock_error)?
+        .remove(id)
+    {
+        quota.bundle_reserved_bytes = quota.bundle_reserved_bytes.saturating_sub(size);
+        release_capture_quota(&mut quota, size);
+    }
+    Ok(())
+}
+
+/// Publish only validated files from Electron's private staging directory.
+fn publish_capture_bundle(
+    app: AppHandle,
+    state: &SerialState,
+    stage: String,
+    metadata: serde_json::Value,
+    reservation: String,
+) -> CommandResult<serde_json::Value> {
+    let _import = state.bundle_import_lock.lock().map_err(lock_error)?;
+    let app_data = app.path().app_data_dir().map_err(str::to_owned)?;
+    let root = app_data
+        .join("bundle-staging")
+        .canonicalize()
+        .map_err(|_| "Import staging is unavailable.".to_string())?;
+    let stage_path = PathBuf::from(stage);
+    let stage_info = std::fs::symlink_metadata(&stage_path)
+        .map_err(|_| "Import staging is unavailable.".to_string())?;
+    if !stage_info.file_type().is_dir() {
+        return Err("Invalid import staging folder.".into());
+    }
+    let stage_path = stage_path
+        .canonicalize()
+        .map_err(|_| "Invalid import staging folder.".to_string())?;
+    if stage_path.parent() != Some(root.as_path())
+        || !stage_path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("bundle-"))
+    {
+        return Err("Invalid import staging folder.".into());
+    }
+    let raw_source = stage_path.join("capture.log");
+    let raw_info = std::fs::symlink_metadata(&raw_source)
+        .map_err(|_| "The staged capture is unavailable.".to_string())?;
+    if !raw_info.file_type().is_file() {
+        return Err("The staged capture must be a regular file.".into());
+    }
+    let timing_source = capture_timing::companion_path(&raw_source);
+    let timing_bytes = match std::fs::symlink_metadata(&timing_source) {
+        Ok(info) if info.file_type().is_file() => info.len(),
+        Ok(_) => return Err("The staged timing must be a regular file.".into()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+        Err(error) => return Err(format!("Could not inspect staged timing: {error}")),
+    };
+    if timing_bytes > 0
+        && !crate::capture_reader::CaptureReader::open(&raw_source)
+            .map_err(|error| error.to_string())?
+            .recorded_timing()
+    {
+        return Err("The staged receive timing is invalid.".into());
+    }
+    let size = raw_info
+        .len()
+        .checked_add(timing_bytes)
+        .ok_or("The capture is too large.")?;
+    let name = metadata
+        .get("name")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty() && value.len() <= 160)
+        .ok_or("The imported capture name is invalid.")?;
+    let metadata_bytes = serde_json::to_vec(&metadata).map_err(|error| error.to_string())?;
+    if metadata_bytes.len() > 256 * 1024 {
+        return Err("The import metadata is too large.".into());
+    }
+    let timestamp = |key: &str| -> Option<String> {
+        metadata
+            .get(key)
+            .and_then(|value| value.as_str())
+            .filter(|value| chrono::DateTime::parse_from_rfc3339(value).is_ok())
+            .map(str::to_owned)
+    };
+    let now = now_timestamp();
+    let started = timestamp("startedAt")
+        .or_else(|| timestamp("modifiedAt"))
+        .unwrap_or_else(|| now.clone());
+    let id = Uuid::new_v4().to_string();
+    let directory = saved_log_directory_for_capture(&app)?;
+    create_dir_all(&directory)
+        .map_err(|error| format!("Could not create capture folder: {error}"))?;
+    let final_path = generated_log_path(&directory, name, &id);
+    let final_timing = capture_timing::companion_path(&final_path);
+    let temporary = directory.join(format!(".bundle-{id}.tmp"));
+    let temporary_timing = directory.join(format!(".bundle-{id}.timing.tmp"));
+    let recovery = bundle_recovery_path(&app, &id)?;
+    let recovery_temporary = bundle_recovery_directory(&app)?.join(format!(".{id}.tmp"));
+    let index = log_index_path(&app, &id)?;
+    if state
+        .bundle_import_reservations
+        .lock()
+        .map_err(lock_error)?
+        .get(&reservation)
+        != Some(&size)
+    {
+        return Err("The capture changed after storage was reserved. Retry the import.".into());
+    }
+    let mut published_timing = false;
+    let mut wrote_recovery = false;
+    let mut wrote_index = false;
+    let result = (|| -> CommandResult<serde_json::Value> {
+        let mut raw = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| error.to_string())?;
+        let copied = io::copy(
+            &mut File::open(&raw_source).map_err(|error| error.to_string())?,
+            &mut raw,
+        )
+        .map_err(|error| error.to_string())?;
+        if copied != raw_info.len() {
+            return Err("The staged capture changed during import.".into());
+        }
+        raw.sync_all().map_err(|error| error.to_string())?;
+        if timing_bytes > 0 {
+            let mut timing = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary_timing)
+                .map_err(|error| error.to_string())?;
+            let copied = io::copy(
+                &mut File::open(&timing_source).map_err(|error| error.to_string())?,
+                &mut timing,
+            )
+            .map_err(|error| error.to_string())?;
+            if copied != timing_bytes {
+                return Err("The staged timing changed during import.".into());
+            }
+            timing.sync_all().map_err(|error| error.to_string())?;
+        }
+        let record = LogIndexRecord {
+            schema_version: 1,
+            session_id: id.clone(),
+            session_name: name.into(),
+            port: String::new(),
+            baud_rate: 0,
+            settings: None,
+            started_at: started,
+            updated_at: now,
+            ended_at: timestamp("endedAt"),
+            log_path: final_path.display().to_string(),
+            state: metadata
+                .get("state")
+                .and_then(|value| value.as_str())
+                .filter(|value| {
+                    matches!(
+                        *value,
+                        "saved"
+                            | "disconnected"
+                            | "error"
+                            | "quota-reached"
+                            | "interrupted"
+                            | "unknown"
+                    )
+                })
+                .unwrap_or("unknown")
+                .into(),
+        };
+        if index.exists() || recovery.exists() {
+            return Err(
+                "The generated import identity is already in use. Retry the import.".into(),
+            );
+        }
+        write_log_index_record(&app, &record)?;
+        wrote_index = true;
+        create_dir_all(bundle_recovery_directory(&app)?).map_err(|error| error.to_string())?;
+        let recovery_value = serde_json::json!({ "id": id, "capturePath": final_path.display().to_string(), "metadata": metadata });
+        let mut pending = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&recovery_temporary)
+            .map_err(|error| error.to_string())?;
+        pending
+            .write_all(&serde_json::to_vec(&recovery_value).map_err(|error| error.to_string())?)
+            .and_then(|()| pending.sync_all())
+            .map_err(|error| error.to_string())?;
+        publish_new_bundle_file(&recovery_temporary, &recovery)
+            .map_err(|error| error.to_string())?;
+        wrote_recovery = true;
+        // Publish and convert the reservation under the same lock order used by
+        // session startup. A scan cannot count both the file and its reservation.
+        let _sessions = state.sessions.lock().map_err(lock_error)?;
+        let mut quota = state.capture_quota.lock().map_err(lock_error)?;
+        let mut reservations = state
+            .bundle_import_reservations
+            .lock()
+            .map_err(lock_error)?;
+        if reservations.get(&reservation) != Some(&size) {
+            return Err("The import reservation expired. Retry the import.".into());
+        }
+        if timing_bytes > 0 {
+            publish_new_bundle_file(&temporary_timing, &final_timing)
+                .map_err(|error| format!("Could not publish timing: {error}"))?;
+            published_timing = true;
+        }
+        publish_new_bundle_file(&temporary, &final_path)
+            .map_err(|error| format!("Could not publish capture: {error}"))?;
+        quota.bundle_reserved_bytes = quota.bundle_reserved_bytes.saturating_sub(size);
+        reservations.remove(&reservation);
+        Ok(recovery_value)
+    })();
+    let _ = std::fs::remove_file(&temporary);
+    let _ = std::fs::remove_file(&temporary_timing);
+    let _ = std::fs::remove_file(&recovery_temporary);
+    if result.is_err() {
+        if published_timing {
+            let _ = std::fs::remove_file(&final_timing);
+        }
+        if wrote_recovery {
+            let _ = std::fs::remove_file(&recovery);
+        }
+        if wrote_index {
+            let _ = std::fs::remove_file(&index);
+        }
+    }
+    result
 }
 
 fn save_saved_log_sidecar(
@@ -4233,16 +4656,15 @@ fn start_serial_session(
             .and_then(|port| port.device_identity)
     });
     let configured_limit = load_application_settings(&app)?.storage.storage_limit_bytes;
-    let current_library_bytes = capture_library_usage(&app)?;
-
     // Keep this lock through insertion. A reader can fail immediately after it starts;
     // holding the lock makes its failure cleanup wait until its own entry exists.
     let mut sessions = state.sessions.lock().map_err(lock_error)?;
+    let current_library_bytes = capture_library_usage(&app)?;
     {
         let mut quota = state.capture_quota.lock().map_err(lock_error)?;
         quota.limit_bytes = configured_limit;
         if sessions.is_empty() {
-            quota.used_bytes = current_library_bytes;
+            quota.used_bytes = current_library_bytes.saturating_add(quota.bundle_reserved_bytes);
         }
         if quota.used_bytes >= quota.limit_bytes {
             return Err(format!(
@@ -5033,6 +5455,7 @@ mod tests {
         let mut quota = CaptureQuota {
             used_bytes: 1_024,
             limit_bytes: 4_096,
+            bundle_reserved_bytes: 0,
         };
 
         release_capture_quota(&mut quota, 256);
@@ -7184,7 +7607,9 @@ fn saved_log_from_path(
     } else if let Some(record) = record {
         match record.state.as_str() {
             "capturing" | "starting" => "interrupted",
-            "disconnected" | "error" | "quota-reached" => record.state.as_str(),
+            "disconnected" | "error" | "quota-reached" | "interrupted" | "unknown" => {
+                record.state.as_str()
+            }
             _ => "saved",
         }
     } else {
@@ -7654,10 +8079,11 @@ fn dispatch_sidecar_request(
             // same session -> quota lock order is used by start and delete.
             let sessions = state.sessions.lock().map_err(lock_error)?;
             let on_disk = capture_library_usage(&app)?;
-            let used = if sessions.is_empty() {
+            let quota = state.capture_quota.lock().map_err(lock_error)?;
+            let used = if sessions.is_empty() && quota.bundle_reserved_bytes == 0 {
                 on_disk
             } else {
-                on_disk.max(state.capture_quota.lock().map_err(lock_error)?.used_bytes)
+                on_disk.max(quota.used_bytes)
             };
             serialize_command_result(Ok(used))
         }
@@ -7724,6 +8150,39 @@ fn dispatch_sidecar_request(
             required_protocol_param(&params, "sourcePath")?,
             required_protocol_param(&params, "destinationPath")?,
         )),
+        "begin_capture_bundle_export" => begin_capture_bundle_export(
+            &app,
+            state,
+            required_protocol_param(&params, "sourcePath")?,
+        ),
+        "end_capture_bundle_export" => {
+            end_capture_bundle_export(state, &required_protocol_param::<String>(&params, "id")?)?;
+            Ok(serde_json::Value::Null)
+        }
+        "reserve_capture_bundle_import" => {
+            reserve_capture_bundle_import(&app, state, required_protocol_param(&params, "size")?)
+        }
+        "release_capture_bundle_import" => {
+            release_capture_bundle_import(
+                state,
+                &required_protocol_param::<String>(&params, "id")?,
+            )?;
+            Ok(serde_json::Value::Null)
+        }
+        "publish_capture_bundle" => publish_capture_bundle(
+            app,
+            state,
+            required_protocol_param(&params, "stage")?,
+            required_protocol_param(&params, "metadata")?,
+            required_protocol_param(&params, "reservation")?,
+        ),
+        "pending_capture_bundle_imports" => {
+            serialize_command_result(pending_capture_bundle_imports(&app))
+        }
+        "finish_capture_bundle_import" => {
+            finish_capture_bundle_import(&app, &required_protocol_param::<String>(&params, "id")?)?;
+            Ok(serde_json::Value::Null)
+        }
         "start_mobile_share" => serialize_command_result(start_mobile_share(
             state,
             required_protocol_param(&params, "sessionId")?,
@@ -7945,6 +8404,137 @@ pub(crate) fn sidecar_entry() {
 #[cfg(test)]
 mod sidecar_protocol_tests {
     use super::*;
+
+    #[test]
+    fn imported_bundle_is_independent_and_keeps_recovery_metadata() {
+        let root = temporary_export_directory("bundle-import");
+        let app = AppHandle::new(root.clone());
+        let state = SerialState::default();
+        let staging = root.join("bundle-staging").join("bundle-test");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("capture.log"), b"temperature=20\n").unwrap();
+        let metadata = serde_json::json!({ "name": "Board", "notes": [], "decoder": null, "state": "interrupted",
+            "modifiedAt": "2026-01-01T00:00:00.000Z" });
+        let first_reservation =
+            reserve_capture_bundle_import(&app, &state, b"temperature=20\n".len() as u64).unwrap();
+        let first = publish_capture_bundle(
+            app.clone(),
+            &state,
+            staging.display().to_string(),
+            metadata.clone(),
+            first_reservation["id"].as_str().unwrap().into(),
+        )
+        .unwrap();
+        let second_reservation =
+            reserve_capture_bundle_import(&app, &state, b"temperature=20\n".len() as u64).unwrap();
+        let second = publish_capture_bundle(
+            app.clone(),
+            &state,
+            staging.display().to_string(),
+            metadata,
+            second_reservation["id"].as_str().unwrap().into(),
+        )
+        .unwrap();
+        let first_path = first["capturePath"].as_str().unwrap();
+        assert_ne!(first_path, second["capturePath"].as_str().unwrap());
+        assert_eq!(std::fs::read(first_path).unwrap(), b"temperature=20\n");
+        let logs = collect_saved_logs(&app, &state.sessions).unwrap();
+        assert_eq!(logs.len(), 2);
+        assert!(logs.iter().all(|log| log.state == "interrupted"));
+        assert_eq!(
+            logs[0].started_at.as_deref(),
+            Some("2026-01-01T00:00:00.000Z")
+        );
+        assert_eq!(pending_capture_bundle_imports(&app).unwrap().len(), 2);
+        finish_capture_bundle_import(&app, first["id"].as_str().unwrap()).unwrap();
+        assert_eq!(pending_capture_bundle_imports(&app).unwrap().len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bundle_import_rejects_outside_staging_and_quota_exhaustion() {
+        let root = temporary_export_directory("bundle-quota");
+        let app = AppHandle::new(root.clone());
+        let state = SerialState::default();
+        let staging = root.join("bundle-staging").join("bundle-test");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("capture.log"), b"12345678").unwrap();
+        let metadata = serde_json::json!({ "name": "Board", "notes": [], "decoder": null });
+        let reservation = reserve_capture_bundle_import(&app, &state, 8).unwrap();
+        assert!(publish_capture_bundle(
+            app.clone(),
+            &state,
+            root.display().to_string(),
+            metadata.clone(),
+            reservation["id"].as_str().unwrap().into()
+        )
+        .is_err());
+        release_capture_bundle_import(&state, reservation["id"].as_str().unwrap()).unwrap();
+        state.capture_quota.lock().unwrap().used_bytes = 10 * GIBIBYTE;
+        assert!(reserve_capture_bundle_import(&app, &state, 8).is_err());
+        assert!(collect_saved_logs(&app, &state.sessions)
+            .unwrap()
+            .is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_bundle_reservations_share_the_capture_quota() {
+        let root = temporary_export_directory("bundle-reservations");
+        let app = AppHandle::new(root.clone());
+        let state = SerialState::default();
+        let first = reserve_capture_bundle_import(&app, &state, 8 * GIBIBYTE).unwrap();
+        assert!(reserve_capture_bundle_import(&app, &state, 2 * GIBIBYTE + 1).is_err());
+        release_capture_bundle_import(&state, first["id"].as_str().unwrap()).unwrap();
+        assert!(reserve_capture_bundle_import(&app, &state, 6).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bundle_export_lease_prevents_deletion_until_released() {
+        let root = temporary_export_directory("bundle-lease");
+        let app = AppHandle::new(root.clone());
+        let state = SerialState::default();
+        let logs = root.join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let capture = logs.join("capture.log");
+        std::fs::write(&capture, b"hello\n").unwrap();
+        let lease =
+            begin_capture_bundle_export(&app, &state, capture.display().to_string()).unwrap();
+        assert!(delete_saved_log(app.clone(), &state, capture.display().to_string()).is_err());
+        end_capture_bundle_export(&state, lease["id"].as_str().unwrap()).unwrap();
+        delete_saved_log(app, &state, capture.display().to_string()).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bundle_export_rejects_a_capture_that_is_still_closing() {
+        let root = temporary_export_directory("bundle-closing");
+        let app = AppHandle::new(root.clone());
+        let state = SerialState::default();
+        let logs = root.join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let capture = logs.join("capture.log");
+        std::fs::write(&capture, b"hello").unwrap();
+        let closing = mark_log_closing(&state.closing_log_paths, path_key(&capture)).unwrap();
+        assert!(begin_capture_bundle_export(&app, &state, capture.display().to_string()).is_err());
+        drop(closing);
+        assert!(begin_capture_bundle_export(&app, &state, capture.display().to_string()).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bundle_publication_never_replaces_an_existing_destination() {
+        let root = temporary_export_directory("bundle-collision");
+        let source = root.join("pending");
+        let destination = root.join("existing");
+        std::fs::write(&source, b"new").unwrap();
+        std::fs::write(&destination, b"original").unwrap();
+        assert!(publish_new_bundle_file(&source, &destination).is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"original");
+        assert_eq!(std::fs::read(&source).unwrap(), b"new");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn temporary_export_directory(name: &str) -> PathBuf {
         let directory =

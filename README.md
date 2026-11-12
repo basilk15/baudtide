@@ -20,6 +20,7 @@ BaudTide is an open-source Linux desktop serial monitor for ESP32, Arduino, and 
 - **Multiple devices, one workspace.** Discover ports and monitor boards in tabs or side-by-side terminals. Send text or hex, save command presets, and repeat commands with an explicit Stop control. Save command sequences with response checks, timeouts, delays, and capture-linked step results.
 - **Signals from serial output.** Plot JSON, key/value, CSV, and TSV telemetry. Map custom numeric columns with reusable decoder profiles.
 - **Capture now, investigate later.** Keep searchable raw logs locally, replay recordings, inspect time ranges, and export selected telemetry to CSV or JSON.
+- **Share a reproducible capture.** Export a completed capture as a portable bundle with its receive timing, notes, and an optional decoder; import it on another BaudTide installation. Try the included example from an empty saved-log library.
 - **Put events in context.** Inspect a watch breach in its capture, see nearby serial output and chart markers, and save timestamped notes about changes on the bench.
 - **Watches for long runs.** Set signal boundaries, sustained conditions, and recovery margins. Keep breach history across restarts and export it when needed.
 - **Messages that matter.** Save per-device text-match rules with cooldowns and optional desktop alerts. Log events persist locally and open the surrounding capture context from the notification inbox.
@@ -58,8 +59,15 @@ The launcher builds the native backend and starts the desktop app. `npm run dev`
 | Simulated serial device | `npm run simulate:serial` |
 | Supported telemetry format simulator | `npm run simulate:formats` |
 | Isolated desktop/PTY smoke server | `npm run smoke:desktop` |
+| Portable capture round-trip smoke check | `npm run smoke:bundle` |
 
 For the simulated device, enter the printed `/dev/pts/N` path in BaudTide and use 115200 baud.
+
+### Sharing a capture
+
+In **Saved logs**, choose **Export bundle** on a completed capture, review its contents, optionally select a decoder, and choose where to save the `.btbundle` file. The recipient can use **Import bundle** to add an independent copy to their local library and open it in Visualize. If restoring notes or the decoder is interrupted, use the retry action shown in Saved logs. Bundles without complete recorded timing use approximate replay timing.
+
+Bundles are local files; BaudTide does not upload them. Review raw serial output and notes before sharing: they may contain credentials, device identifiers, or other sensitive information, and are not automatically redacted. The bundle does not add the original port path as metadata or connect to a device on import.
 
 ## Repository layout
 

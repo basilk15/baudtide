@@ -371,6 +371,7 @@ fn pty_capture_loop_persists_raw_bytes_and_replays_startup_events_in_order() {
     let quota = Arc::new(Mutex::new(CaptureQuota {
         used_bytes: 0,
         limit_bytes: 4_096,
+        bundle_reserved_bytes: 0,
     }));
     let delivery = Arc::new(Mutex::new(SerialEventDelivery::Buffering {
         events: Vec::new(),
@@ -454,6 +455,7 @@ fn pty_capture_loop_truncates_a_quota_crossing_chunk_then_finalizes() {
     let quota = Arc::new(Mutex::new(CaptureQuota {
         used_bytes: 11,
         limit_bytes: 16,
+        bundle_reserved_bytes: 0,
     }));
     let (event_tx, event_rx) = mpsc::channel();
     let (finished_tx, finished_rx) = mpsc::channel();
@@ -522,6 +524,7 @@ fn pty_capture_handoff_stays_ordered_across_a_frontend_reload() {
     let quota = Arc::new(Mutex::new(CaptureQuota {
         used_bytes: 0,
         limit_bytes: 4_096,
+        bundle_reserved_bytes: 0,
     }));
     let delivery = Arc::new(Mutex::new(SerialEventDelivery::Buffering {
         events: Vec::new(),
@@ -640,6 +643,7 @@ fn pty_capture_loop_finalizes_then_reports_a_terminal_hangup() {
     let quota = Arc::new(Mutex::new(CaptureQuota {
         used_bytes: 0,
         limit_bytes: 4_096,
+        bundle_reserved_bytes: 0,
     }));
     let (finished_tx, finished_rx) = mpsc::channel();
 
@@ -686,6 +690,7 @@ fn pty_capture_loop_user_stop_finalizes_multi_chunk_capture_without_terminal_err
     let quota = Arc::new(Mutex::new(CaptureQuota {
         used_bytes: 0,
         limit_bytes: 4_096,
+        bundle_reserved_bytes: 0,
     }));
     let (event_tx, event_rx) = mpsc::channel();
     let (finished_tx, finished_rx) = mpsc::channel();
@@ -736,6 +741,7 @@ fn pty_reconnect_starts_a_new_capture_with_a_fresh_sequence_and_log() {
     let quota = Arc::new(Mutex::new(CaptureQuota {
         used_bytes: 0,
         limit_bytes: 4_096,
+        bundle_reserved_bytes: 0,
     }));
 
     let first_reader = open_serial(&pty, Duration::from_millis(50));
@@ -845,6 +851,7 @@ fn pty_event_delivery_replays_buffered_bytes_once_then_continues_live_across_rel
     let quota = Arc::new(Mutex::new(CaptureQuota {
         used_bytes: 0,
         limit_bytes: 4_096,
+        bundle_reserved_bytes: 0,
     }));
     let delivery = Arc::new(Mutex::new(SerialEventDelivery::Buffering {
         events: Vec::new(),
@@ -986,6 +993,7 @@ fn pty_quota_terminal_status_arrives_after_the_last_admitted_event() {
     let quota = Arc::new(Mutex::new(CaptureQuota {
         used_bytes: 6,
         limit_bytes: 10,
+        bundle_reserved_bytes: 0,
     }));
     let (event_tx, event_rx) = mpsc::channel();
     let (finished_tx, finished_rx) = mpsc::channel();
@@ -1043,6 +1051,7 @@ fn pty_timed_capture_preserves_raw_bytes_event_times_and_shared_quota() {
     let quota = Arc::new(Mutex::new(CaptureQuota {
         used_bytes: crate::capture_timing::HEADER_BYTES,
         limit_bytes: 4096,
+        bundle_reserved_bytes: 0,
     }));
     let (events_tx, events_rx) = mpsc::channel();
     let reader_stop = Arc::clone(&stop);
@@ -1117,6 +1126,7 @@ fn pty_timed_capture_never_exceeds_quota_or_blocks_remaining_raw_bytes() {
     let quota = Arc::new(Mutex::new(CaptureQuota {
         used_bytes: 8,
         limit_bytes: 20,
+        bundle_reserved_bytes: 0,
     }));
     let reader_stop = Arc::clone(&stop);
     let reader_quota = Arc::clone(&quota);

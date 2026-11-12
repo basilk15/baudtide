@@ -46,7 +46,7 @@ type TelemetryDecoderPanelProps = {
   onProfileDeleted: (profile: TelemetryDecoderProfile) => void;
 };
 
-type DecoderStorageError = 'storage-unavailable' | 'storage-write-failed' | 'storage-quota-exceeded';
+type DecoderStorageError = 'storage-unavailable' | 'storage-write-failed' | 'storage-quota-exceeded' | 'profile-limit';
 
 const separatorOptions = (['whitespace', 'comma', 'tab', 'pipe', 'semicolon'] as TelemetryDecoderSeparator[])
   .map((value) => ({ value, label: decoderSeparatorLabel(value) }));
@@ -55,6 +55,7 @@ function profileStorageError(error: DecoderStorageError) {
   switch (error) {
     case 'storage-unavailable': return 'Decoder profiles are unavailable because local storage is blocked.';
     case 'storage-quota-exceeded': return 'Decoder profiles could not be saved because local storage is full.';
+    case 'profile-limit': return 'The decoder profile library is full. Remove a profile before adding another.';
     default: return 'Decoder profiles could not be saved locally.';
   }
 }
@@ -85,6 +86,12 @@ export function TelemetryDecoderPanel({ sources, preferredSourceId, onApply, onP
   const validationError = validateTelemetryDecoderDraft(draft);
   const previewValues = validationError ? null : parseCustomTelemetryLine(sampleLine, draft);
   const previewFieldNames = useMemo(() => new Set(draft.fields.map((field) => field.name)), [draft.fields]);
+
+  useEffect(() => {
+    const refresh = () => setProfiles(loadTelemetryDecoderProfiles());
+    window.addEventListener('baudtide:decoder-profiles-changed', refresh);
+    return () => window.removeEventListener('baudtide:decoder-profiles-changed', refresh);
+  }, []);
 
   useEffect(() => {
     // Follow the chart without discarding an open decoder editor's draft.

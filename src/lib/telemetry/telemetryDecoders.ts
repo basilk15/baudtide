@@ -36,7 +36,7 @@ export type TelemetryDecoderProfileDraft = {
 
 export type TelemetryDecoderStorageResult =
   | { ok: true; profiles: TelemetryDecoderProfile[] }
-  | { ok: false; error: 'storage-unavailable' | 'storage-write-failed' | 'storage-quota-exceeded' };
+  | { ok: false; error: 'storage-unavailable' | 'storage-write-failed' | 'storage-quota-exceeded' | 'profile-limit' };
 
 const STORAGE_KEY = 'baudtide.telemetry-decoder-profiles.v1';
 const SEPARATORS = new Set<TelemetryDecoderSeparator>(['whitespace', 'comma', 'tab', 'pipe', 'semicolon']);
@@ -183,6 +183,7 @@ export function loadTelemetryDecoderProfiles(): TelemetryDecoderProfile[] {
 
 export function saveTelemetryDecoderProfiles(profiles: readonly TelemetryDecoderProfile[]): TelemetryDecoderStorageResult {
   if (typeof window === 'undefined') return { ok: false, error: 'storage-unavailable' };
+  if (profiles.length > MAX_TELEMETRY_DECODER_PROFILES) return { ok: false, error: 'profile-limit' };
   try {
     const storage = window.localStorage;
     if (!storage) return { ok: false, error: 'storage-unavailable' };
@@ -196,6 +197,36 @@ export function saveTelemetryDecoderProfiles(profiles: readonly TelemetryDecoder
     const isQuotaError = error instanceof DOMException && (error.name === 'QuotaExceededError' || error.code === 22);
     return { ok: false, error: isQuotaError ? 'storage-quota-exceeded' : 'storage-write-failed' };
   }
+}
+
+/** Strict import: never replace an unreadable or full profile library. */
+export function importTelemetryDecoderProfile(value: unknown, importId: string, storage: Pick<Storage, 'getItem' | 'setItem'> = localStorage): TelemetryDecoderProfile {
+  if (!/^[a-zA-Z0-9-]{1,100}$/.test(importId)) throw new Error('Invalid decoder import identity.');
+  const incoming = normalizeTelemetryDecoderProfile(value);
+  if (!incoming || !value || typeof value !== 'object' || !SEPARATORS.has((value as TelemetryDecoderProfile).separator) || !Array.isArray((value as TelemetryDecoderProfile).fields)
+    || incoming.fields.length !== (value as TelemetryDecoderProfile).fields.length) throw new Error('The imported decoder is invalid.');
+  let parsed: unknown;
+  try { parsed = JSON.parse(storage.getItem(STORAGE_KEY) ?? '[]'); }
+  catch { throw new Error('Saved decoder profiles could not be read. Existing profiles are preserved.'); }
+  if (!Array.isArray(parsed) || parsed.length > MAX_TELEMETRY_DECODER_PROFILES) throw new Error('Saved decoder profiles could not be read. Existing profiles are preserved.');
+  const profiles = parsed.map((entry: unknown) => {
+    if (!entry || typeof entry !== 'object') return null;
+    const candidate = entry as TelemetryDecoderProfile;
+    if (!SEPARATORS.has(candidate.separator) || !Array.isArray(candidate.fields)) return null;
+    const normalized = normalizeTelemetryDecoderProfile(candidate);
+    return normalized && normalized.fields.length === candidate.fields.length ? normalized : null;
+  });
+  if (profiles.some((profile) => !profile) || new Set(profiles.map((profile) => profile!.id)).size !== profiles.length) throw new Error('Saved decoder profiles could not be read. Existing profiles are preserved.');
+  const imported: TelemetryDecoderProfile = { ...incoming, id: `bundle-${importId}` };
+  const previous = profiles.find((profile) => profile!.id === imported.id);
+  if (previous) {
+    if (JSON.stringify(previous) !== JSON.stringify(imported)) throw new Error('The imported decoder conflicts with an existing profile.');
+    return previous;
+  }
+  if (profiles.length >= MAX_TELEMETRY_DECODER_PROFILES) throw new Error('The decoder profile library is full. Remove a profile and retry.');
+  try { storage.setItem(STORAGE_KEY, JSON.stringify([...parsed, imported])); }
+  catch { throw new Error('The imported decoder could not be saved. Check available local storage and retry.'); }
+  return imported;
 }
 
 export function decoderSeparatorLabel(separator: TelemetryDecoderSeparator) {

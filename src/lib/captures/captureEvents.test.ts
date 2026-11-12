@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { eventInspectionRange, loadCaptureMarkers, projectEventMarkers, saveCaptureMarker, type CaptureMarker } from './captureEvents';
+import { eventInspectionRange, importCaptureMarkers, loadCaptureMarkers, projectEventMarkers, saveCaptureMarker, type CaptureMarker } from './captureEvents';
 
 function storage() {
   const values = new Map<string, string>();
@@ -24,6 +24,34 @@ describe('capture markers and inspection ranges', () => {
     expect(() => saveCaptureMarker(marker, disk)).toThrow('Existing notes are preserved');
     expect(written).toBe(false);
     expect(() => loadCaptureMarkers({ getItem: () => JSON.stringify({ version: 1, markers: [marker, { ...marker, timestamp: 'bad' }] }) })).toThrow();
+  });
+  it('imports notes as one idempotent batch without replacing unrelated notes', () => {
+    const disk = storage();
+    saveCaptureMarker(marker, disk);
+    const incoming = [{ timestamp: marker.timestamp, sourceName: 'Shared board', label: 'Spike', note: 'Before reset' }];
+    importCaptureMarkers('/new.log', 'import-123', incoming, disk);
+    importCaptureMarkers('/new.log', 'import-123', incoming, disk);
+    const saved = loadCaptureMarkers(disk);
+    expect(saved).toHaveLength(2);
+    expect(saved[0]).toEqual(marker);
+    expect(saved[1]).toMatchObject({ capturePath: '/new.log', label: 'Spike', note: 'Before reset' });
+  });
+  it('does not partially add an invalid imported note batch', () => {
+    const disk = storage();
+    saveCaptureMarker(marker, disk);
+    const before = loadCaptureMarkers(disk);
+    expect(() => importCaptureMarkers('/new.log', 'import-123', [
+      { timestamp: marker.timestamp, sourceName: 'Board', label: 'Good', note: '' },
+      { timestamp: 'broken', sourceName: 'Board', label: 'Bad', note: '' },
+    ], disk)).toThrow();
+    expect(loadCaptureMarkers(disk)).toEqual(before);
+  });
+  it('recognizes an already imported note even if stored object keys are reordered', () => {
+    const existing = { timestamp: marker.timestamp, note: 'Before reset', label: 'Spike', sourceName: 'Board', capturePath: '/new.log', kind: 'note', id: 'bundle-import-123-0' };
+    const disk = storage();
+    disk.setItem('baudtide.capture-markers.v1', JSON.stringify({ version: 1, markers: [existing] }));
+    expect(() => importCaptureMarkers('/new.log', 'import-123', [{ timestamp: marker.timestamp, sourceName: 'Board', label: 'Spike', note: 'Before reset' }], disk)).not.toThrow();
+    expect(loadCaptureMarkers(disk)).toHaveLength(1);
   });
   it('reports quota failures and validates note lengths before writing', () => {
     expect(() => saveCaptureMarker(marker, { getItem: () => null, setItem: () => { throw new Error('Quota'); } })).toThrow('could not be saved');

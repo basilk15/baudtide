@@ -35,6 +35,7 @@
     "audit:prod": "npm audit --omit=dev --audit-level=high",
     "smoke:desktop": "npm run native:build && npm run watch:build && node scripts/testing/desktop-smoke-server.mjs",
     "smoke:watches": "node scripts/testing/watch-smoke.mjs",
+    "smoke:bundle": "npm run native:build && node scripts/testing/bundle-smoke.mjs",
     "simulate:serial": "python3 scripts/fixtures/test-monitor.py",
     "simulate:formats": "python3 scripts/fixtures/test-telemetry-formats.py"
   },

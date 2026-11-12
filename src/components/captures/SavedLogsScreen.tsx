@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Check, Clock3, Copy, FileText, FolderOpen, HardDrive, LoaderCircle, Radio, RefreshCw, Save, Search, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Archive, Check, Clock3, Copy, FileText, FolderOpen, HardDrive, LoaderCircle, Radio, RefreshCw, Save, Search, Trash2, Upload, X } from 'lucide-react';
 import { cancelNativeSavedLogSearch, deleteNativeSavedLog, listNativeSavedLogs, readNativeSavedLog, saveNativeSavedLog, searchNativeSavedLogs, type SavedLog, type SavedLogContent, type SavedLogSearchResponse } from '../../lib/serial/serial';
 import type { ConnectionDialogDefaults } from '../connection/ConnectionDialog';
 import { ThemedSelect, type ThemedSelectOption } from '../ui/ThemedSelect';
 import './saved-logs.css';
+import { inspectCaptureBundle, exportCaptureBundle, importCaptureBundle, pendingCaptureBundleImports, finishCaptureBundleImport, type PendingCaptureBundle } from '../../lib/serial/serial';
+import { loadCaptureMarkers, type PortableCaptureNote } from '../../lib/captures/captureEvents';
+import { restoreCaptureBundleMetadata } from '../../lib/captures/captureBundleRecovery';
+import { loadTelemetryDecoderProfiles, type TelemetryDecoderProfile } from '../../lib/telemetry/telemetryDecoders';
+import { CaptureBundleReview } from './CaptureBundleReview';
 
 type SavedLogsScreenProps = {
   nativeEnabled: boolean;
@@ -109,6 +114,11 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
   const [deletionError, setDeletionError] = useState('');
   const [libraryRevision, setLibraryRevision] = useState(0);
   const [notice, setNotice] = useState('');
+  const [bundleBusy, setBundleBusy] = useState(false);
+  const [pendingBundles, setPendingBundles] = useState<PendingCaptureBundle[]>([]);
+  const [bundleReview, setBundleReview] = useState<{ log: SavedLog; notes: PortableCaptureNote[]; profiles: TelemetryDecoderProfile[]; timing: 'recorded' | 'approximate' } | null>(null);
+  const [bundleError, setBundleError] = useState('');
+  const completedBundleIds = useRef(new Set<string>());
   const fullSearchSequence = useRef(0);
   const activeFullSearch = useRef<{ id: string; cancel: () => void } | null>(null);
   const deletedLogPaths = useRef(new Set<string>());
@@ -163,6 +173,80 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
     // The active file path intentionally restarts the lightweight refresh only when capture changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeLogPath, nativeEnabled]);
+
+  useEffect(() => {
+    if (!nativeEnabled) return;
+    let cancelled = false;
+    void pendingCaptureBundleImports().then((pending) => { if (!cancelled) setPendingBundles((current) => {
+      const merged = new Map(current.map((item) => [item.id, item]));
+      pending.filter((item) => !completedBundleIds.current.has(item.id)).forEach((item) => merged.set(item.id, item));
+      return [...merged.values()];
+    }); })
+      .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : 'Could not check pending imports.'); });
+    return () => { cancelled = true; };
+  }, [nativeEnabled]);
+
+  const restoreBundle = async (pending: PendingCaptureBundle, skipNotes = false) => {
+    restoreCaptureBundleMetadata(pending, localStorage, skipNotes);
+    await finishCaptureBundleImport(pending.id);
+    completedBundleIds.current.add(pending.id);
+    setPendingBundles((current) => current.filter((item) => item.id !== pending.id));
+  };
+
+  const importBundle = async (example = false) => {
+    if (bundleBusy) return;
+    setBundleBusy(true); setError('');
+    try {
+      const pending = await importCaptureBundle(example);
+      if (!pending) return;
+      let restorationError = '';
+      try {
+        await restoreBundle(pending);
+        setNotice(`Imported ${pending.metadata.name}.`);
+        window.setTimeout(() => setNotice(''), 3600);
+      } catch (reason) {
+        setPendingBundles((current) => [...current.filter((item) => item.id !== pending.id), pending]);
+        restorationError = reason instanceof Error ? reason.message : 'Capture imported, but its notes or decoder could not be restored.';
+      }
+      await refresh(false);
+      if (restorationError) setError(restorationError);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not import the capture bundle.'); }
+    finally { setBundleBusy(false); }
+  };
+
+  const retryBundle = async (pending: PendingCaptureBundle, skipNotes = false) => {
+    if (bundleBusy) return;
+    if (skipNotes && !window.confirm('Skip importing notes for this attempt? Any notes already restored and the original bundle remain unchanged.')) return;
+    setBundleBusy(true); setError('');
+    try { await restoreBundle(pending, skipNotes); setNotice(`Restored ${pending.metadata.name}${skipNotes ? ' (note import skipped)' : ''}.`); window.setTimeout(() => setNotice(''), 3600); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not restore the imported capture details.'); }
+    finally { setBundleBusy(false); }
+  };
+
+  const reviewBundle = async (log: SavedLog) => {
+    if (bundleBusy || isActiveCapture(log)) return;
+    setBundleBusy(true); setError('');
+    try {
+      const timing = await inspectCaptureBundle(log.path);
+      const notes = loadCaptureMarkers().filter((marker) => marker.capturePath === log.path)
+        .map(({ timestamp, sourceName, label, note }) => ({ timestamp, sourceName, label, note }));
+      setBundleError(''); setBundleReview({ log, notes, profiles: loadTelemetryDecoderProfiles(), timing: timing.timingMode });
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not prepare the capture for export.'); }
+    finally { setBundleBusy(false); }
+  };
+
+  const exportBundle = async (decoderId: string | null) => {
+    if (!bundleReview || bundleBusy) return;
+    setBundleBusy(true); setBundleError('');
+    try {
+      const { log, notes, profiles } = bundleReview;
+      const state = log.state === 'capturing' ? 'unknown' : log.state;
+      const result = await exportCaptureBundle(log.path, { name: log.sessionName, state, notes, decoder: profiles.find((item) => item.id === decoderId) ?? null,
+        ...(log.startedAt ? { startedAt: log.startedAt } : {}), ...(log.endedAt ? { endedAt: log.endedAt } : {}), modifiedAt: log.modifiedAt });
+      if (result) { setBundleReview(null); setNotice(`Exported ${log.sessionName}${result.timingMode === 'approximate' ? ' with approximate timing' : ''}.`); window.setTimeout(() => setNotice(''), 3600); }
+    } catch (reason) { setBundleError(reason instanceof Error ? reason.message : 'Could not export the capture bundle.'); }
+    finally { setBundleBusy(false); }
+  };
 
   useEffect(() => {
     const normalized = query.trim();
@@ -432,10 +516,11 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
   return <section className="sd-saved-logs" aria-label="Saved serial logs">
     <header className="sd-saved-logs-header">
       <div><p className="sd-saved-logs-eyebrow">LOCAL CAPTURE LIBRARY</p><h1>Saved logs</h1><p>Every live terminal is written as a raw local file from the moment monitoring begins.</p></div>
-      <button ref={refreshButton} className="sd-secondary-button" type="button" onClick={() => void refresh()} disabled={isRefreshing}><RefreshCw className={isRefreshing ? 'sd-spin' : ''} size={16} /> Refresh</button>
+      <div className="bt-bundle-header-actions"><button className="sd-primary-button" type="button" disabled={bundleBusy} onClick={() => void importBundle()}><Upload size={16} /> Import bundle</button><button ref={refreshButton} className="sd-secondary-button" type="button" onClick={() => void refresh()} disabled={isRefreshing}><RefreshCw className={isRefreshing ? 'sd-spin' : ''} size={16} /> Refresh</button></div>
     </header>
 
     {error && <div className="sd-saved-logs-alert" role="alert"><AlertTriangle size={16} /> {error}</div>}
+    {pendingBundles.length > 0 && <section className="bt-bundle-recovery" aria-label="Imports needing attention"><div><strong>Finish restoring imported captures</strong><p>The captures are saved. Retry to restore their notes and decoder profiles. If notes cannot be saved, you can skip importing them.</p></div><div>{pendingBundles.map((pending) => <span className="bt-bundle-recovery-actions" key={pending.id}><button className="sd-secondary-button" type="button" disabled={bundleBusy} onClick={() => void retryBundle(pending)}>Retry {pending.metadata.name}</button>{pending.metadata.notes.length > 0 && <button className="sd-secondary-button" type="button" disabled={bundleBusy} onClick={() => void retryBundle(pending, true)}>Skip note import</button>}</span>)}</div></section>}
 
     {activeCount > 0 && <section className="sd-active-capture-summary"><span><Radio size={17} /></span><div><strong>{activeCount === 1 ? '1 capture is active' : `${activeCount} captures are active`}</strong><p>Its raw log is already listed below and grows while monitoring continues.</p></div><button type="button" onClick={() => void refresh(false)}>Update size</button></section>}
 
@@ -479,13 +564,14 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
           <div className={`sd-saved-log-icon ${log.state}`}><FileText size={20} /></div>
            <div className="sd-saved-log-primary"><div className="sd-saved-log-name"><strong>{log.sessionName}</strong>{log.state === 'capturing' && <span><i /> Capturing now</span>}{log.state === 'error' && <span className="is-error">Ended with error</span>}{log.state === 'quota-reached' && <span className="is-error">Stopped at storage limit</span>}{log.state === 'interrupted' && <span className="is-muted">Capture interrupted</span>}</div><p>{log.port ? `${log.port} · ${log.baudRate?.toLocaleString()} baud` : log.metadataAvailable ? 'Connection metadata unavailable' : 'Legacy capture · metadata unavailable'}</p><small>{log.fileName}</small>{firstContentMatch?.snippet && <mark className="sd-saved-log-match">{firstContentMatch.snippet}</mark>}{searchResult && searchResult.contentMatchCount > 1 && <small className="sd-saved-log-match-count">{searchResult.contentMatchCount} content matches in searched bytes</small>}</div>
           <div className="sd-saved-log-meta"><span><Clock3 size={14} /> {formatCapturedAt(log.startedAt ?? log.modifiedAt)}</span><span><HardDrive size={14} /> {formatBytes(log.sizeBytes)}</span>{log.endedAt && <span>Ended {formatCapturedAt(log.endedAt)}</span>}</div>
-          <div className="sd-saved-log-actions">{reconnectDefaults && <button className="sd-secondary-button sd-saved-log-reconnect" type="button" onClick={() => onReconnectWithSettings(reconnectDefaults)} title="Open reconnect setup with this capture's saved settings; no device is opened yet." aria-label={`Reconnect ${log.sessionName} with saved settings. Opens setup and does not open a device yet.`}><Radio size={15} /> Reconnect setup</button>}<button className="sd-secondary-button sd-saved-log-visualize" type="button" onClick={() => onOpenInVisualize(log)} disabled={isDeleting === log.path}><FileText size={15} /> Open in Visualize</button><button className="sd-secondary-button" type="button" onClick={() => void openLog(log)} disabled={isOpening || isDeleting === log.path}>{isOpening ? <LoaderCircle className="sd-spin" size={15} /> : <FileText size={15} />} Preview</button><button className="sd-secondary-button" type="button" onClick={() => void saveCopy(log)} disabled={isSaving || isDeleting === log.path}>{isSaving ? <LoaderCircle className="sd-spin" size={15} /> : <Save size={15} />} Save copy</button><button className="sd-saved-log-delete" type="button" onClick={(event) => requestDeletion(log, event.currentTarget)} disabled={isActive || isBusy} title={isActive ? 'Disconnect this active session before deleting its capture' : isBusy ? 'Wait for the current log operation to finish' : 'Delete saved log'} aria-label={`Delete ${log.fileName}`}><Trash2 size={15} /> Delete</button><button className="sd-saved-log-copy" type="button" onClick={() => void copy(log.path, 'Log file path copied.')} disabled={isDeleting === log.path} title="Copy log file path" aria-label={`Copy path for ${log.fileName}`}><Copy size={16} /></button></div>
+          <div className="sd-saved-log-actions">{reconnectDefaults && <button className="sd-secondary-button sd-saved-log-reconnect" type="button" onClick={() => onReconnectWithSettings(reconnectDefaults)} title="Open reconnect setup with this capture's saved settings; no device is opened yet." aria-label={`Reconnect ${log.sessionName} with saved settings. Opens setup and does not open a device yet.`}><Radio size={15} /> Reconnect setup</button>}<button className="sd-secondary-button sd-saved-log-visualize" type="button" onClick={() => onOpenInVisualize(log)} disabled={isDeleting === log.path}><FileText size={15} /> Open in Visualize</button><button className="sd-secondary-button" type="button" onClick={() => void openLog(log)} disabled={isOpening || isDeleting === log.path}>{isOpening ? <LoaderCircle className="sd-spin" size={15} /> : <FileText size={15} />} Preview</button><button className="sd-secondary-button" type="button" onClick={() => void saveCopy(log)} disabled={isSaving || isDeleting === log.path}>{isSaving ? <LoaderCircle className="sd-spin" size={15} /> : <Save size={15} />} Save copy</button><button className="sd-secondary-button" type="button" onClick={() => void reviewBundle(log)} disabled={isActive || isBusy || bundleBusy} title={isActive ? 'Disconnect before exporting a bundle' : 'Review capture bundle'}><Archive size={15} /> Export bundle</button><button className="sd-saved-log-delete" type="button" onClick={(event) => requestDeletion(log, event.currentTarget)} disabled={isActive || isBusy || bundleBusy} title={isActive ? 'Disconnect this active session before deleting its capture' : isBusy ? 'Wait for the current log operation to finish' : 'Delete saved log'} aria-label={`Delete ${log.fileName}`}><Trash2 size={15} /> Delete</button><button className="sd-saved-log-copy" type="button" onClick={() => void copy(log.path, 'Log file path copied.')} disabled={isDeleting === log.path} title="Copy log file path" aria-label={`Copy path for ${log.fileName}`}><Copy size={16} /></button></div>
         </article>;
         })}
-      </div> : <section className="sd-saved-logs-empty"><div><FolderOpen size={26} /></div><h2>{logs.length ? searchedLogs.length ? 'No logs match that organization.' : 'No logs match that search.' : 'No saved captures yet.'}</h2><p>{logs.length ? searchedLogs.length ? 'Change the state filter or sort, or reset organization, to see these matching captures.' : 'Clear or adjust the search to see your local capture library.' : 'Start a serial session and its raw log will appear here immediately—even while it is still recording.'}</p>{logs.length ? searchedLogs.length ? <button className="sd-secondary-button" type="button" onClick={resetOrganization}>Reset organization</button> : <button className="sd-secondary-button" type="button" onClick={() => setQuery('')}>Clear search</button> : <button className="sd-primary-button" type="button" onClick={onRequestConnection}><Radio size={16} /> Start monitoring</button>}</section>}
+      </div> : <section className="sd-saved-logs-empty"><div><FolderOpen size={26} /></div><h2>{logs.length ? searchedLogs.length ? 'No logs match that organization.' : 'No logs match that search.' : 'No saved captures yet.'}</h2><p>{logs.length ? searchedLogs.length ? 'Change the state filter or sort, or reset organization, to see these matching captures.' : 'Clear or adjust the search to see your local capture library.' : 'Start a serial session or explore an example capture without connecting a device.'}</p>{logs.length ? searchedLogs.length ? <button className="sd-secondary-button" type="button" onClick={resetOrganization}>Reset organization</button> : <button className="sd-secondary-button" type="button" onClick={() => setQuery('')}>Clear search</button> : <nav className="bt-bundle-empty-actions" aria-label="Get started"><button className="sd-primary-button" type="button" onClick={onRequestConnection}><Radio size={16} /> Start monitoring</button><button className="sd-secondary-button" type="button" disabled={bundleBusy} onClick={() => void importBundle(true)}>Try example capture</button></nav>}</section>}
 
     {selected && <div className="sd-log-preview-backdrop" role="presentation" onMouseDown={() => setSelected(null)}><section className="sd-log-preview" role="dialog" aria-modal="true" aria-label={`${selected.sessionName} log preview`} onMouseDown={(event) => event.stopPropagation()}><header><div><p>RAW LOG PREVIEW</p><h2>{selected.sessionName}</h2><span>{selected.port ?? selected.fileName} · {formatBytes(selected.sizeBytes)}</span></div><button type="button" className="sd-saved-log-copy" aria-label="Close preview" onClick={() => setSelected(null)}><X size={18} /></button></header>{selected.truncated && <div className="sd-log-preview-note"><AlertTriangle size={15} /> Showing the first 1 MB for a responsive preview. The full raw capture remains at the file path below.</div>}<pre>{selected.text || 'The capture has not received any bytes yet.'}</pre><footer><code>{selected.path}</code><div><button className="sd-secondary-button" type="button" onClick={() => void copy(selected.path, 'Log file path copied.')}><FolderOpen size={15} /> Copy path</button><button className="sd-secondary-button" type="button" onClick={() => { onOpenInVisualize(selected); setSelected(null); }}><FileText size={15} /> Open in Visualize</button><button className="sd-primary-button" type="button" onClick={() => void copy(selected.text, 'Preview text copied.')}><Copy size={15} /> Copy preview</button></div></footer></section></div>}
     {pendingDeletion && <div className="sd-log-preview-backdrop" role="presentation" onMouseDown={() => !deleteInFlight.current && setPendingDeletion(null)}><section ref={deleteDialog} className="sd-log-delete-confirm" role="alertdialog" aria-modal="true" aria-labelledby="delete-log-title" aria-describedby="delete-log-description" aria-busy={Boolean(isDeleting)} onMouseDown={(event) => event.stopPropagation()}><div className="sd-log-delete-icon"><AlertTriangle size={21} /></div><div><p>DELETE SAVED LOG</p><h2 id="delete-log-title">Delete {pendingDeletion.fileName}?</h2><span id="delete-log-description">This permanently removes the raw capture from BaudTide’s local log library. It cannot be undone.</span></div>{pendingDeletionIsActive && <div className="sd-log-delete-error" role="alert">This capture is recording now. Disconnect its serial session before deleting it.</div>}{deletionError && !pendingDeletionIsActive && <div className="sd-log-delete-error" role="alert">{deletionError}</div>}<div className="sd-log-delete-actions"><button ref={deleteCancelButton} className="sd-secondary-button" type="button" onClick={() => setPendingDeletion(null)} disabled={Boolean(isDeleting)}>Cancel</button><button className="sd-saved-log-delete" type="button" onClick={() => void deleteLog(pendingDeletion)} disabled={Boolean(isDeleting) || pendingDeletionIsActive}>{isDeleting ? <LoaderCircle className="sd-spin" size={15} /> : <Trash2 size={15} />} {isDeleting ? 'Deleting…' : 'Delete log'}</button></div></section></div>}
     {notice && <div className="sd-saved-logs-notice" role="status" aria-live="polite"><Check size={15} /> {notice}</div>}
+    {bundleReview && <CaptureBundleReview captureName={bundleReview.log.sessionName} sizeBytes={bundleReview.log.sizeBytes} noteCount={bundleReview.notes.length} timing={bundleReview.timing} profiles={bundleReview.profiles} busy={bundleBusy} error={bundleError} onCancel={() => setBundleReview(null)} onExport={(id) => void exportBundle(id)} />}
   </section>;
 }
