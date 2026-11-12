@@ -46,7 +46,7 @@ describe('capture bundle desktop service', () => {
       if (id === completedId) await writeFile(capturePath, 'finished');
     }
     await cleanupInterruptedBundleImports({ stagingRoot: staging, captureDirectories: [captures], isProcessRunning: () => false });
-    expect(await readdir(captures)).toEqual([`Board-${completedId}.log`, `Board-${completedId}.log.timing`]);
+    expect((await readdir(captures)).sort()).toEqual([`Board-${completedId}.log`, `Board-${completedId}.log.timing`]);
     expect(await readdir(recovery)).toEqual([`${completedId}.json`]);
     expect(await readdir(index)).toEqual([`${completedId}.json`]);
     await cleanup(dir);
