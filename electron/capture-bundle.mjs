@@ -2,8 +2,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, open, rename, rm, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
-const MAGIC = Buffer.from('BTBND001');
-const PREFIX_SIZE = 12;
+const MAGIC = Buffer.from('BTBND002');
+// Magic, manifest length, then the SHA-256 digest of the exact manifest bytes.
+const PREFIX_SIZE = 44;
 const MAX_MANIFEST = 256 * 1024;
 const MAX_CAPTURE = 8 * 1024 * 1024 * 1024;
 const MAX_TIMING = 256 * 1024 * 1024;
@@ -63,7 +64,7 @@ function validatePart(part, max, optional = false) {
     || typeof part.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(part.sha256)) throw invalid('a file descriptor is malformed.');
 }
 function validateManifest(manifest) {
-  if (!object(manifest) || manifest.version !== 1) throw invalid('this bundle version is not supported.');
+  if (!object(manifest) || manifest.version !== 2) throw invalid('this bundle version is not supported.');
   validateMetadata(manifest.metadata);
   validatePart(manifest.raw, MAX_CAPTURE);
   validatePart(manifest.timing, MAX_TIMING, true);
@@ -76,6 +77,7 @@ async function readManifest(input) {
   if (!length || length > MAX_MANIFEST) throw invalid('manifest exceeds the permitted size.');
   const bytes = Buffer.alloc(length);
   await readExact(input.file, bytes, PREFIX_SIZE);
+  if (!createHash('sha256').update(bytes).digest().equals(prefix.subarray(12))) throw invalid('manifest checksum does not match.');
   let manifest;
   try { manifest = JSON.parse(bytes.toString('utf8')); } catch { throw invalid('manifest is not valid JSON.'); }
   validateManifest(manifest);
@@ -179,7 +181,7 @@ export async function exportCaptureBundle({ rawPath, timingPath, destination, me
       await validateTiming(timing.file, timing.size, raw.size);
     }
     const manifest = {
-      version: 1, metadata,
+      version: 2, metadata,
       raw: { size: raw.size, sha256: await transfer(raw.file, null, 0, raw.size) },
       timing: timing ? { size: timing.size, sha256: await transfer(timing.file, null, 0, timing.size) } : null,
     };
@@ -188,7 +190,8 @@ export async function exportCaptureBundle({ rawPath, timingPath, destination, me
     const prefix = Buffer.alloc(PREFIX_SIZE);
     MAGIC.copy(prefix);
     prefix.writeUInt32BE(header.length, 8);
-    output = await open(temporary, 'wx');
+    createHash('sha256').update(header).digest().copy(prefix, 12);
+    output = await open(temporary, 'wx', 0o600);
     await writeAll(output, prefix);
     await writeAll(output, header);
     if (await transfer(raw.file, output, 0, raw.size) !== manifest.raw.sha256
@@ -207,13 +210,14 @@ export async function exportCaptureBundle({ rawPath, timingPath, destination, me
 }
 
 /** Validate before returning private staged files for publication by the library. */
-export async function importCaptureBundle({ source, stagingRoot, maxBytes = MAX_CAPTURE + MAX_TIMING }) {
+export async function importCaptureBundle({ source, stagingRoot, maxBytes = MAX_CAPTURE + MAX_TIMING, ownerPid = process.pid }) {
   const input = await openRegular(source);
   let stage = null;
   try {
     const { manifest, dataStart, payloadBytes } = await readManifest(input);
     if (payloadBytes > maxBytes) throw invalid('the file changed after space was reserved.');
-    stage = await mkdtemp(path.join(path.resolve(stagingRoot), 'bundle-'));
+    if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) throw invalid('the import owner is unavailable.');
+    stage = await mkdtemp(path.join(path.resolve(stagingRoot), `bundle-${process.pid}-${ownerPid}-`));
     const rawPath = path.join(stage, 'capture.log');
     const timingPath = manifest.timing ? `${rawPath}.timing` : null;
     const raw = await open(rawPath, 'wx');

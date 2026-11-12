@@ -1,7 +1,8 @@
 import { DesktopWatchService, watchCommands } from './watch-service.mjs';
 import { TelemetryExportStreams, assertExportDestinationSafe } from './telemetry-export.mjs';
 import { CaptureAnalysisReaders } from './capture-analysis.mjs';
-import { CaptureBundleService } from './capture-bundle-service.mjs';
+import { CaptureBundleService, cleanupInterruptedBundleImports } from './capture-bundle-service.mjs';
+import { claimApplicationInstance } from './instance-lock.mjs';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
@@ -777,12 +778,29 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => app.quit());
 }
 
-app.whenReady().then(async () => {
+const primaryInstance = claimApplicationInstance(app, () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+});
+if (!primaryInstance) {
+  shutdownComplete = true;
+  app.quit();
+} else app.whenReady().then(async () => {
   buildApplicationMenu();
   try {
     registerPackagedApplicationProtocol();
     fs.mkdirSync(backendDataDirectory, { recursive: true });
     await backend.start();
+    try {
+      const preferences = await backend.invoke('load_preferences');
+      const configured = preferences.storage.logDirectory;
+      await cleanupInterruptedBundleImports({
+        stagingRoot: path.join(backendDataDirectory, 'bundle-staging'),
+        captureDirectories: [path.join(backendDataDirectory, 'logs'), ...(configured ? [configured] : [])],
+      });
+    } catch (error) { console.warn('Could not clean up interrupted bundle imports:', errorMessage(error)); }
     // Watch failure must never prevent serial capture or application startup.
     try {
       await watches.start();

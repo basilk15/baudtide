@@ -134,7 +134,7 @@ describe('export lifecycle regressions', () => {
     const { assertExportDestinationSafe } = await import('./telemetry-export.mjs');
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'baudtide-export-alias-'));
     const managed = path.join(directory, 'managed'); await fs.mkdir(managed);
-    const alias = path.join(directory, 'alias'); await fs.symlink(managed, alias);
+    const alias = path.join(directory, 'alias'); await fs.symlink(managed, alias, process.platform === 'win32' ? 'junction' : 'dir');
     const raw = path.join(managed, 'capture.log'); await fs.writeFile(raw, 'capture');
     await expect(assertExportDestinationSafe(path.join(alias, 'capture.log'), { files: [raw] })).rejects.toThrow('raw capture');
     await expect(assertExportDestinationSafe(path.join(alias, 'history.json'), { directories: [managed] })).rejects.toThrow('managed application data');

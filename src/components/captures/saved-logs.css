@@ -150,6 +150,18 @@
   min-height: 36px;
 }
 
+.signaldeck-shell .sd-saved-log-sort-control .sd-themed-select {
+  width: 170px;
+  flex-basis: 170px;
+}
+
+@media (max-width: 560px) {
+  .signaldeck-shell .sd-saved-log-sort-control .sd-themed-select {
+    width: auto;
+    flex: 1;
+  }
+}
+
 /* Actions belong on a second, flexible track—not behind the list's clipped edge. */
 .signaldeck-shell .sd-saved-log-row {
   grid-template-areas:

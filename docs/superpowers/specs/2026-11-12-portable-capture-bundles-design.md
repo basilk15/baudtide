@@ -15,7 +15,7 @@ Let a person share one completed serial capture with a collaborator, who can imp
 
 ## Design choices
 
-One versioned, bounded container stores a manifest plus raw and timing byte streams. A custom framed container avoids archive entry names and path traversal; length and digest checks detect truncation and corruption. Unlike a plain log, it preserves timing and annotations. Unlike an unrestricted workspace export, it limits the initial implementation to one understandable artifact.
+One versioned, bounded container stores a manifest plus raw and timing byte streams. A custom framed container avoids archive entry names and path traversal; length and SHA-256 digest checks cover the manifest and both streams to detect truncation and accidental corruption. These checks are not signatures and do not authenticate the sender. Unlike a plain log, it preserves timing and annotations. Unlike an unrestricted workspace export, it limits the initial implementation to one understandable artifact.
 
 Electron owns file dialogs and streaming container I/O; the native backend remains the authority on capture-library paths, active sessions, and storage quota. Renderer storage remains the authority for existing notes and decoder profiles. Import must preserve the original bundle when any step fails and surface incomplete metadata restoration rather than claiming full success. Neither import nor viewing starts a serial connection or sends commands.
 

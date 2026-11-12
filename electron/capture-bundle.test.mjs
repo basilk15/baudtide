@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll as after, beforeAll as before, it as test } from 'vitest';
@@ -20,6 +20,15 @@ const timing = Buffer.alloc(24);
 timing.write('BTIME001');
 timing.writeBigUInt64LE(BigInt(raw.length), 8);
 timing.writeBigInt64LE(1767225601000n, 16);
+const prefixSize = 44;
+function encodeBundle(manifest, payload) {
+  const header = Buffer.from(JSON.stringify(manifest));
+  const prefix = Buffer.alloc(prefixSize);
+  prefix.write('BTBND002');
+  prefix.writeUInt32BE(header.length, 8);
+  createHash('sha256').update(header).digest().copy(prefix, 12);
+  return Buffer.concat([prefix, header, payload]);
+}
 
 test('exports and imports exact raw bytes, receive timing and notes', async () => {
   const rawPath = path.join(directory, 'original.log');
@@ -52,6 +61,26 @@ test('preserves absent timing as absent', async () => {
   assert.deepEqual(await readFile(result.rawPath), raw);
 });
 
+test('rejects a valid-JSON change to capture notes', async () => {
+  const bundle = await readFile(path.join(directory, 'recording.btbundle'));
+  const original = Buffer.from('Before reset');
+  const position = bundle.indexOf(original);
+  assert.notEqual(position, -1);
+  bundle[position] = 'b'.charCodeAt(0);
+  const source = path.join(directory, 'corrupt-metadata.btbundle');
+  await writeFile(source, bundle);
+  await assert.rejects(importCaptureBundle({ source, stagingRoot: directory }), /checksum/i);
+});
+
+test.skipIf(process.platform === 'win32')('exports bundles with private file permissions', async () => {
+  const rawPath = path.join(directory, 'private.log');
+  const destination = path.join(directory, 'private.btbundle');
+  await writeFile(rawPath, raw);
+  await writeFile(destination, 'old', { mode: 0o644 });
+  await exportCaptureBundle({ rawPath, destination, metadata });
+  assert.equal((await stat(destination)).mode & 0o777, 0o600);
+});
+
 test('does not add local device paths or unrelated metadata to the bundle', async () => {
   const rawPath = path.join(directory, 'privacy.log');
   const bundlePath = path.join(directory, 'privacy.btbundle');
@@ -76,12 +105,11 @@ test('retains a selected decoder and original time bounds', async () => {
 test('rejects an invalid decoder before publishing an imported capture', async () => {
   const original = await readFile(path.join(directory, 'recording.btbundle'));
   const length = original.readUInt32BE(8);
-  const manifest = JSON.parse(original.subarray(12, 12 + length));
+  const manifest = JSON.parse(original.subarray(prefixSize, prefixSize + length));
   manifest.metadata.decoder = { version: 1, id: 'x', name: 'Broken', prefix: '', separator: 'bogus', fields: [{ column: 1, name: 'x' }], createdAt: 1, updatedAt: 1 };
-  const header = Buffer.from(JSON.stringify(manifest)); const prefix = Buffer.alloc(12); prefix.write('BTBND001'); prefix.writeUInt32BE(header.length, 8);
   const source = path.join(directory, 'invalid-decoder.btbundle');
-  await writeFile(source, Buffer.concat([prefix, header, original.subarray(12 + length)]));
-  await assert.rejects(importCaptureBundle({ source, stagingRoot: directory }));
+  await writeFile(source, encodeBundle(manifest, original.subarray(prefixSize + length)));
+  await assert.rejects(importCaptureBundle({ source, stagingRoot: directory }), /decoder details are malformed/);
 });
 
 test('rejects damaged, truncated and appended bundle data without leaving staged files', async () => {
@@ -108,9 +136,10 @@ test('rejects unsupported versions and oversized manifests before extraction', a
     ['version', Buffer.from(JSON.stringify({ version: 99 }))],
     ['large', Buffer.alloc(256 * 1024 + 1, 32)],
   ]) {
-    const prefix = Buffer.alloc(12);
-    prefix.write('BTBND001');
+    const prefix = Buffer.alloc(prefixSize);
+    prefix.write('BTBND002');
     prefix.writeUInt32BE(manifest.length, 8);
+    createHash('sha256').update(manifest).digest().copy(prefix, 12);
     const source = path.join(directory, `${name}.btbundle`);
     await writeFile(source, Buffer.concat([prefix, manifest]));
     await assert.rejects(importCaptureBundle({ source, stagingRoot: directory }));
@@ -120,15 +149,11 @@ test('rejects unsupported versions and oversized manifests before extraction', a
 test('does not accept malformed timing even if its digest matches', async () => {
   const original = await readFile(path.join(directory, 'recording.btbundle'));
   const manifestLength = original.readUInt32BE(8);
-  const manifest = JSON.parse(original.subarray(12, 12 + manifestLength));
+  const manifest = JSON.parse(original.subarray(prefixSize, prefixSize + manifestLength));
   const invalidTiming = Buffer.from(timing);
   invalidTiming.writeBigUInt64LE(999n, 8);
   manifest.timing.sha256 = createHash('sha256').update(invalidTiming).digest('hex');
-  const header = Buffer.from(JSON.stringify(manifest));
-  const prefix = Buffer.alloc(12);
-  prefix.write('BTBND001');
-  prefix.writeUInt32BE(header.length, 8);
   const source = path.join(directory, 'invalid-timing.btbundle');
-  await writeFile(source, Buffer.concat([prefix, header, raw, invalidTiming]));
-  await assert.rejects(importCaptureBundle({ source, stagingRoot: directory }));
+  await writeFile(source, encodeBundle(manifest, Buffer.concat([raw, invalidTiming])));
+  await assert.rejects(importCaptureBundle({ source, stagingRoot: directory }), /timing contains invalid entries/);
 });

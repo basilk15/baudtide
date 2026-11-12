@@ -1103,6 +1103,24 @@ fn save_preferences(
         }
         settings.storage.log_directory = directory.display().to_string();
     }
+    // An import reserves a specific destination. Reject folder changes until
+    // it completes, rather than publishing into a no-longer-readable root.
+    let _import_guard = state.bundle_import_lock.try_lock().map_err(|_| {
+        "Wait for the capture bundle import to finish before changing preferences.".to_string()
+    })?;
+    let changing_folder =
+        load_application_settings(&app)?.storage.log_directory != settings.storage.log_directory;
+    if changing_folder
+        && !state
+            .bundle_import_reservations
+            .lock()
+            .map_err(lock_error)?
+            .is_empty()
+    {
+        return Err(
+            "Wait for the capture bundle import to finish before changing the log folder.".into(),
+        );
+    }
     save_application_settings(&app, &settings)?;
     state.capture_quota.lock().map_err(lock_error)?.limit_bytes =
         settings.storage.storage_limit_bytes;
@@ -1643,6 +1661,10 @@ fn reserve_capture_bundle_import(
     if size > 9 * GIBIBYTE {
         return Err("The capture bundle is too large.".into());
     }
+    let _import = state.bundle_import_lock.lock().map_err(lock_error)?;
+    let directory = saved_log_directory_for_capture(app)?;
+    create_dir_all(&directory)
+        .map_err(|error| format!("Could not create capture folder: {error}"))?;
     let _sessions = state.sessions.lock().map_err(lock_error)?;
     let on_disk = capture_library_usage(app)?;
     let mut quota = state.capture_quota.lock().map_err(lock_error)?;
@@ -1661,7 +1683,7 @@ fn reserve_capture_bundle_import(
         .insert(id.clone(), size);
     quota.used_bytes += size;
     quota.bundle_reserved_bytes += size;
-    Ok(serde_json::json!({ "id": id }))
+    Ok(serde_json::json!({ "id": id, "directory": directory, "ownerPid": std::process::id() }))
 }
 
 fn release_capture_bundle_import(state: &SerialState, id: &str) -> CommandResult<()> {
@@ -1759,8 +1781,9 @@ fn publish_capture_bundle(
         .map_err(|error| format!("Could not create capture folder: {error}"))?;
     let final_path = generated_log_path(&directory, name, &id);
     let final_timing = capture_timing::companion_path(&final_path);
-    let temporary = directory.join(format!(".bundle-{id}.tmp"));
-    let temporary_timing = directory.join(format!(".bundle-{id}.timing.tmp"));
+    let temporary = directory.join(format!(".bundle-{}-{id}.tmp", std::process::id()));
+    let temporary_timing =
+        directory.join(format!(".bundle-{}-{id}.timing.tmp", std::process::id()));
     let recovery = bundle_recovery_path(&app, &id)?;
     let recovery_temporary = bundle_recovery_directory(&app)?.join(format!(".{id}.tmp"));
     let index = log_index_path(&app, &id)?;
@@ -5302,13 +5325,12 @@ mod tests {
         register_mobile_share_client, register_mobile_share_for_session, release_capture_quota,
         remove_log_text_indexes_for_path_in_directory, saved_log_text_index_path,
         search_fresh_log_text_index_in_directory, search_raw_log, stable_saved_log_content_search,
-        stop_mobile_share_for_session, valid_serial_port, validate_preference_log_directory,
-        validated_websocket_key, websocket_accept_key, ActiveMobileShare,
-        ActiveMobileWorkspaceShare, ActiveSession, ApplicationSettings, CaptureQuota,
-        FlowControlSetting, LogIndexRecord, MobileReplayBuffer, MobileShareRequest,
-        MobileWritePayloadError, MobileWriteRateState, ParitySetting, SavedLogFingerprint,
-        SavedLogTextIndexHeader, SerialSettings, SerialState, SessionInfo, StartSessionRequest,
-        StopBitsSetting, CAPTURE_DURABILITY_SYNC_INTERVAL, GIBIBYTE,
+        stop_mobile_share_for_session, validate_preference_log_directory, validated_websocket_key,
+        websocket_accept_key, ActiveMobileShare, ActiveMobileWorkspaceShare, ActiveSession,
+        ApplicationSettings, CaptureQuota, FlowControlSetting, LogIndexRecord, MobileReplayBuffer,
+        MobileShareRequest, MobileWritePayloadError, MobileWriteRateState, ParitySetting,
+        SavedLogFingerprint, SavedLogTextIndexHeader, SerialSettings, SerialState, SessionInfo,
+        StartSessionRequest, StopBitsSetting, CAPTURE_DURABILITY_SYNC_INTERVAL, GIBIBYTE,
         MOBILE_SHARE_EVENT_QUEUE_LIMIT, SEARCH_CANCELLED_MESSAGE, SEARCH_INDEX_MAGIC,
         SEARCH_INDEX_SCHEMA_VERSION, SEARCH_PER_LOG_BYTE_LIMIT, SEARCH_READ_BUFFER_SIZE,
     };
@@ -5326,6 +5348,9 @@ mod tests {
         time::{Duration, Instant},
     };
     use uuid::Uuid;
+
+    #[cfg(target_os = "linux")]
+    use super::valid_serial_port;
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -5618,7 +5643,12 @@ mod tests {
     #[test]
     fn preference_log_directory_validation_rejects_relative_paths() {
         assert!(validate_preference_log_directory("").is_ok());
-        assert!(validate_preference_log_directory("/var/log/baudtide").is_ok());
+        let absolute_path = if cfg!(windows) {
+            r"C:\baudtide\logs"
+        } else {
+            "/var/log/baudtide"
+        };
+        assert!(validate_preference_log_directory(absolute_path).is_ok());
         assert!(validate_preference_log_directory("relative/logs").is_err());
     }
 
@@ -8309,6 +8339,23 @@ fn parse_protocol_request(line: &str) -> CommandResult<ProtocolRequest> {
 
 fn sidecar_main() -> CommandResult<()> {
     let app = AppHandle::new(parse_sidecar_app_data_dir()?);
+    // A previous sidecar may still be finishing an import after its Electron
+    // parent exits. Keep all library operations in one process at a time.
+    let app_data = app.path().app_data_dir().map_err(str::to_owned)?;
+    let mut ownership = None;
+    for _ in 0..300 {
+        match crate::instance_lock::try_acquire(&app_data) {
+            Ok(Some(file)) => {
+                ownership = Some(file);
+                break;
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Err(error) => return Err(format!("Could not lock the capture library: {error}")),
+        }
+    }
+    let _ownership = ownership.ok_or(
+        "Another BaudTide backend is still finishing work. Try starting the app again shortly.",
+    )?;
     let state = Arc::new(SerialState::default());
     let stdin = io::stdin();
     let mut reader = BufReader::new(stdin.lock());
@@ -8404,6 +8451,45 @@ pub(crate) fn sidecar_entry() {
 #[cfg(test)]
 mod sidecar_protocol_tests {
     use super::*;
+
+    #[test]
+    fn capture_folder_cannot_change_while_a_bundle_import_is_reserved() {
+        let root = temporary_export_directory("bundle-folder-change");
+        let app = AppHandle::new(root.clone());
+        let state = SerialState::default();
+        let other = root.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let reservation = reserve_capture_bundle_import(&app, &state, 8).unwrap();
+        let mut changed = ApplicationSettings::default();
+        changed.storage.log_directory = other.display().to_string();
+        assert!(save_preferences(app.clone(), &state, changed.clone()).is_err());
+        assert!(load_application_settings(&app)
+            .unwrap()
+            .storage
+            .log_directory
+            .is_empty());
+        let mut appearance = ApplicationSettings::default();
+        appearance.appearance.theme = "light".into();
+        assert!(save_preferences(app.clone(), &state, appearance).is_ok());
+        release_capture_bundle_import(&state, reservation["id"].as_str().unwrap()).unwrap();
+        assert!(save_preferences(app, &state, changed).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn capture_folder_change_does_not_wait_for_an_active_publication() {
+        let root = temporary_export_directory("bundle-folder-busy");
+        let app = AppHandle::new(root.clone());
+        let state = SerialState::default();
+        let other = root.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let mut changed = ApplicationSettings::default();
+        changed.storage.log_directory = other.display().to_string();
+        let guard = state.bundle_import_lock.lock().unwrap();
+        assert!(save_preferences(app, &state, changed).is_err());
+        drop(guard);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn imported_bundle_is_independent_and_keeps_recovery_metadata() {

@@ -17,6 +17,8 @@
 .bt-bundle-privacy{display:flex;align-items:flex-start;gap:var(--space-xs);margin-top:var(--space-xs);padding:var(--space-sm);border:1px solid color-mix(in oklch,var(--color-warning) 45%,var(--color-border));border-radius:var(--radius-control);background:color-mix(in oklch,var(--color-warning) 9%,var(--color-surface));color:var(--color-ink-soft)}
 .bt-bundle-privacy svg{flex:none;color:var(--color-warning)}.bt-bundle-privacy p,.bt-bundle-error{margin:0;font-size:var(--text-xs);line-height:1.5}.bt-bundle-error{color:var(--color-danger)}
 .bt-bundle-actions{display:flex;justify-content:flex-end;gap:var(--space-xs);padding:var(--space-md) var(--space-lg);border-top:1px solid var(--color-border-subtle)}
+.theme-light :is(.bt-bundle-header-actions,.bt-bundle-actions) .sd-primary-button,
+.theme-light :is(.bt-bundle-header-actions,.bt-bundle-actions) .sd-primary-button:hover:not(:disabled){color:#fff}
 .bt-bundle-review button:focus-visible,.bt-bundle-review select:focus-visible{outline:2px solid var(--color-focus);outline-offset:2px}
 @media(max-width:480px){.bt-bundle-header,.bt-bundle-body{padding:var(--space-md)}.bt-bundle-actions{padding:var(--space-md);flex-direction:column-reverse}.bt-bundle-actions button{width:100%;min-height:44px}.bt-bundle-details div{flex-wrap:wrap}}
 .bt-bundle-header-actions,.bt-bundle-empty-actions{display:flex;align-items:center;gap:var(--space-xs);flex-wrap:wrap}
