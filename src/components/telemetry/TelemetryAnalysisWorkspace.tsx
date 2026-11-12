@@ -1,3 +1,4 @@
+import { comparisonReloadOptions } from '../../lib/captures/comparisonReload';
 import { CaptureComparisonPanel } from './CaptureComparisonPanel';
 import type { CaptureComparisonSettings } from '../../lib/captures/captureComparison';
 import { useBenchEvents } from '../../hooks/useBenchEvents';
@@ -340,6 +341,8 @@ export function TelemetryAnalysisWorkspace({
   const [fieldQuery, setFieldQuery] = useState('');
   const [fieldsConfigured, setFieldsConfigured] = useState(false);
   const [alignment, setAlignment] = useState<AlignmentMode>('elapsed');
+  const [comparisonDraft, setComparisonDraft] = useState(false);
+  const [recoveryNotice, setRecoveryNotice] = useState('');
   const [comparisonSettings, setComparisonSettings] = useState<CaptureComparisonSettings | undefined>();
   const [windowMs, setWindowMs] = useState(0);
   const [customWindow, setCustomWindow] = useState<CustomWindow | null>(null);
@@ -966,6 +969,7 @@ export function TelemetryAnalysisWorkspace({
   const currentBreachCount = watchRules.filter((rule) => watchStatus(rule) === 'BREACH').length;
 
   const saveAnalysisWorkspace = (update = false) => {
+    if (comparisonDraft) { setLibraryError('Save or cancel the acceptance check before saving the analysis.'); return; }
     const existing = update ? savedLibrary.workspaces.find((workspace) => workspace.id === activeWorkspaceId) : undefined;
     const name = existing?.name ?? workspaceName.trim();
     if (!name || !activeSources.length) { setLibraryError('Enter a workspace name and add at least one analysis source.'); return; }
@@ -989,18 +993,21 @@ export function TelemetryAnalysisWorkspace({
       const intent = restoreIntent.current;
       workspace = preserveUnavailableAnalysisSources(workspace, intent.workspace, intent.pendingLives, intent.removedCapturePaths);
     }
-    const next = { ...savedLibrary, activeId: workspace.id, workspaces: [workspace, ...savedLibrary.workspaces.filter((candidate) => candidate.id !== workspace.id)] };
+    const recoveryWarnings = { ...savedLibrary.recoveryWarnings }; delete recoveryWarnings[workspace.id];
+    const unrecoveredComparisons = { ...savedLibrary.unrecoveredComparisons }; delete unrecoveredComparisons[workspace.id];
+    const next = { ...savedLibrary, recoveryWarnings, unrecoveredComparisons, activeId: workspace.id, workspaces: [workspace, ...savedLibrary.workspaces.filter((candidate) => candidate.id !== workspace.id)] };
     try { storeAnalysisWorkspaces(next);
       if (existing && restoreIntent.current?.workspace.id === existing.id) {
         const intent = restoreIntent.current;
         intent.pendingLives = workspace.sources.filter((source) => source.kind === 'live' && intent.pendingLives.some((pending) => pending.target === source.target));
         intent.workspace = workspace;
       }
-      setSavedLibrary(next); setActiveWorkspaceId(workspace.id); setSavingWorkspace(false); setWorkspaceName(''); setNotice(`Saved “${name}” locally. This analysis will restore when BaudTide reopens.`); }
+      setSavedLibrary(next); setRecoveryNotice(''); setActiveWorkspaceId(workspace.id); setSavingWorkspace(false); setWorkspaceName(''); setNotice(`Saved “${name}” locally. This analysis will restore when BaudTide reopens.`); }
     catch (reason) { setLibraryError(reason instanceof Error ? reason.message : 'Could not save this analysis.'); }
   };
 
-  const restoreAnalysisWorkspace = async (workspace: SavedAnalysisWorkspace) => {
+  const restoreAnalysisWorkspace = async (workspace: SavedAnalysisWorkspace, warning = savedLibrary.recoveryWarnings?.[workspace.id]) => {
+    setRecoveryNotice(warning ?? '');
     closeInspection();
     const generation = ++restoreGeneration.current;
     captureLoad.current?.abort(); exportAbort.current?.abort();
@@ -1133,7 +1140,7 @@ export function TelemetryAnalysisWorkspace({
       const next = { ...library, activeId: workspace.id };
       storeAnalysisWorkspaces(next); setSavedLibrary(next); setActiveWorkspaceId(workspace.id);
       initialRestoreDone.current = true;
-      void restoreAnalysisWorkspace(workspace).catch((error) => setLibraryError(error instanceof Error ? error.message : 'Could not restore the linked analysis.')).finally(complete);
+      void restoreAnalysisWorkspace(workspace, library.recoveryWarnings?.[workspace.id]).catch((error) => setLibraryError(error instanceof Error ? error.message : 'Could not restore the linked analysis.')).finally(complete);
     } catch (error) { setLibraryError(error instanceof Error ? error.message : 'Could not restore the linked analysis.'); complete(); }
   }, [requestedAnalysis?.id, requestedAnalysis?.revision, libraryLoaded, nativeEnabled, loadedLibraryRefresh]);
 
@@ -1512,11 +1519,13 @@ export function TelemetryAnalysisWorkspace({
 
     <section className="bt-analysis-presets" aria-label="Saved analysis workspaces">
       <span>Saved analysis</span>
-      <ThemedSelect compact value={activeWorkspaceId || '__current'} label="Open saved analysis" placeholder="Saved analysis" options={[{ value: '__current', label: 'Current analysis' }, ...savedLibrary.workspaces.map((workspace) => ({ value: workspace.id, label: workspace.name }))]} onChange={chooseAnalysisWorkspace} disabled={exporting || Boolean(loadingPath) || restoringWorkspace} />
-      <button className="sd-secondary-button" type="button" disabled={!activeSources.length || exporting || querying || Boolean(loadingPath) || restoringWorkspace} onClick={() => { setSavingWorkspace((value) => !value); setWorkspaceName(''); }}><BookmarkPlus size={14} /> Save as…</button>
-      {activeWorkspaceId ? <button className="sd-secondary-button" type="button" disabled={!activeSources.length || exporting || querying || Boolean(loadingPath) || restoringWorkspace} onClick={() => saveAnalysisWorkspace(true)}>Update saved analysis</button> : null}
-      {savingWorkspace ? <form onSubmit={(event) => { event.preventDefault(); saveAnalysisWorkspace(); }}><label><span>Workspace name</span><input autoFocus maxLength={80} value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} placeholder="e.g. Motor bench" /></label><button className="sd-primary-button" type="submit">Save analysis</button><button className="sd-secondary-button" type="button" onClick={() => setSavingWorkspace(false)}>Cancel</button></form> : null}
+      <ThemedSelect compact value={activeWorkspaceId || '__current'} label="Open saved analysis" placeholder="Saved analysis" options={[{ value: '__current', label: 'Current analysis' }, ...savedLibrary.workspaces.map((workspace) => ({ value: workspace.id, label: workspace.name }))]} onChange={chooseAnalysisWorkspace} disabled={exporting || Boolean(loadingPath) || restoringWorkspace || comparisonDraft} />
+      <button className="sd-secondary-button" type="button" disabled={!activeSources.length || exporting || querying || Boolean(loadingPath) || restoringWorkspace || comparisonDraft} onClick={() => { setSavingWorkspace((value) => !value); setWorkspaceName(''); }}><BookmarkPlus size={14} /> Save as…</button>
+      {activeWorkspaceId ? <button className="sd-secondary-button" type="button" disabled={!activeSources.length || exporting || querying || Boolean(loadingPath) || restoringWorkspace || comparisonDraft} onClick={() => saveAnalysisWorkspace(true)}>Update saved analysis</button> : null}
+      {savingWorkspace ? <form onSubmit={(event) => { event.preventDefault(); saveAnalysisWorkspace(); }}><label><span>Workspace name</span><input autoFocus maxLength={80} value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} placeholder="e.g. Motor bench" /></label><button className="sd-primary-button" type="submit" disabled={comparisonDraft}>Save analysis</button><button className="sd-secondary-button" type="button" onClick={() => setSavingWorkspace(false)}>Cancel</button></form> : null}
     </section>
+    {comparisonDraft && <p className="bt-analysis-message" role="status">Save or cancel the acceptance check before saving this analysis.</p>}
+    {recoveryNotice && <div className="bt-analysis-message" role="alert">{recoveryNotice}</div>}
     {pendingDevices.length || missingCaptures.length ? <div className="bt-analysis-message" role="status"><FolderOpen size={16} /><span>{pendingDevices.length ? `Waiting for saved devices: ${pendingDevices.join(', ')}. Connect the intended device from Live terminal; ambiguous matches stay unassigned. ` : ''}{missingCaptures.length ? `Unavailable captures: ${missingCaptures.join(', ')}.` : ''}</span></div> : null}
 
     {activeBreach ? <aside className="bt-analysis-breach-toast" role="alert" aria-label={`Watch breach for ${activeBreach.fieldKey}`}>
@@ -1689,15 +1698,17 @@ export function TelemetryAnalysisWorkspace({
 
         <TelemetryCharts visible={displayVisible} key={chartResetRevision} samples={combined.samples} fields={combined.fields} gaps={combined.gaps} selectedFieldKeys={combined.selectedChartKeys} windowMs={windowMs} paused={displayPaused || replayPlaying} mode={chartMode} timeline={chartTimeline} markers={chartMarkers} />
 
-        <CaptureComparisonPanel sources={activeSources.filter((source): source is RecordedSource => source.kind === 'recorded').map((source) => ({ path: source.log.path, name: source.name, index: source.index, selection: source.selection, fields: source.snapshot.fields, gaps: source.snapshot.gaps }))}
+        <CaptureComparisonPanel sources={activeSources.filter((source): source is RecordedSource => source.kind === 'recorded').map((source) => ({ path: source.log.path, name: source.name, index: source.index, selection: source.selection, fields: source.snapshot.fields, gaps: source.snapshot.gaps, captureState: logs.find((log) => log.path === source.log.path)?.state ?? 'unknown', indexedState: source.log.state }))}
           captures={logs.map((log) => ({ path: log.path, name: log.sessionName }))} onLoadCapture={async (path) => {
             const log = logs.find((candidate) => candidate.path === path);
             if (!log) throw new Error('This capture is no longer in the library. Choose another capture.');
-            const source = await loadCapture(log);
+            const previous = recordedSources[recordedSourceId(path)];
+            const options = comparisonReloadOptions(previous?.log.state, log.state, previous?.decoderProfile, previous?.selection);
+            const source = await loadCapture(log, options.profile, options.replace, options.requestedRange);
             if (!source) throw new Error('Could not open this capture. Choose it again to retry.');
-            return { path: source.log.path, name: source.name, index: source.index, selection: source.selection, fields: source.snapshot.fields, gaps: source.snapshot.gaps };
+            return { path: source.log.path, name: source.name, index: source.index, selection: source.selection, fields: source.snapshot.fields, gaps: source.snapshot.gaps, captureState: log.state, indexedState: source.log.state };
           }}
-          events={captureEvents} settings={comparisonSettings} onChange={setComparisonSettings} visible={displayVisible} busy={Boolean(loadingPath) || exporting || restoringWorkspace || querying} nativeEnabled={nativeEnabled} />
+          events={captureEvents} settings={comparisonSettings} onChange={setComparisonSettings} visible={displayVisible} busy={Boolean(loadingPath) || exporting || restoringWorkspace || querying} nativeEnabled={nativeEnabled} onDraftChange={setComparisonDraft} />
 
         <CaptureEventTimeline events={timelineEvents} source={markerSource} inspection={inspection} markerError={markerLibrary.error}
           busy={Boolean(loadingPath) || exporting || restoringWorkspace} onInspect={(event, before, after) => void inspectEvent(event, before, after)}

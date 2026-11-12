@@ -1,6 +1,6 @@
 import { normalizeTelemetryDecoderProfile, type TelemetryDecoderProfile } from '../telemetry/telemetryDecoders';
 import { watchOptionsError, type TelemetryAlertRule } from '../telemetry/telemetryAlerts';
-import { normalizeCaptureComparison, type CaptureComparisonSettings } from '../captures/captureComparison';
+import { normalizeCaptureComparison, readCaptureComparison, type CaptureComparisonSettings } from '../captures/captureComparison';
 
 const STORAGE_KEY = 'baudtide.analysis-workspaces.v1';
 export type AnalysisSourcePreset = {
@@ -19,7 +19,7 @@ export type SavedAnalysisWorkspace = {
   alignment: 'elapsed' | 'clock'; chartMode: 'compare' | 'lanes'; windowMs: number; replayRate: number;
   sources: AnalysisSourcePreset[]; watches: AnalysisWatchPreset[];
 };
-export type AnalysisWorkspaceLibrary = { version: 1; activeId: string | null; workspaces: SavedAnalysisWorkspace[] };
+export type AnalysisWorkspaceLibrary = { version: 1; activeId: string | null; workspaces: SavedAnalysisWorkspace[]; recoveryWarnings?: Record<string, string>; unrecoveredComparisons?: Record<string, unknown> };
 
 /** Keep unresolved saved signals until restoration finishes or the user changes them. */
 export function selectedAnalysisFields(sourceId: string, selectedFields: readonly string[], pendingFields: readonly string[] = []): string[] {
@@ -104,16 +104,30 @@ export function loadAnalysisWorkspaces(): AnalysisWorkspaceLibrary {
   try {
     const value: unknown = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? '{}');
     if (!object(value) || value.version !== 1 || !Array.isArray(value.workspaces)) return empty;
-    const workspaces = value.workspaces.slice(0, 30).map(normalizeAnalysisWorkspace).filter((workspace): workspace is SavedAnalysisWorkspace => Boolean(workspace));
+    const recoveryWarnings: Record<string, string> = {};
+    const unrecoveredComparisons: Record<string, unknown> = {};
+    const workspaces = value.workspaces.slice(0, 30).map((raw: unknown) => {
+      if (!object(raw) || raw.comparison === undefined) return normalizeAnalysisWorkspace(raw);
+      const read = readCaptureComparison(raw.comparison);
+      if (read.discardedChecks && read.comparison && typeof raw.id === 'string') {
+        const restored = normalizeAnalysisWorkspace({ ...raw, comparison: read.comparison });
+        if (restored) { recoveryWarnings[restored.id] = 'Some acceptance checks could not be restored. Review and add them again.'; unrecoveredComparisons[restored.id] = raw.comparison; }
+        return restored;
+      }
+      return normalizeAnalysisWorkspace(raw);
+    }).filter((workspace): workspace is SavedAnalysisWorkspace => Boolean(workspace));
     const unique = workspaces.filter((workspace, index) => workspaces.findIndex((candidate) => candidate.id === workspace.id) === index);
-    return { version: 1, activeId: unique.some((workspace) => workspace.id === value.activeId) ? value.activeId as string : null, workspaces: unique };
+    return { version: 1, activeId: unique.some((workspace) => workspace.id === value.activeId) ? value.activeId as string : null, workspaces: unique, ...(Object.keys(recoveryWarnings).length ? { recoveryWarnings, unrecoveredComparisons } : {}) };
   } catch { return empty; }
 }
 
 export function storeAnalysisWorkspaces(library: AnalysisWorkspaceLibrary) {
   const normalized = library.workspaces.map(normalizeAnalysisWorkspace);
   if (library.workspaces.length > 30 || normalized.some((workspace) => !workspace)) throw new Error('Use a name and valid sources to save this analysis. Up to 30 workspaces can be saved.');
-  const contents = JSON.stringify({ version: 1, activeId: library.activeId, workspaces: normalized });
+  // Keep unreadable check data until the affected workspace is explicitly updated.
+  const workspaces = normalized.map((workspace) => workspace && library.unrecoveredComparisons?.[workspace.id] !== undefined
+    ? { ...workspace, comparison: library.unrecoveredComparisons[workspace.id] } : workspace);
+  const contents = JSON.stringify({ version: 1, activeId: library.activeId, workspaces });
   if (contents.length > 512 * 1024) throw new Error('This workspace library is too large. Reduce the saved decoder definitions.');
   try { window.localStorage.setItem(STORAGE_KEY, contents); }
   catch { throw new Error('Could not save analysis workspaces. Check that local storage is available and has free space.'); }

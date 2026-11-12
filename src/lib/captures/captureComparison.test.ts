@@ -42,3 +42,13 @@ describe('full-history run comparison', () => {
     expect(normalizeCaptureComparison({ baselinePath: 'a', candidatePath: 'b', baselineField: 'x', candidateField: 'x', baselineEvent: '', candidateEvent: '', startSeconds: 10, endSeconds: 0 })).toBeNull();
   });
 });
+
+describe('acceptance check settings', () => {
+  it('round-trips valid checks and rejects corrupt checks on strict normalization', () => {
+    const base = { baselinePath: 'a', candidatePath: 'b', baselineField: 'x', candidateField: 'x', baselineEvent: '', candidateEvent: '', startSeconds: 0, endSeconds: 10 };
+    const checkSet = { binding: { baselineField: 'x', candidateField: 'x', unit: 'C' }, checks: [{ id: '1', metric: 'mean', measure: 'candidate', operator: 'lte', limit: 25 }] };
+    expect(normalizeCaptureComparison({ ...base, checkSet })).toEqual({ ...base, checkSet });
+    expect(normalizeCaptureComparison({ ...base, checkSet: { ...checkSet, checks: [] } })).toBeNull();
+    expect(normalizeCaptureComparison(base)).toEqual(base);
+  });
+});

@@ -23,7 +23,7 @@ BaudTide is an open-source Linux desktop serial monitor for ESP32, Arduino, and 
 - **Put events in context.** Inspect a watch breach in its capture, see nearby serial output and chart markers, and save timestamped notes about changes on the bench.
 - **Watches for long runs.** Set signal boundaries, sustained conditions, and recovery margins. Keep breach history across restarts and export it when needed.
 - **Messages that matter.** Save per-device text-match rules with cooldowns and optional desktop alerts. Log events persist locally and open the surrounding capture context from the notification inbox.
-- **Measure a firmware change.** Compare a baseline and candidate capture, match signals with the same units, and align on capture events. Inspect full-interval statistics, a shared measurement scale, and export a CSV summary. Comparison settings are retained in saved analyses.
+- **Measure a firmware change.** Compare a baseline and candidate capture, match signals with the same units, and align on capture events. Inspect full-interval statistics and a shared measurement scale, then add optional acceptance checks and export a CSV summary. Checks and comparison settings are retained in saved analyses.
 - **A setup worth saving.** Restore reviewed device connections, terminal layouts, decoders, and saved analyses. Identified USB devices can reconnect across port-name changes; ambiguous devices require review.
 - **Your bench on your phone.** Scan a QR code to view output on a trusted local network. Sharing is read-only by default; remote control is opt-in.
 

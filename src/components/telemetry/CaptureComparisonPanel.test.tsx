@@ -8,6 +8,8 @@ import { TelemetrySessionStore } from '../../lib/telemetry/telemetry';
 import { normalizeAnalysisWorkspace } from '../../lib/workspaces/analysisWorkspaces';
 import type { CaptureComparisonSettings } from '../../lib/captures/captureComparison';
 import type { TelemetryChartsProps } from './TelemetryECharts';
+const exportsApi = vi.hoisted(() => ({ begin: vi.fn(), append: vi.fn(), finish: vi.fn(), cancel: vi.fn() }));
+vi.mock('../../lib/serial/serial', async (original) => ({ ...await original<typeof import('../../lib/serial/serial')>(), beginNativeTelemetryExport: exportsApi.begin, appendNativeTelemetryExport: exportsApi.append, finishNativeTelemetryExport: exportsApi.finish, cancelNativeTelemetryExport: exportsApi.cancel }));
 const chart = vi.hoisted(() => vi.fn<(props: TelemetryChartsProps) => null>(() => null));
 vi.mock('./TelemetryECharts', () => ({ TelemetryCharts: chart }));
 
@@ -24,13 +26,13 @@ async function source(name: string, values: number[]): Promise<ComparisonSource>
     const text = JSON.stringify({ temperature: value }) + '\n';
     store.ingestOrderedSerialEvent(name, { sessionId: name, port: 'test', sequence: second + 1, timestamp: new Date(time + second * 1000).toISOString(), text, bytes: [...new TextEncoder().encode(text)] });
   }
-  await index.flush(true); index.metadata = store.getSnapshot(name);
-  return { name, path: `/${name}.log`, index, selection: index.range, fields: index.metadata.fields, gaps: [] };
+  await index.flush(true); index.metadata = store.getSnapshot(name); index.timingMode = 'recorded';
+  return { name, path: `/${name}.log`, index, selection: index.range, fields: index.metadata.fields, gaps: [], captureState: 'saved', indexedState: 'saved' };
 }
 describe('run comparison controls and persistence', () => {
   let root: Root; let container: HTMLDivElement; let sources: ComparisonSource[];
   beforeEach(async () => {
-    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); chart.mockClear();
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); chart.mockClear(); Object.values(exportsApi).forEach((fn) => fn.mockReset());
     container = document.createElement('div'); document.body.append(container); root = createRoot(container);
     sources = await Promise.all([source('a', [10, 20, 30]), source('b', [20, 40, 60])]);
   });
@@ -84,4 +86,66 @@ describe('run comparison controls and persistence', () => {
     expect(normalizeAnalysisWorkspace({ ...workspace, comparison: config })?.comparison).toEqual(config);
     expect(normalizeAnalysisWorkspace({ ...workspace, comparison: { ...config, startSeconds: NaN } })).toBeNull();
   });
+  it('evaluates full-history acceptance checks and invalidates a stale comparison', async () => {
+    const checkSet = { binding: { baselineField: 'temperature', candidateField: 'temperature', unit: '' }, checks: [
+      { id: 'mean', metric: 'mean' as const, measure: 'candidate' as const, operator: 'lte' as const, limit: 40 },
+      { id: 'change', metric: 'mean' as const, measure: 'percent' as const, operator: 'lte' as const, limit: 10 },
+    ] };
+    await render({ ...config, checkSet }); await compare();
+    expect(container.textContent).toContain('Observed 40 no unit · Pass');
+    expect(container.textContent).toContain('Observed +100 % · Fail');
+    await render({ ...config, endSeconds: 2, checkSet });
+    expect(container.textContent).not.toContain('Observed +100');
+  });
+
+  it('keeps a malformed gap inconclusive instead of crashing the plot', async () => {
+    sources[0] = { ...sources[0], gaps: [{ id: 'bad', type: 'reconnect', timestamp: 'invalid', previousNativeSessionId: 'a', nextNativeSessionId: 'b', nextSequence: 1 }] };
+    const checkSet = { binding: { baselineField: 'temperature', candidateField: 'temperature', unit: '' }, checks: [{ id: 'mean', metric: 'mean' as const, measure: 'candidate' as const, operator: 'lte' as const, limit: 40 }] };
+    await render({ ...config, checkSet }); await compare();
+    expect(container.textContent).toContain('Inconclusive');
+    expect(container.textContent).toContain('gap');
+  });
+  it('does not resurrect a previous result after settings change and change back', async () => {
+    await render(); await compare();
+    expect(container.querySelector('[aria-label="Comparison statistics"]')).not.toBeNull();
+    await render({ ...config, endSeconds: 2 });
+    await render(config);
+    expect(container.querySelector('[aria-label="Comparison statistics"]')).toBeNull();
+  });
+
+  it('reopens a stopped capture without changing its signal or alignment', async () => {
+    sources[0] = { ...sources[0], indexedState: 'capturing', captureState: 'disconnected' };
+    const onChange = vi.fn(); const reopened = { ...sources[0], indexedState: 'disconnected' as const };
+    await act(async () => root.render(<CaptureComparisonPanel sources={sources} events={events} settings={config} onChange={onChange} onLoadCapture={async () => reopened} visible busy={false} nativeEnabled />));
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Reopen capture')!.click());
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('cancels a pending export if comparison inputs change before the dialog returns', async () => {
+    let release!: (id: string) => void;
+    exportsApi.begin.mockReturnValue(new Promise<string>((resolve) => { release = resolve; }));
+    exportsApi.cancel.mockResolvedValue(undefined); exportsApi.append.mockResolvedValue(undefined); exportsApi.finish.mockResolvedValue('/report.csv');
+    const draw = async (settings: typeof config) => act(async () => root.render(<CaptureComparisonPanel sources={sources} events={events} settings={settings} onChange={() => {}} visible busy={false} nativeEnabled />));
+    await draw(config); await compare();
+    await act(async () => { [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save summary')!.click(); });
+    await draw({ ...config, endSeconds: 2 });
+    await act(async () => release('export-1'));
+    expect(exportsApi.cancel).toHaveBeenCalledWith('export-1');
+    expect(exportsApi.finish).not.toHaveBeenCalled();
+  });
+
+  it('cancels an export when its comparison changes while data is being written', async () => {
+    let finishAppend!: () => void;
+    exportsApi.begin.mockResolvedValue('export-2');
+    exportsApi.append.mockReturnValue(new Promise<void>((resolve) => { finishAppend = resolve; }));
+    exportsApi.cancel.mockResolvedValue(undefined); exportsApi.finish.mockResolvedValue('/report.csv');
+    const draw = async (settings: typeof config) => act(async () => root.render(<CaptureComparisonPanel sources={sources} events={events} settings={settings} onChange={() => {}} visible busy={false} nativeEnabled />));
+    await draw(config); await compare();
+    await act(async () => { [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save summary')!.click(); });
+    await draw({ ...config, endSeconds: 2 });
+    await act(async () => finishAppend());
+    expect(exportsApi.cancel).toHaveBeenCalledWith('export-2');
+    expect(exportsApi.finish).not.toHaveBeenCalled();
+  });
+
 });

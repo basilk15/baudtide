@@ -1,5 +1,7 @@
 # Unreleased
 
+- Add optional acceptance checks to capture comparisons, with explicit pass, fail, and inconclusive outcomes. Save checks in analysis workspaces and include their results and evidence in CSV summaries. A pass applies to recorded data; incomplete or uncertain capture evidence remains inconclusive.
+
 - Zoom telemetry charts with the mouse wheel over a plot, keep the range navigator synchronized, and double-click to reset the view.
 - Choose baseline and candidate captures directly from the saved library; selected captures open automatically with loading and retry guidance. Preserve both interval bounds when editing a new range.
 - Give the empty terminal workspace a centered, readable connection prompt and a direct Connect a device action across themes and screen sizes.

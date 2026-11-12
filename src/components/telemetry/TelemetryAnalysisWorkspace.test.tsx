@@ -155,4 +155,12 @@ describe('linked analysis capture-library refresh', () => {
     expect(vi.mocked(analyzeNativeCapture).mock.calls[1][1]).toEqual(newer);
     expect(props.onRequestedAnalysisRestored).toHaveBeenCalledTimes(1);
   });
+  it('reports damaged comparison checks when restoring a saved analysis', async () => {
+    const comparison = { baselinePath: 'a', candidatePath: 'b', baselineField: 'x', candidateField: 'x', baselineEvent: '', candidateEvent: '', startSeconds: 0, endSeconds: 1, checkSet: { binding: {}, checks: [] } };
+    window.localStorage.setItem('baudtide.analysis-workspaces.v1', JSON.stringify({ version: 1, activeId: capture.path, workspaces: [{ ...workspace(), comparison }] }));
+    vi.mocked(listNativeSavedLogs).mockResolvedValue([capture]);
+    await render();
+    expect(container.textContent).toContain('Some acceptance checks could not be restored');
+  });
+
 });

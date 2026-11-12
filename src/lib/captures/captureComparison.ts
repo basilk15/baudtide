@@ -1,9 +1,10 @@
+import { normalizeCheckSet, type ComparisonCheckSet } from './comparisonChecks';
 import type { CaptureAnalysisIndex, CaptureRange } from './captureAnalysis';
 import type { TelemetryField, TelemetrySample } from '../telemetry/telemetry';
 
 export type CaptureComparisonSettings = {
   baselinePath: string; candidatePath: string; baselineField: string; candidateField: string;
-  baselineEvent: string; candidateEvent: string; startSeconds: number; endSeconds: number;
+  baselineEvent: string; candidateEvent: string; startSeconds: number; endSeconds: number; checkSet?: ComparisonCheckSet;
 };
 export function normalizeCaptureComparison(value: unknown): CaptureComparisonSettings | null {
   const v = value as CaptureComparisonSettings | null;
@@ -12,8 +13,18 @@ export function normalizeCaptureComparison(value: unknown): CaptureComparisonSet
       || String(v[key as keyof CaptureComparisonSettings]).includes('\0'))
     || !Number.isFinite(v.startSeconds) || !Number.isFinite(v.endSeconds) || v.startSeconds >= v.endSeconds
     || Math.abs(v.startSeconds) > 1e9 || Math.abs(v.endSeconds) > 1e9) return null;
-  return { baselinePath: v.baselinePath, candidatePath: v.candidatePath, baselineField: v.baselineField, candidateField: v.candidateField,
+  const checkSet = v.checkSet === undefined ? undefined : normalizeCheckSet(v.checkSet);
+  if (v.checkSet !== undefined && !checkSet) return null;
+  return { ...(checkSet ? { checkSet } : {}), baselinePath: v.baselinePath, candidatePath: v.candidatePath, baselineField: v.baselineField, candidateField: v.candidateField,
     baselineEvent: v.baselineEvent, candidateEvent: v.candidateEvent, startSeconds: v.startSeconds, endSeconds: v.endSeconds };
+}
+
+export function readCaptureComparison(value: unknown): { comparison: CaptureComparisonSettings | null; discardedChecks: boolean } {
+  const comparison = normalizeCaptureComparison(value);
+  if (comparison || !value || typeof value !== 'object' || !('checkSet' in value)) return { comparison, discardedChecks: false };
+  const { checkSet: _discarded, ...rest } = value as Record<string, unknown>;
+  const withoutChecks = normalizeCaptureComparison(rest);
+  return { comparison: withoutChecks, discardedChecks: Boolean(withoutChecks) };
 }
 export type SignalStatistics = { count: number; min: number | null; max: number | null; mean: number | null; deviation: number | null; skippedUnits: number };
 export function compatibleComparisonFields(a: TelemetryField, b: TelemetryField) { return (a.unit ?? '') === (b.unit ?? ''); }
