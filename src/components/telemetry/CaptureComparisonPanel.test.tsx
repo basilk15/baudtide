@@ -32,7 +32,7 @@ async function source(name: string, values: number[]): Promise<ComparisonSource>
 describe('run comparison controls and persistence', () => {
   let root: Root; let container: HTMLDivElement; let sources: ComparisonSource[];
   beforeEach(async () => {
-    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); chart.mockClear(); Object.values(exportsApi).forEach((fn) => fn.mockReset());
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); window.localStorage.clear(); chart.mockClear(); Object.values(exportsApi).forEach((fn) => fn.mockReset());
     container = document.createElement('div'); document.body.append(container); root = createRoot(container);
     sources = await Promise.all([source('a', [10, 20, 30]), source('b', [20, 40, 60])]);
   });
@@ -146,6 +146,44 @@ describe('run comparison controls and persistence', () => {
     await act(async () => finishAppend());
     expect(exportsApi.cancel).toHaveBeenCalledWith('export-2');
     expect(exportsApi.finish).not.toHaveBeenCalled();
+  });
+
+  it('saves a checked result and can inspect it after the captures are unavailable', async () => {
+    const checkSet = { binding: { baselineField: 'temperature', candidateField: 'temperature', unit: '' }, checks: [{ id: 'mean', metric: 'mean' as const, measure: 'candidate' as const, operator: 'lte' as const, limit: 40 }] };
+    await render({ ...config, checkSet }); await compare();
+    await act(async () => { const save = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save result')!; save.click(); save.click(); });
+    expect(JSON.parse(window.localStorage.getItem('baudtide.comparison-results.v1')!).records).toHaveLength(1);
+    expect(container.textContent).toContain('Saved locally');
+    await act(async () => root.render(<CaptureComparisonPanel sources={[]} events={[]} onChange={() => {}} visible busy={false} nativeEnabled={false} />));
+    expect(container.textContent).toContain('Saved results');
+    const historical = container.querySelector<HTMLDetailsElement>('.bt-history-entry')!;
+    await act(async () => historical.querySelector('summary')!.click());
+    expect(historical.textContent).toContain('/a.log'); expect(historical.textContent).toContain('40'); expect(historical.textContent).toContain('Pass');
+  });
+  it('does not save a result without checks or after its interval changes', async () => {
+    await render(); await compare();
+    expect([...container.querySelectorAll('button')].find((button) => button.textContent === 'Save result')?.disabled).toBe(true);
+    await render({ ...config, endSeconds: 2 });
+    expect([...container.querySelectorAll('button')].find((button) => button.textContent === 'Save result')).toBeUndefined();
+    expect(window.localStorage.getItem('baudtide.comparison-results.v1')).toBeNull();
+  });
+
+  it('blocks saving while an acceptance check draft is open', async () => {
+    const checkSet = { binding: { baselineField: 'temperature', candidateField: 'temperature', unit: '' }, checks: [{ id: 'mean', metric: 'mean' as const, measure: 'candidate' as const, operator: 'lte' as const, limit: 40 }] };
+    await render({ ...config, checkSet }); await compare();
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!.click());
+    expect([...container.querySelectorAll('button')].find((button) => button.textContent === 'Save result')!.disabled).toBe(true);
+    expect(window.localStorage.getItem('baudtide.comparison-results.v1')).toBeNull();
+  });
+  it('reports a storage failure near the result without creating history', async () => {
+    const checkSet = { binding: { baselineField: 'temperature', candidateField: 'temperature', unit: '' }, checks: [{ id: 'mean', metric: 'mean' as const, measure: 'candidate' as const, operator: 'lte' as const, limit: 40 }] };
+    await render({ ...config, checkSet }); await compare();
+    const denied = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save result')!.click());
+    expect(container.querySelector('.bt-comparison-body > [role="alert"]')?.textContent).toContain('Could not save results');
+    expect(window.localStorage.getItem('baudtide.comparison-results.v1')).toBeNull(); denied.mockRestore();
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>('.bt-history button')].find((button) => button.textContent === 'Retry')!.click());
+    expect(container.querySelector('.bt-comparison-body > [role="alert"]')).toBeNull();
   });
 
 });

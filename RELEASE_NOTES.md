@@ -1,5 +1,7 @@
 # Unreleased
 
+- Save checked comparison results locally and revisit or export their historical measurements, limits, outcomes, and capture context after restarting.
+
 - Add optional acceptance checks to capture comparisons, with explicit pass, fail, and inconclusive outcomes. Save checks in analysis workspaces and include their results and evidence in CSV summaries. A pass applies to recorded data; incomplete or uncertain capture evidence remains inconclusive.
 
 - Zoom telemetry charts with the mouse wheel over a plot, keep the range navigator synchronized, and double-click to reset the view.

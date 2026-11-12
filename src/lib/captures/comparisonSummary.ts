@@ -7,7 +7,7 @@ type SummarySide = { name: string; field: string; anchorMs: number; requested: C
 export type ComparisonSummarySnapshot = { baseline: SummarySide; candidate: SummarySide; unit: string; startSeconds: number; endSeconds: number; evaluation: CheckEvaluation | null };
 
 /** Quote every CSV cell. User-controlled text receives spreadsheet formula protection. */
-function cell(value: unknown, userText = false): string {
+export function comparisonCsvCell(value: unknown, userText = false): string {
   let text = String(value ?? '');
   if (userText && (/^[\t\r]/u.test(text) || /^[\s]*[=+\-@]/u.test(text))) text = `'${text}`;
   return `"${text.replace(/"/gu, '""')}"`;
@@ -40,5 +40,5 @@ export function comparisonSummaryCsv(snapshot: ComparisonSummarySnapshot): strin
     }
     row('note', 'Pass applies only to recorded data. User text beginning with spreadsheet formula characters is prefixed with an apostrophe.');
   }
-  return rows.map((cells) => cells.map(({ value, user }) => cell(value, user)).join(',')).join('\n') + '\n';
+  return rows.map((cells) => cells.map(({ value, user }) => comparisonCsvCell(value, user)).join(',')).join('\n') + '\n';
 }

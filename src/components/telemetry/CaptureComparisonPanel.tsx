@@ -1,3 +1,5 @@
+import { ComparisonHistory } from './ComparisonHistory';
+import { loadComparisonHistory, removeComparisonResult, saveComparisonResult, type ComparisonHistoryRecord } from '../../lib/captures/comparisonHistory';
 import { comparisonSummaryCsv, type ComparisonSummarySnapshot } from '../../lib/captures/comparisonSummary';
 import { ComparisonChecks, checkBindingsMatch } from './ComparisonChecks';
 import { comparisonQualityReasons, evaluateChecks, overlappingRecordedInterval, type CheckBinding } from '../../lib/captures/comparisonChecks';
@@ -30,6 +32,13 @@ export function CaptureComparisonPanel({ sources, captures, onLoadCapture, event
   const config = settings ?? defaults;
   const [open, setOpen] = useState(false);
   const [editingChecks, setEditingChecks] = useState(false);
+  const [history, setHistory] = useState<ComparisonHistoryRecord[]>([]);
+  const [historyError, setHistoryError] = useState('');
+  const [error, setError] = useState('');
+  const [lastSaved, setLastSaved] = useState<{ result: Result; checks: string; id: string } | null>(null);
+  const lastSavedRef = useRef<typeof lastSaved>(null);
+  const refreshHistory = () => { try { setHistory(loadComparisonHistory()); setHistoryError(''); setError(''); } catch (reason) { setHistoryError(reason instanceof Error ? reason.message : 'Could not read saved results.'); } };
+  useEffect(() => { refreshHistory(); }, []);
   const baseline = sources.find((s) => s.path === config.baselinePath);
   const candidate = sources.find((s) => s.path === config.candidatePath);
   const baselineField = baseline?.fields.find((field) => field.key === config.baselineField);
@@ -39,7 +48,6 @@ export function CaptureComparisonPanel({ sources, captures, onLoadCapture, event
   const [result, setResult] = useState<Result | null>(null);
   const [working, setWorking] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [loadingCapture, setLoadingCapture] = useState(false);
   const captureRequest = useRef(0);
@@ -137,15 +145,31 @@ export function CaptureComparisonPanel({ sources, captures, onLoadCapture, event
   const exportRevision = useRef({ signature: exportSignature, revision: 0 });
   if (exportRevision.current.signature !== exportSignature) exportRevision.current = { signature: exportSignature, revision: exportRevision.current.revision + 1 };
   useEffect(() => () => { exportRevision.current.revision += 1; }, []);
+  const summarySide = (source: ComparisonSource, field: TelemetryField, reading: Reading, anchorMs: number) => ({
+    name: source.name, field: field.key, anchorMs, requested: { start: anchorMs + Number(start) * 1000, end: anchorMs + Number(end) * 1000 }, effective: reading.range,
+    state: source.indexedState === 'capturing' ? 'capturing' as const : source.captureState ?? 'unknown' as const,
+    timingMode: source.index.timingMode, statistics: reading.statistics,
+  });
+  const snapshot: ComparisonSummarySnapshot | null = current && baseline && candidate && baselineField && candidateField ? {
+    baseline: summarySide(baseline, baselineField, current.baseline, current.baselineAnchor), candidate: summarySide(candidate, candidateField, current.candidate, current.candidateAnchor),
+    unit: current.unit ?? '', startSeconds: Number(start), endSeconds: Number(end), evaluation,
+  } : null;
+  const checksKey = JSON.stringify(config.checkSet);
+  const alreadySaved = Boolean(current && lastSaved?.result === current && lastSaved.checks === checksKey);
+  const saveResult = () => {
+    if (!snapshot || !current || !baseline || !candidate || !evaluation || editingChecks || working || busy || exporting || loadingCapture || alreadySaved || (lastSavedRef.current?.result === current && lastSavedRef.current.checks === checksKey)) return;
+    try {
+      const id = crypto.randomUUID();
+      setHistory(saveComparisonResult({ id, savedAt: new Date().toISOString(), baselinePath: baseline.path, candidatePath: candidate.path, snapshot }));
+      const saved = { result: current, checks: checksKey, id }; lastSavedRef.current = saved; setLastSaved(saved); setHistoryError(''); setError(''); setNotice('Saved locally in result history.');
+    } catch (reason) { const message = reason instanceof Error ? reason.message : 'Could not save this result.'; setHistoryError(message); setError(message); }
+  };
+  const removeResult = (id: string) => {
+    try { setHistory(removeComparisonResult(id)); setHistoryError(''); if (lastSavedRef.current?.id === id) { lastSavedRef.current = null; setLastSaved(null); } return true; }
+    catch (reason) { setHistoryError(reason instanceof Error ? reason.message : 'Could not remove this result.'); return false; }
+  };
   const exportSummary = async () => {
-    if (!current || !baseline || !candidate || !baselineField || !candidateField || editingChecks || (config.checkSet && !evaluation) || exportingRef.current) return;
-    const summarySide = (source: ComparisonSource, field: TelemetryField, reading: Reading, anchorMs: number) => ({
-      name: source.name, field: field.key, anchorMs, requested: { start: anchorMs + Number(start) * 1000, end: anchorMs + Number(end) * 1000 }, effective: reading.range,
-      state: source.indexedState === 'capturing' ? 'capturing' as const : source.captureState ?? 'unknown' as const,
-      timingMode: source.index.timingMode, statistics: reading.statistics,
-    });
-    const snapshot: ComparisonSummarySnapshot = { baseline: summarySide(baseline, baselineField, current.baseline, current.baselineAnchor), candidate: summarySide(candidate, candidateField, current.candidate, current.candidateAnchor),
-      unit: current.unit ?? '', startSeconds: Number(start), endSeconds: Number(end), evaluation };
+    if (!snapshot || editingChecks || (config.checkSet && !evaluation) || exportingRef.current) return;
     const contents = comparisonSummaryCsv(snapshot);
     const revision = exportRevision.current.revision;
     const ensureCurrent = () => { if (exportRevision.current.revision !== revision) throw new Error('Comparison changed before export completed. Compare again and retry.'); };
@@ -202,7 +226,7 @@ export function CaptureComparisonPanel({ sources, captures, onLoadCapture, event
       {error && <p className="bt-tool-error" role="alert">{error}</p>}
       {current && <div className="bt-comparison-result">
         <div className="bt-comparison-result-heading"><strong>{baselineField?.key} {baselineField?.key !== candidateField?.key ? `→ ${candidateField?.key}` : ''}<span>{current.unit || 'No unit specified'}</span></strong>
-          <button type="button" className="sd-secondary-button" disabled={disabled || editingChecks || !nativeEnabled || Boolean(config.checkSet && !evaluation)} onClick={() => void exportSummary()}><Download size={14} />{exporting ? 'Saving…' : 'Save summary'}</button></div>
+          <div className="bt-comparison-result-actions"><button type="button" className="sd-secondary-button" disabled={disabled || editingChecks || !evaluation || alreadySaved || history.length >= 50} onClick={saveResult}>{alreadySaved ? 'Result saved' : 'Save result'}</button><button type="button" className="sd-secondary-button" disabled={disabled || editingChecks || !nativeEnabled || Boolean(config.checkSet && !evaluation)} onClick={() => void exportSummary()}><Download size={14} />{exporting ? 'Saving…' : 'Save summary'}</button></div></div>
         <div className="bt-comparison-table" role="region" tabIndex={0} aria-label="Comparison statistics"><table><caption>All recorded readings in the interval · sample mean and population standard deviation</caption><thead><tr><th scope="col">Metric</th><th scope="col">Baseline</th><th scope="col">Candidate</th><th scope="col">Difference</th><th scope="col">Change</th></tr></thead><tbody>
           <tr><th scope="row">Readings</th><td>{current.baseline.statistics.count.toLocaleString()}</td><td>{current.candidate.statistics.count.toLocaleString()}</td><td>—</td><td>—</td></tr>
           {metrics.map((m) => <tr key={m.name}><th scope="row">{m.name}</th><td>{number(m.baseline)}</td><td>{number(m.candidate)}</td><td>{signed(m.delta.absolute)}</td><td>{m.delta.percent === null ? '—' : `${signed(m.delta.percent)}%`}</td></tr>)}
@@ -217,6 +241,7 @@ export function CaptureComparisonPanel({ sources, captures, onLoadCapture, event
           timeline={{ kind: 'elapsed', originMs: EPOCH, signed: true }} markers={[{ id: 'zero', kind: 'note', label: 'Time zero', timestampMs: EPOCH }]} />
         <p className="bt-tool-footnote">Chart uses a bounded overview; statistics use the full sample history. Percent change is unavailable when the baseline is zero. Lower or higher values are not automatically classified as better.</p>
       </div>}
+      <ComparisonHistory records={history} error={historyError} nativeEnabled={nativeEnabled} onRemove={removeResult} onRetry={refreshHistory} />
       {notice && <p className="bt-tool-footnote" role="status">{notice}</p>}
     </div>
   </details>;
