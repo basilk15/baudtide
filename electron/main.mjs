@@ -3,6 +3,7 @@ import { TelemetryExportStreams, assertExportDestinationSafe } from './telemetry
 import { CaptureAnalysisReaders } from './capture-analysis.mjs';
 import { CaptureBundleService, cleanupInterruptedBundleImports } from './capture-bundle-service.mjs';
 import { claimApplicationInstance } from './instance-lock.mjs';
+import { exampleCaptureFilename } from './example-captures.mjs';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
@@ -517,8 +518,8 @@ ipcMain.handle(invokeChannel, async (event, command, args = {}) => {
     if (command === 'export_capture_bundle') return exportCaptureBundleDialog(args);
     if (command === 'import_capture_bundle') return importCaptureBundleDialog();
     if (command === 'import_example_capture_bundle') return captureBundles.importBundle(app.isPackaged
-      ? path.join(process.resourcesPath, 'examples', 'temperature-demo.btbundle')
-      : path.join(electronDirectory, 'examples', 'temperature-demo.btbundle'));
+      ? path.join(process.resourcesPath, 'examples', exampleCaptureFilename(args.exampleId))
+      : path.join(electronDirectory, 'examples', exampleCaptureFilename(args.exampleId)));
     if (command === 'pending_capture_bundle_imports') return backend.invoke(command, {});
     if (command === 'finish_capture_bundle_import') return backend.invoke(command, { id: args.id });
     if (command === 'export_telemetry_data') return exportTelemetryData(args);

@@ -20,13 +20,15 @@ BaudTide is an open-source Linux desktop serial monitor for ESP32, Arduino, and 
 - **Multiple devices, one workspace.** Discover ports and monitor boards in tabs or side-by-side terminals. Send text or hex, save command presets, and repeat commands with an explicit Stop control. Save command sequences with response checks, timeouts, delays, and capture-linked step results.
 - **Signals from serial output.** Plot JSON, key/value, CSV, and TSV telemetry. Map custom numeric columns with reusable decoder profiles.
 - **Capture now, investigate later.** Keep searchable raw logs locally, replay recordings, inspect time ranges, and export selected telemetry to CSV or JSON.
-- **Share a reproducible capture.** Export a completed capture as a portable bundle with its receive timing, notes, and an optional decoder; import it on another BaudTide installation. Try the included example from an empty saved-log library.
+- **Share a reproducible capture.** Export a completed capture as a portable bundle with its receive timing, notes, and an optional decoder; import it on another BaudTide installation. Explore the built-in example gallery without hardware.
 - **Put events in context.** Inspect a watch breach in its capture, see nearby serial output and chart markers, and save timestamped notes about changes on the bench.
 - **Watches for long runs.** Set signal boundaries, sustained conditions, and recovery margins. Keep breach history across restarts and export it when needed.
 - **Messages that matter.** Save per-device text-match rules with cooldowns and optional desktop alerts. Log events persist locally and open the surrounding capture context from the notification inbox.
 - **Measure a firmware change.** Compare a baseline and candidate capture, match signals with the same units, and align on capture events. Inspect full-interval statistics and a shared measurement scale, then add optional acceptance checks and export a CSV summary. Checks and comparison settings are retained in saved analyses. Save individual comparison results locally to revisit their evidence or export them later.
 - **A setup worth saving.** Restore reviewed device connections, terminal layouts, decoders, and saved analyses. Identified USB devices can reconnect across port-name changes; ambiguous devices require review.
 - **Your bench on your phone.** Scan a QR code to view output on a trusted local network. Sharing is read-only by default; remote control is opt-in.
+
+Explore synthetic recordings from **Saved logs → Examples**, even with an existing capture library. Preview a temperature spike or a motor speed step, import a local copy, then choose **Open imported capture** to inspect its signals, recorded timing, and note. The motor recording includes a custom column decoder. No hardware is required and no device is connected.
 
 Dark, Light, and Sage themes let you choose the workspace that suits your bench.
 

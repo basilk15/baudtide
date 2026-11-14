@@ -13,6 +13,38 @@ afterEach(() => { container?.remove(); localStorage.clear(); vi.unstubAllGlobals
 const log = { path: '/logs/board.log', fileName: 'board.log', sessionName: 'Board', sizeBytes: 100, modifiedAt: '2026-01-01T00:00:00.000Z', state: 'saved' as const, metadataAvailable: false };
 function button(name: string) { return [...container.querySelectorAll('button')].find((candidate) => candidate.textContent?.includes(name))!; }
 describe('saved log bundle actions', () => {
+  it('offers examples in a populated library and opens the imported capture only on request', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); api.list.mockResolvedValue([log]); api.pending.mockResolvedValue([]); api.finish.mockResolvedValue(undefined);
+    const imported = { ...log, path: '/logs/motor.log', sessionName: 'Example motor capture' };
+    api.importBundle.mockResolvedValue({ id: '1234-abcd', capturePath: imported.path, metadata: { name: imported.sessionName, decoder: null, notes: [] } });
+    container = document.createElement('div'); document.body.append(container); const root = createRoot(container); const open = vi.fn();
+    await act(async () => root.render(<SavedLogsScreen nativeEnabled onRequestConnection={() => {}} onReconnectWithSettings={() => {}} onOpenInVisualize={open} />));
+    await act(async () => button('Examples').click());
+    expect(api.importBundle).not.toHaveBeenCalled();
+    await act(async () => button('Motor speed').click());
+    api.list.mockResolvedValue([imported, log]);
+    await act(async () => button('Import example').click());
+    expect(api.importBundle).toHaveBeenCalledWith('motor-columns');
+    expect(open).not.toHaveBeenCalled();
+    await act(async () => button('Open imported capture').click());
+    expect(open).toHaveBeenCalledWith(imported);
+    api.importBundle.mockRejectedValueOnce(new Error('Disk full'));
+    await act(async () => button('Import example').click());
+    expect(container.querySelector('.bt-examples-imported')).toBeNull();
+    await act(async () => root.unmount());
+  });
+  it('offers the recovered capture after retrying a pending import', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const recovered = { ...log, path: '/new.log' };
+    api.list.mockResolvedValue([recovered]); api.finish.mockResolvedValue(undefined);
+    api.pending.mockResolvedValue([{ id: '1234-abcd', capturePath: recovered.path, metadata: { name: 'Board', decoder: null, notes: [] } }]);
+    container = document.createElement('div'); document.body.append(container); const root = createRoot(container); const open = vi.fn();
+    await act(async () => root.render(<SavedLogsScreen nativeEnabled onRequestConnection={() => {}} onReconnectWithSettings={() => {}} onOpenInVisualize={open} />));
+    await act(async () => button('Retry Board').click());
+    await act(async () => button('Open imported capture').click());
+    expect(open).toHaveBeenCalledWith(recovered);
+    await act(async () => root.unmount());
+  });
   it('reviews and exports a selected completed capture', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); api.list.mockResolvedValue([log]); api.pending.mockResolvedValue([]); api.inspect.mockResolvedValue({ timingMode: 'approximate' }); api.exportBundle.mockResolvedValue({ destination: '/out.btbundle', timingMode: 'approximate' });
     container = document.createElement('div'); document.body.append(container); const root = createRoot(container);

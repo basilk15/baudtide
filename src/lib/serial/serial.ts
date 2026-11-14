@@ -163,7 +163,7 @@ export type CaptureBundleMetadata = {
 export type PendingCaptureBundle = { id: string; capturePath: string; metadata: CaptureBundleMetadata };
 export function inspectCaptureBundle(sourcePath: string) { return invokeDesktop<{ timingMode: 'recorded' | 'approximate' }>('inspect_capture_bundle', { sourcePath }); }
 export function exportCaptureBundle(sourcePath: string, metadata: CaptureBundleMetadata) { return invokeDesktop<{ destination: string; timingMode: 'recorded' | 'approximate' } | null>('export_capture_bundle', { sourcePath, metadata }); }
-export function importCaptureBundle(example = false) { return invokeDesktop<PendingCaptureBundle | null>(example ? 'import_example_capture_bundle' : 'import_capture_bundle'); }
+export function importCaptureBundle(example: boolean | string = false) { return invokeDesktop<PendingCaptureBundle | null>(example ? 'import_example_capture_bundle' : 'import_capture_bundle', typeof example === 'string' ? { exampleId: example } : undefined); }
 export function pendingCaptureBundleImports() { return invokeDesktop<PendingCaptureBundle[]>('pending_capture_bundle_imports'); }
 export function finishCaptureBundleImport(id: string) { return invokeDesktop<void>('finish_capture_bundle_import', { id }); }
 

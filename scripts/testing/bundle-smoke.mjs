@@ -8,6 +8,7 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { CaptureBundleService } from '../../electron/capture-bundle-service.mjs';
 import { importCaptureBundle } from '../../electron/capture-bundle.mjs';
+import { exampleCaptureFilename } from '../../electron/example-captures.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const data = await mkdtemp(path.join(os.tmpdir(), 'baudtide-bundle-smoke-'));
@@ -45,7 +46,20 @@ try {
   assert.equal((await invoke('pending_capture_bundle_imports')).length, 1);
   await invoke('finish_capture_bundle_import', { id: imported.id });
   assert.deepEqual(await invoke('pending_capture_bundle_imports'), []);
-  console.log('Bundle smoke passed: sidecar import, timing, export, and recovery.');
+  const motor = await service.importBundle(path.join(root, 'electron', 'examples', exampleCaptureFilename('motor-columns')));
+  assert.equal(motor.metadata.decoder.name, 'Motor columns');
+  assert.equal(motor.metadata.decoder.prefix, 'MOTOR,');
+  const motorAnalysis = await invoke('open_capture_analysis', { path: motor.capturePath });
+  assert.equal(motorAnalysis.timingMode, 'recorded');
+  const motorChunk = await invoke('read_capture_analysis_chunk', { id: motorAnalysis.id });
+  assert.match(Buffer.from(motorChunk.rawBase64, 'base64').toString(), /^MOTOR,1200,0.400/);
+  await invoke('close_capture_analysis', { id: motorAnalysis.id });
+  const secondMotor = await service.importBundle(path.join(root, 'electron', 'examples', exampleCaptureFilename('motor-columns')));
+  assert.notEqual(secondMotor.capturePath, motor.capturePath);
+  await invoke('finish_capture_bundle_import', { id: motor.id });
+  await invoke('finish_capture_bundle_import', { id: secondMotor.id });
+  assert.deepEqual(await invoke('pending_capture_bundle_imports'), []);
+  console.log('Bundle smoke passed: both examples, timing, decoder, repeated imports, export, and recovery.');
   await invoke('shutdown');
 } finally {
   if (child.exitCode === null) child.kill();
