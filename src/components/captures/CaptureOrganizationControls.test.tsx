@@ -16,9 +16,12 @@ it('edits tags explicitly, retains failed edits, and cancels with Escape', async
     const edit = host.querySelector<HTMLButtonElement>('[aria-label="Edit tags for Board"]')!;
     await act(async () => edit.click());
     const input = host.querySelector('input')!; expect(document.activeElement).toBe(input);
+    expect(edit.getAttribute('aria-controls')).toBe(host.querySelector('form')!.id);
     expect(input.value).toBe('baseline');
+    host.querySelector<HTMLButtonElement>('button[type="submit"]')!.focus();
     await act(async () => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('Storage full');
+    expect(document.activeElement).toBe(input);
     expect(host.querySelector('input')).not.toBeNull();
     await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
     expect(host.querySelector('input')).toBeNull(); expect(document.activeElement).toBe(edit);

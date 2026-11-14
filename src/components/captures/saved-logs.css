@@ -163,6 +163,42 @@
 }
 
 /* Actions belong on a second, flexible track—not behind the list's clipped edge. */
+.signaldeck-shell .sd-saved-logs-header > .bt-bundle-header-actions {
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+}
+
+.signaldeck-shell .sd-saved-logs-header > div:first-child {
+  min-width: 0;
+}
+
+@media (max-width: 1100px) {
+  .signaldeck-shell .sd-saved-logs-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-md);
+  }
+}
+
+@media (max-width: 480px) {
+  .signaldeck-shell .sd-saved-logs-header > .bt-bundle-header-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+    width: 100%;
+  }
+
+  .signaldeck-shell .bt-bundle-header-actions button {
+    min-width: 0;
+    min-height: 44px;
+    padding-inline: var(--space-xs);
+    font-size: var(--text-xs);
+  }
+
+  .signaldeck-shell .bt-bundle-header-actions button:last-child {
+    grid-column: 1 / -1;
+  }
+}
+
 .signaldeck-shell .sd-saved-log-row {
   grid-template-areas:
     'icon primary meta'
@@ -172,6 +208,7 @@
 
 .signaldeck-shell .sd-saved-log-icon {
   grid-area: icon;
+  align-self: start;
 }
 
 .signaldeck-shell .sd-saved-log-primary {
@@ -264,6 +301,15 @@
 }
 
 @media (max-width: 720px) {
+  .signaldeck-shell .sd-saved-log-name {
+    flex-wrap: wrap;
+  }
+
+  .signaldeck-shell .sd-saved-log-name strong {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
   .signaldeck-shell .sd-saved-logs-toolbar {
     grid-template-columns: minmax(0, 1fr) auto;
   }
