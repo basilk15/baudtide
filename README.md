@@ -32,6 +32,12 @@ Explore synthetic recordings from **Saved logs → Examples**, even with an exis
 
 Dark, Light, and Sage themes let you choose the workspace that suits your bench.
 
+### Organizing captures
+
+In **Saved logs**, use the star to favorite a capture or **Tags** to add labels such as `baseline`, `firmware v2`, or `bench a`. Combine **Favorites** and the **Tag** filter with the existing state filters, content search, and sorting. **Reset organization** clears the organization filters and restores the default sort.
+
+Tags use lowercase and support up to eight labels of 24 characters each. Tags and favorites persist locally in this installation; they do not change raw captures and are not included in portable bundles. Use the Tag selector to find labels; captured-content search continues to search native capture metadata and serial output.
+
 ## Download
 
 Get the **AppImage, DEB, or RPM** for Linux x86_64 from the [latest release](https://github.com/basilk15/baudtide/releases/latest).

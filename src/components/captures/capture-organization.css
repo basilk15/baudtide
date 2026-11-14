@@ -1,0 +1,24 @@
+.signaldeck-shell .sd-saved-log-row { grid-template-areas:'icon primary meta' 'icon labels labels' 'icon actions actions'; }
+.bt-capture-organize { grid-area:labels; display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-xs); min-width:0; }
+.bt-capture-favorite,.bt-capture-tags-button { display:inline-flex; align-items:center; justify-content:center; gap:var(--space-xs); min-height:32px; border:1px solid var(--color-border); border-radius:var(--radius-control); padding:var(--space-2xs) var(--space-xs); background:var(--color-app-raised); color:var(--color-ink-muted); font:inherit; font-size:var(--text-xs); cursor:pointer; }
+.bt-capture-favorite { width:32px; flex:none; }.bt-capture-favorite[aria-pressed="true"] { color:var(--color-accent); background:var(--color-accent-soft); }
+.bt-capture-favorite:hover:not(:disabled),.bt-capture-tags-button:hover:not(:disabled) { background:var(--color-surface-raised); color:var(--color-ink); }
+.bt-capture-tag-list { display:flex; flex-wrap:wrap; gap:var(--space-2xs); min-width:0; }
+.bt-capture-tag-list span { padding:3px var(--space-xs); border:1px solid var(--color-border-subtle); border-radius:var(--radius-control); color:var(--color-ink-soft); background:var(--color-app-raised); font-size:var(--text-xs); overflow-wrap:anywhere; }
+.bt-capture-tag-editor { flex-basis:100%; display:grid; gap:var(--space-xs); min-width:0; padding:var(--space-md); border:1px solid var(--color-border); border-radius:var(--radius-control); background:var(--color-app-raised); }
+.bt-capture-tag-editor label { color:var(--color-ink); font-size:var(--text-xs); font-weight:600; }
+.bt-capture-tag-editor input { width:100%; min-width:0; min-height:40px; box-sizing:border-box; padding:var(--space-xs) var(--space-sm); border:1px solid var(--color-border); border-radius:var(--radius-control); background:var(--color-surface); color:var(--color-ink); font:inherit; }
+.bt-capture-tag-editor input::placeholder { color:var(--color-ink-muted); opacity:1; }
+.bt-capture-tag-editor p { margin:0; color:var(--color-ink-muted); font-size:var(--text-xs); line-height:1.5; }.bt-capture-tag-editor .bt-capture-tag-error { color:var(--color-danger); }
+.bt-capture-tag-editor>div { display:flex; flex-wrap:wrap; gap:var(--space-xs); }
+.theme-light .bt-capture-tag-editor .sd-primary-button,.theme-light .bt-capture-tag-editor .sd-primary-button:hover:not(:disabled) { color:#fff; }
+.bt-capture-local-filters { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-sm); margin:0 0 var(--space-md); padding:var(--space-sm) 0; border-bottom:1px solid var(--color-border-subtle); }
+.bt-capture-local-filters label { display:flex; align-items:center; gap:var(--space-xs); color:var(--color-ink-soft); font-size:var(--text-xs); }
+.bt-capture-local-filters select { min-width:120px; max-width:220px; min-height:36px; padding:var(--space-xs); border:1px solid var(--color-border); border-radius:var(--radius-control); background:var(--color-app-raised); color:var(--color-ink); font:inherit; }
+.bt-capture-local-filters button[aria-pressed="true"] { color:var(--color-accent); background:var(--color-accent-soft); border-color:var(--color-border); }
+.bt-capture-local-filters>span { color:var(--color-ink-muted); font-size:var(--text-xs); }
+.bt-capture-organization-error { display:flex; flex-wrap:wrap; gap:var(--space-sm); align-items:center; padding:var(--space-md); margin:var(--space-md) 0; border:1px solid var(--color-danger); border-radius:var(--radius-control); color:var(--color-ink-soft); font-size:var(--text-xs); }
+.bt-capture-organize button:focus-visible,.bt-capture-organize input:focus-visible,.bt-capture-local-filters select:focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
+.bt-capture-organize button:disabled { opacity:.6; cursor:not-allowed; }
+@media(max-width:720px) { .signaldeck-shell .sd-saved-log-row { grid-template-areas:'icon primary' 'icon meta' 'labels labels' 'actions actions'; } }
+@media(max-width:480px) { .bt-capture-organize button,.bt-capture-local-filters select { min-height:44px; }.bt-capture-favorite { width:44px; }.bt-capture-local-filters label { flex:1; min-width:0; }.bt-capture-local-filters select { flex:1; min-width:0; max-width:100%; }.bt-capture-tag-editor { padding:var(--space-sm); } }

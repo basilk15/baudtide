@@ -1,5 +1,7 @@
 # Unreleased
 
+- Favorite saved captures and organize them with local tags. Combine favorite/tag filters with search, capture state, and sorting; edit tags inline with visible storage-error and retry guidance. Raw captures and portable bundles are unchanged.
+
 - Browse a built-in example gallery from Saved logs at any time. Preview synthetic temperature and motor recordings, import independent local copies with timing and notes, and open them in Visualize. The motor example includes a column decoder.
 
 - Export and import portable capture bundles containing raw output, available receive timing, notes, and an optional decoder. A synthetic example is available in Saved logs, and interrupted metadata restoration can be retried.

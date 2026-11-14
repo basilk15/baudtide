@@ -10,6 +10,8 @@ import { restoreCaptureBundleMetadata } from '../../lib/captures/captureBundleRe
 import { loadTelemetryDecoderProfiles, type TelemetryDecoderProfile } from '../../lib/telemetry/telemetryDecoders';
 import { CaptureBundleReview } from './CaptureBundleReview';
 import { ExampleCaptureGallery } from './ExampleCaptureGallery';
+import { CaptureOrganizationControls } from './CaptureOrganizationControls';
+import { CaptureOrganizationReadError, loadCaptureOrganization, removeCaptureOrganization, setCaptureFavorite, setCaptureTags, type CaptureOrganizationLibrary } from '../../lib/captures/captureOrganization';
 
 type SavedLogsScreenProps = {
   nativeEnabled: boolean;
@@ -115,6 +117,23 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
   const [deletionError, setDeletionError] = useState('');
   const [libraryRevision, setLibraryRevision] = useState(0);
   const [notice, setNotice] = useState('');
+  const [organization, setOrganization] = useState<CaptureOrganizationLibrary>(() => Object.create(null));
+  const [organizationError, setOrganizationError] = useState('');
+  const [organizationUnavailable, setOrganizationUnavailable] = useState(true);
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [tagFilter, setTagFilter] = useState('');
+  const [editingOrganizationPath, setEditingOrganizationPath] = useState('');
+  const organizationFilter = useRef<HTMLSelectElement>(null);
+  const organizationFocusPath = useRef('');
+  const reportOrganizationError = (reason: unknown) => {
+    setOrganizationError(reason instanceof Error ? reason.message : 'Capture organization is unavailable.');
+    if (reason instanceof CaptureOrganizationReadError) setOrganizationUnavailable(true);
+  };
+  const reloadOrganization = () => {
+    try { setOrganization(loadCaptureOrganization()); setOrganizationUnavailable(false); setOrganizationError(''); }
+    catch (reason) { setOrganizationUnavailable(true); reportOrganizationError(reason); }
+  };
+  useEffect(() => { if (nativeEnabled) reloadOrganization(); }, [nativeEnabled]);
   const [bundleBusy, setBundleBusy] = useState(false);
   const [examplesVisible, setExamplesVisible] = useState(false);
   const [importedCapturePath, setImportedCapturePath] = useState('');
@@ -342,27 +361,40 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
       .filter((log) => !deletedLogPaths.current.has(log.path)) ?? [];
   }, [activeSearchResponse, logs, query]);
   const searchResultsByPath = useMemo(() => new Map(activeSearchResponse?.results.map((result) => [result.log.path, result]) ?? []), [activeSearchResponse]);
+  const locallyFilteredLogs = useMemo(() => searchedLogs.filter(log => (!favoritesOnly || organization[log.path]?.favorite)
+    && (!tagFilter || organization[log.path]?.tags.includes(tagFilter))), [searchedLogs, organization, favoritesOnly, tagFilter]);
+  const tagOptions = useMemo(() => [...new Set([...logs.flatMap(log => organization[log.path]?.tags ?? []), ...(tagFilter ? [tagFilter] : [])])].sort(), [logs, organization, tagFilter]);
   const stateFilterCounts = useMemo(() => ({
-    all: searchedLogs.length,
-    active: searchedLogs.filter((log) => matchesStateFilter(log, 'active')).length,
-    completed: searchedLogs.filter((log) => matchesStateFilter(log, 'completed')).length,
-    attention: searchedLogs.filter((log) => matchesStateFilter(log, 'attention')).length,
-  }), [searchedLogs, activeLogPath]);
+    all: locallyFilteredLogs.length,
+    active: locallyFilteredLogs.filter((log) => matchesStateFilter(log, 'active')).length,
+    completed: locallyFilteredLogs.filter((log) => matchesStateFilter(log, 'completed')).length,
+    attention: locallyFilteredLogs.filter((log) => matchesStateFilter(log, 'attention')).length,
+  }), [locallyFilteredLogs, activeLogPath]);
   const organizedLogs = useMemo(() => {
-    const organize = searchedLogs.filter((log) => matchesStateFilter(log, stateFilter));
+    const organize = locallyFilteredLogs.filter((log) => matchesStateFilter(log, stateFilter));
     return organize.sort((left, right) => {
       if (sort === 'name') return compareLogsDeterministically(left, right);
       if (sort === 'largest') return right.sizeBytes - left.sizeBytes || compareLogsDeterministically(left, right);
       const timeDifference = timestampForSort(left) - timestampForSort(right);
       return (sort === 'newest' ? -timeDifference : timeDifference) || compareLogsDeterministically(left, right);
     });
-  }, [searchedLogs, stateFilter, sort, activeLogPath]);
+  }, [locallyFilteredLogs, stateFilter, sort, activeLogPath]);
+  useEffect(() => {
+    const path = organizationFocusPath.current || editingOrganizationPath;
+    if (path && !organizedLogs.some(log => log.path === path)) {
+      setEditingOrganizationPath('');
+      organizationFilter.current?.focus();
+    }
+    organizationFocusPath.current = '';
+  }, [organizedLogs, editingOrganizationPath]);
   const activeCount = logs.filter(isActiveCapture).length;
-  const hasActiveOrganization = stateFilter !== 'all' || sort !== 'newest';
+  const hasActiveOrganization = stateFilter !== 'all' || sort !== 'newest' || favoritesOnly || !!tagFilter;
 
   const resetOrganization = () => {
     setStateFilter('all');
     setSort('newest');
+    setFavoritesOnly(false);
+    setTagFilter('');
   };
 
   const openLog = async (log: SavedLog) => {
@@ -451,6 +483,8 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
     setDeletionError('');
     try {
       await deleteNativeSavedLog(log.path);
+      try { setOrganization(removeCaptureOrganization(log.path)); }
+      catch (reason) { if (reason instanceof CaptureOrganizationReadError) setOrganizationUnavailable(true); setOrganizationError(`Capture deleted, but local tags and favorites could not be cleaned up. ${reason instanceof Error ? reason.message : ''}`); }
       deletedLogPaths.current.add(log.path);
       previewSequence.current += 1;
       setLogs((current) => current.filter((candidate) => candidate.path !== log.path));
@@ -526,6 +560,8 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
       <div className="bt-bundle-header-actions"><button className="sd-secondary-button" type="button" disabled={bundleBusy} aria-expanded={examplesVisible} aria-controls="example-capture-gallery" onClick={(event) => { examplesTrigger.current = event.currentTarget; setExamplesVisible(!examplesVisible); }}>Examples</button><button className="sd-primary-button" type="button" disabled={bundleBusy} onClick={() => void importBundle()}><Upload size={16} /> Import bundle</button><button ref={refreshButton} className="sd-secondary-button" type="button" onClick={() => void refresh()} disabled={isRefreshing}><RefreshCw className={isRefreshing ? 'sd-spin' : ''} size={16} /> Refresh</button></div>
     </header>
 
+    {organizationError && <div className="bt-capture-organization-error" role="alert"><span>{organizationError}</span><button className="sd-secondary-button" type="button" onClick={reloadOrganization}>Retry organization</button></div>}
+
     {examplesVisible && <ExampleCaptureGallery busy={bundleBusy} onImport={(id) => void importBundle(id)} onClose={() => { setExamplesVisible(false); examplesTrigger.current?.focus(); }} />}
     {importedCapturePath && logs.some(log => log.path === importedCapturePath) && <div className="bt-examples-imported" role="status"><Check size={16} /><span>Capture ready to inspect.</span><button className="sd-secondary-button" type="button" onClick={() => { const log = logs.find(item => item.path === importedCapturePath); if (log) onOpenInVisualize(log); }}>Open imported capture</button></div>}
 
@@ -558,6 +594,7 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
       </div>
     </section>
 
+    <div className="bt-capture-local-filters" role="group" aria-label="Local capture filters"><button type="button" className="sd-secondary-button" aria-pressed={favoritesOnly} disabled={organizationUnavailable} onClick={() => setFavoritesOnly(!favoritesOnly)}>Favorites</button><label>Tag<select ref={organizationFilter} aria-label="Filter captures by tag" value={tagFilter} disabled={organizationUnavailable} onChange={event => setTagFilter(event.target.value)}><option value="">All tags</option>{tagOptions.map(tag => <option key={tag} value={tag}>{tag}</option>)}</select></label><span>Tags and favorites stay local to this installation.</span></div>
     {activeSearchResponse && <p className="sd-saved-logs-search-note">{describeSearchResponse(activeSearchResponse)}</p>}
 
     {isLoading || (isSearching && !activeSearchResponse) ? <div className="sd-saved-logs-loading"><LoaderCircle className="sd-spin" size={21} /> {isLoading ? 'Loading local captures…' : fullSearch ? 'Searching and refreshing the local text index…' : 'Searching local captures…'}</div>
@@ -575,6 +612,7 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
            <div className="sd-saved-log-primary"><div className="sd-saved-log-name"><strong>{log.sessionName}</strong>{log.state === 'capturing' && <span><i /> Capturing now</span>}{log.state === 'error' && <span className="is-error">Ended with error</span>}{log.state === 'quota-reached' && <span className="is-error">Stopped at storage limit</span>}{log.state === 'interrupted' && <span className="is-muted">Capture interrupted</span>}</div><p>{log.port ? `${log.port} · ${log.baudRate?.toLocaleString()} baud` : log.metadataAvailable ? 'Connection metadata unavailable' : 'Legacy capture · metadata unavailable'}</p><small>{log.fileName}</small>{firstContentMatch?.snippet && <mark className="sd-saved-log-match">{firstContentMatch.snippet}</mark>}{searchResult && searchResult.contentMatchCount > 1 && <small className="sd-saved-log-match-count">{searchResult.contentMatchCount} content matches in searched bytes</small>}</div>
           <div className="sd-saved-log-meta"><span><Clock3 size={14} /> {formatCapturedAt(log.startedAt ?? log.modifiedAt)}</span><span><HardDrive size={14} /> {formatBytes(log.sizeBytes)}</span>{log.endedAt && <span>Ended {formatCapturedAt(log.endedAt)}</span>}</div>
           <div className="sd-saved-log-actions">{reconnectDefaults && <button className="sd-secondary-button sd-saved-log-reconnect" type="button" onClick={() => onReconnectWithSettings(reconnectDefaults)} title="Open reconnect setup with this capture's saved settings; no device is opened yet." aria-label={`Reconnect ${log.sessionName} with saved settings. Opens setup and does not open a device yet.`}><Radio size={15} /> Reconnect setup</button>}<button className="sd-secondary-button sd-saved-log-visualize" type="button" onClick={() => onOpenInVisualize(log)} disabled={isDeleting === log.path}><FileText size={15} /> Open in Visualize</button><button className="sd-secondary-button" type="button" onClick={() => void openLog(log)} disabled={isOpening || isDeleting === log.path}>{isOpening ? <LoaderCircle className="sd-spin" size={15} /> : <FileText size={15} />} Preview</button><button className="sd-secondary-button" type="button" onClick={() => void saveCopy(log)} disabled={isSaving || isDeleting === log.path}>{isSaving ? <LoaderCircle className="sd-spin" size={15} /> : <Save size={15} />} Save copy</button><button className="sd-secondary-button" type="button" onClick={() => void reviewBundle(log)} disabled={isActive || isBusy || bundleBusy} title={isActive ? 'Disconnect before exporting a bundle' : 'Review capture bundle'}><Archive size={15} /> Export bundle</button><button className="sd-saved-log-delete" type="button" onClick={(event) => requestDeletion(log, event.currentTarget)} disabled={isActive || isBusy || bundleBusy} title={isActive ? 'Disconnect this active session before deleting its capture' : isBusy ? 'Wait for the current log operation to finish' : 'Delete saved log'} aria-label={`Delete ${log.fileName}`}><Trash2 size={15} /> Delete</button><button className="sd-saved-log-copy" type="button" onClick={() => void copy(log.path, 'Log file path copied.')} disabled={isDeleting === log.path} title="Copy log file path" aria-label={`Copy path for ${log.fileName}`}><Copy size={16} /></button></div>
+          <CaptureOrganizationControls name={log.sessionName} favorite={organization[log.path]?.favorite ?? false} tags={organization[log.path]?.tags ?? []} disabled={organizationUnavailable || isBusy} editing={editingOrganizationPath === log.path} onEditingChange={editing => setEditingOrganizationPath(editing ? log.path : '')} onFavorite={() => { try { const next = setCaptureFavorite(log.path, !organization[log.path]?.favorite); organizationFocusPath.current = log.path; setOrganization(next); setOrganizationError(''); } catch (reason) { reportOrganizationError(reason); } }} onTags={text => { try { const next = setCaptureTags(log.path, text); organizationFocusPath.current = log.path; setOrganization(next); setOrganizationError(''); } catch (reason) { reportOrganizationError(reason); throw reason; } }} />
         </article>;
         })}
       </div> : <section className="sd-saved-logs-empty"><div><FolderOpen size={26} /></div><h2>{logs.length ? searchedLogs.length ? 'No logs match that organization.' : 'No logs match that search.' : 'No saved captures yet.'}</h2><p>{logs.length ? searchedLogs.length ? 'Change the state filter or sort, or reset organization, to see these matching captures.' : 'Clear or adjust the search to see your local capture library.' : 'Start a serial session or explore an example capture without connecting a device.'}</p>{logs.length ? searchedLogs.length ? <button className="sd-secondary-button" type="button" onClick={resetOrganization}>Reset organization</button> : <button className="sd-secondary-button" type="button" onClick={() => setQuery('')}>Clear search</button> : <nav className="bt-bundle-empty-actions" aria-label="Get started"><button className="sd-primary-button" type="button" onClick={onRequestConnection}><Radio size={16} /> Start monitoring</button><button className="sd-secondary-button" type="button" disabled={bundleBusy} onClick={(event) => { examplesTrigger.current = event.currentTarget; setExamplesVisible(true); }}>Try example capture</button></nav>}</section>}
