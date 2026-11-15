@@ -50,6 +50,13 @@ describe('run comparison controls and persistence', () => {
     await render({ ...config, endSeconds: 2 });
     expect(container.querySelector('[aria-label="Comparison statistics"]')).toBeNull();
   });
+  it('previews the current comparison report and invalidates it after an interval change', async () => {
+    await render();await compare();
+    await act(async()=>[...container.querySelectorAll('button')].find(b=>b.textContent==='Create report')!.click());
+    expect(container.querySelector('textarea')!.value).toContain('Current comparison');
+    expect(container.querySelector('textarea')!.value).toContain('| Mean | 20 | 40 | +20 | +100% |');
+    await render({...config,endSeconds:2});expect(container.querySelector('textarea')).toBeNull();
+  });
   it('rejects missing alignment events instead of silently aligning to the start', async () => {
     await render({ ...config, baselineEvent: 'missing' }); await compare();
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('alignment event is unavailable');
@@ -171,8 +178,12 @@ describe('run comparison controls and persistence', () => {
   it('blocks saving while an acceptance check draft is open', async () => {
     const checkSet = { binding: { baselineField: 'temperature', candidateField: 'temperature', unit: '' }, checks: [{ id: 'mean', metric: 'mean' as const, measure: 'candidate' as const, operator: 'lte' as const, limit: 40 }] };
     await render({ ...config, checkSet }); await compare();
+    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === 'Create report')!.click());
+    expect(container.querySelector('textarea')).not.toBeNull();
     await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!.click());
     expect([...container.querySelectorAll('button')].find((button) => button.textContent === 'Save result')!.disabled).toBe(true);
+    expect(container.querySelector('textarea')).toBeNull();
+    expect([...container.querySelectorAll('button')].find(button => button.textContent === 'Create report')!.disabled).toBe(true);
     expect(window.localStorage.getItem('baudtide.comparison-results.v1')).toBeNull();
   });
   it('reports a storage failure near the result without creating history', async () => {

@@ -1,3 +1,4 @@
+import { ComparisonReport } from './ComparisonReport';
 import { ComparisonHistory } from './ComparisonHistory';
 import { loadComparisonHistory, removeComparisonResult, saveComparisonResult, type ComparisonHistoryRecord } from '../../lib/captures/comparisonHistory';
 import { comparisonSummaryCsv, type ComparisonSummarySnapshot } from '../../lib/captures/comparisonSummary';
@@ -235,6 +236,7 @@ export function CaptureComparisonPanel({ sources, captures, onLoadCapture, event
         {current.baseline.statistics.skippedUnits + current.candidate.statistics.skippedUnits > 0 && <p className="bt-tool-warning">Readings with a different unit were excluded.</p>}
         {reasons.some((reason) => reason.includes('interval extends')) && <div className="bt-checks-overlap"><button type="button" className="sd-secondary-button" disabled={!overlap || disabled || editingChecks} onClick={() => { if (overlap) { setStart(String(overlap.startSeconds)); setEnd(String(overlap.endSeconds)); update(overlap); } }}>Use overlapping recorded interval</button><small>{overlap ? 'Sets the interval to readings available in both captures; compare again.' : 'No common recorded interval. Choose different captures, ranges, or alignment.'}</small></div>}
       </div>}
+      {snapshot && <ComparisonReport key={exportSignature} snapshot={snapshot} context={{ kind: 'current', qualityReasons: reasons, paths: { baseline: baseline!.path, candidate: candidate!.path } }} disabled={disabled || editingChecks || Boolean(config.checkSet && !evaluation)} />}
       <ComparisonChecks checkSet={config.checkSet} binding={binding} evaluation={evaluation} busy={disabled} onChange={(checkSet) => update({ checkSet })} onDraftChange={(editing) => { setEditingChecks(editing); onDraftChange?.(editing); }} />
       {current && <div className="bt-comparison-plot">
         <TelemetryCharts samples={plot.samples} fields={plot.fields} gaps={plot.gaps} selectedFieldKeys={['Baseline', 'Candidate']} windowMs={0} paused mode="compare" absoluteOverlay visible={visible && open}

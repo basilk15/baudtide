@@ -1,0 +1,20 @@
+.bt-comparison-report { min-width:0; margin-top:var(--space-sm); }
+.bt-comparison-report :is(.sd-primary-button,.sd-secondary-button) { display:inline-flex; align-items:center; justify-content:center; gap:var(--space-xs); }
+.bt-comparison-report-panel { margin-top:var(--space-sm); padding:var(--space-md); border:1px solid var(--color-border-subtle); border-radius:var(--radius-control); background:var(--color-app-raised); color:var(--color-ink); }
+.bt-comparison-report-panel header { display:flex; justify-content:space-between; align-items:flex-start; gap:var(--space-md); }
+.bt-comparison-report-panel :is(h4,h5) { margin:0; font-size:var(--text-sm); font-weight:650; }
+.bt-comparison-report-panel p { margin:var(--space-xs) 0 0; max-width:75ch; font-size:var(--text-xs); line-height:1.5; color:var(--color-ink-muted); }
+.bt-comparison-report-tools { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-xs); margin-top:var(--space-md); }
+.bt-comparison-report .bt-comparison-report-tools label { display:flex; flex-direction:row; align-items:center; gap:var(--space-xs); min-width:0; color:var(--color-ink-soft); font-size:var(--text-xs); cursor:pointer; }
+.bt-comparison-report .bt-comparison-report-tools input[type="checkbox"] { width:18px; height:18px; min-height:18px; flex:none; margin:0; padding:0; accent-color:var(--color-accent); }
+.bt-comparison-report-panel .bt-comparison-report-error { color:var(--color-danger); }
+.bt-comparison-report-panel .bt-comparison-report-notice { color:var(--color-ink-soft); }
+.bt-comparison-report-notice:empty { display:none; }
+.bt-comparison-report-panel textarea { display:block; box-sizing:border-box; width:100%; min-width:0; height:300px; min-height:180px; max-height:65vh; margin-top:var(--space-sm); padding:var(--space-sm); resize:vertical; border:1px solid var(--color-border); border-radius:var(--radius-control); background:var(--color-surface); color:var(--color-ink-soft); font:var(--text-xs)/1.6 var(--font-data); tab-size:2; }
+.bt-comparison-report :is(button,input,textarea):focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
+.theme-light .bt-comparison-report-tools .sd-primary-button,.theme-light .bt-comparison-report-tools .sd-primary-button:hover:not(:disabled) { color:#fff; }
+@media(max-width:480px) {
+  .bt-comparison-report button { min-height:44px; }.bt-comparison-report-panel { padding:var(--space-sm); }
+  .bt-comparison-report-tools > button { width:100%; }
+  .bt-comparison-report-tools label { flex-basis:100%; min-height:44px; }.bt-comparison-report-panel textarea { height:280px; }
+}

@@ -15,6 +15,15 @@ const record: ComparisonHistoryRecord = { id: 'one', savedAt: '2026-11-12T07:00:
 let container: HTMLDivElement;
 afterEach(() => { container?.remove(); vi.unstubAllGlobals(); Object.values(api).forEach((fn) => fn.mockReset()); });
 describe('historical comparison results', () => {
+  it('offers a historical Markdown report without reopening captures or including paths by default', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);container=document.createElement('div');document.body.append(container);const root=createRoot(container);
+    await act(async()=>root.render(<ComparisonHistory records={[record]} error="" nativeEnabled={false} onRemove={()=>true} onRetry={()=>{}} />));
+    await act(async()=>container.querySelector('summary')!.click());
+    await act(async()=>[...container.querySelectorAll('button')].find(b=>b.textContent==='Create report')!.click());
+    const preview=container.querySelector('textarea')!.value;
+    expect(preview).toContain('Historical snapshot');expect(preview).toContain(record.savedAt);expect(preview).not.toContain('| Local capture path |');
+    expect(api.begin).not.toHaveBeenCalled();await act(async()=>root.unmount());
+  });
   it('shows saved evidence without needing a capture and confirms removal', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); container = document.createElement('div'); document.body.append(container); const root = createRoot(container); const remove = vi.fn(() => true);
     await act(async () => root.render(<ComparisonHistory records={[record]} error="" nativeEnabled onRemove={remove} onRetry={() => {}} />));
@@ -60,6 +69,11 @@ describe('historical comparison results', () => {
     await act(async () => entries[1].querySelector('summary')!.click());
     const exports = [...container.querySelectorAll('button')].filter((button) => button.textContent === 'Export CSV');
     expect(exports[0].getAttribute('aria-label')).not.toBe(exports[1].getAttribute('aria-label'));
+    const reports=[...container.querySelectorAll('button')].filter(button=>button.textContent==='Create report');
+    expect(reports[0].getAttribute('aria-label')).not.toBe(reports[1].getAttribute('aria-label'));
+    await act(async()=>{reports[0].click();reports[1].click();});
+    const copies=[...container.querySelectorAll('button')].filter(button=>button.textContent==='Copy Markdown');
+    expect(copies[0].getAttribute('aria-label')).not.toBe(copies[1].getAttribute('aria-label'));
     await act(async () => root.unmount());
   });
 

@@ -75,6 +75,12 @@ The launcher builds the native backend and starts the desktop app. `npm run dev`
 
 For the simulated device, enter the printed `/dev/pts/N` path in BaudTide and use 115200 baud.
 
+### Sharing a comparison
+
+After comparing two captures, choose **Create report** to preview a Markdown report, then **Copy Markdown** to paste it into an issue or discussion. The same action is available inside each **Saved result**, using the retained historical measurements without reopening the captures.
+
+Reports include measurements, alignment and interval boundaries, capture state/timing, acceptance checks and evidence caveats. Local capture path fields are omitted unless you explicitly enable **Include local capture paths**. Names, signal labels and evidence notes remain included, so review the preview before sharing. **Select report** provides a manual-copy fallback if clipboard access is denied. Creating a report does not upload anything or include raw captures.
+
 ### Sharing a capture
 
 In **Saved logs**, choose **Export bundle** on a completed capture, review its contents, optionally select a decoder, and choose where to save the `.btbundle` file. The recipient can use **Import bundle** to add an independent copy to their local library and open it in Visualize. If restoring notes or the decoder is interrupted, use the retry action shown in Saved logs. Bundles without complete recorded timing use approximate replay timing.
