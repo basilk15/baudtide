@@ -38,6 +38,10 @@ In **Saved logs**, use the star to favorite a capture or **Tags** to add labels 
 
 Tags use lowercase and support up to eight labels of 24 characters each. Tags and favorites persist locally in this installation; they do not change raw captures and are not included in portable bundles. Use the Tag selector to find labels; captured-content search continues to search native capture metadata and serial output.
 
+Use **Views** in the filter bar to save a useful combination of search text, search scope, capture state, sort, favorites and tag. Give it a name, then choose it from **View** to restore those settings together. For example, keep a view for completed baseline captures or interrupted calibration runs. Opening Saved logs does not automatically apply a view or start a complete-capture search.
+
+You can keep up to 24 views with unique names of 48 characters or fewer. Remove a view from the inline manager after confirming; captures and current filters stay intact. Views remain local to this installation and are excluded from portable bundles. Manual filter changes do not update saved views; save a new named view when needed.
+
 ## Download
 
 Get the **AppImage, DEB, or RPM** for Linux x86_64 from the [latest release](https://github.com/basilk15/baudtide/releases/latest).

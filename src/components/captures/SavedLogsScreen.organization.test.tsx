@@ -4,9 +4,48 @@ import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
 import { SavedLogsScreen } from './SavedLogsScreen';
 import { setCaptureFavorite, setCaptureTags } from '../../lib/captures/captureOrganization';
-const { list, pending, remove } = vi.hoisted(() => ({ list: vi.fn(), pending: vi.fn(), remove: vi.fn() }));
-vi.mock('../../lib/serial/serial', async original => ({ ...await original<typeof import('../../lib/serial/serial')>(), listNativeSavedLogs: list, pendingCaptureBundleImports: pending, deleteNativeSavedLog: remove }));
+import { saveCaptureView } from '../../lib/captures/captureViews';
+const { list, pending, remove, search, cancelSearch } = vi.hoisted(() => ({ list: vi.fn(), pending: vi.fn(), remove: vi.fn(), search: vi.fn(), cancelSearch: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../../lib/serial/serial', async original => ({ ...await original<typeof import('../../lib/serial/serial')>(), listNativeSavedLogs: list, pendingCaptureBundleImports: pending, deleteNativeSavedLog: remove, searchNativeSavedLogs: search, cancelNativeSavedLogSearch: cancelSearch }));
 const logs = ['Alpha', 'Beta'].map((name,i) => ({ path:`/${name}.log`, fileName:`${name}.log`, sessionName:name, sizeBytes:100, modifiedAt:'2026-01-01T00:00:00Z', metadataAvailable:false, state:i ? 'interrupted' : 'saved' }));
+it('applies a saved view through real library filters without auto-applying it at startup', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); localStorage.clear(); list.mockResolvedValue(logs); pending.mockResolvedValue([]);
+  setCaptureFavorite('/Alpha.log',true); setCaptureTags('/Alpha.log','baseline');
+  saveCaptureView('Baseline checks',{query:'',fullSearch:true,state:'completed',sort:'name',favoritesOnly:true,tag:'baseline'});
+  const host=document.createElement('div'); document.body.append(host); const root=createRoot(host);
+  try {
+    await act(async()=>root.render(<SavedLogsScreen nativeEnabled onRequestConnection={()=>{}} onReconnectWithSettings={()=>{}} onOpenInVisualize={()=>{}} />));
+    expect(host.querySelectorAll('[role="listitem"]')).toHaveLength(2);
+    const select=host.querySelector<HTMLSelectElement>('[aria-label="Saved capture view"]')!;
+    await act(async()=>{select.value=[...select.options].find(o=>o.textContent==='Baseline checks')!.value;select.dispatchEvent(new Event('change',{bubbles:true}));});
+    expect(host.querySelectorAll('[role="listitem"]')).toHaveLength(1);
+    expect(host.querySelector('[role="listitem"]')?.textContent).toContain('Alpha');
+    expect(host.querySelector<HTMLInputElement>('[type="checkbox"]')!.checked).toBe(true);
+    expect(host.querySelector<HTMLSelectElement>('[aria-label="Filter captures by tag"]')!.value).toBe('baseline');
+    expect(host.querySelector('[aria-label="Sort saved logs"]')?.textContent).toContain('Name A');
+    const reset=[...host.querySelectorAll('button')].find(b=>b.textContent==='Reset organization')!;
+    await act(async()=>reset.click());expect(host.querySelectorAll('[role="listitem"]')).toHaveLength(2);
+    expect(select.value).toBe(''); expect(loadViewCount()).toBe(1);
+  } finally {await act(async()=>root.unmount());host.remove();localStorage.clear();vi.unstubAllGlobals();}
+});
+function loadViewCount(){return JSON.parse(localStorage.getItem('baudtide.capture-views.v1')!).views.length;}
+it('restores a nonempty view query and runs the saved complete-search scope', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);vi.useFakeTimers();localStorage.clear();list.mockResolvedValue(logs);pending.mockResolvedValue([]);search.mockClear();
+  search.mockResolvedValue({results:[{log:logs[0],metadataMatch:true,contentMatchCount:0,contentMatches:[],contentSearchTruncated:false}],fullSearch:true,truncated:false,resultLimitReached:false,scannedLogCount:2,scannedBytes:200,indexedLogCount:2,indexRebuiltLogCount:0,indexFallbackLogCount:0,indexUpdateLimited:false});
+  saveCaptureView('Search baseline',{query:'Alpha',fullSearch:true,state:'completed',sort:'oldest',favoritesOnly:false,tag:''});
+  const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+  try {
+    await act(async()=>root.render(<SavedLogsScreen nativeEnabled onRequestConnection={()=>{}} onReconnectWithSettings={()=>{}} onOpenInVisualize={()=>{}} />));
+    expect(search).not.toHaveBeenCalled();
+    const select=host.querySelector<HTMLSelectElement>('[aria-label="Saved capture view"]')!;
+    await act(async()=>{select.value=select.options[1].value;select.dispatchEvent(new Event('change',{bubbles:true}));});
+    expect(host.querySelector<HTMLInputElement>('[name="capture-search"]')!.value).toBe('Alpha');
+    await act(async()=>vi.advanceTimersByTimeAsync(221));
+    expect(search).toHaveBeenCalledWith('Alpha',true,expect.stringContaining('full-search-'));
+    expect(host.querySelectorAll('[role="listitem"]')).toHaveLength(1);
+    expect(host.querySelector('[role="listitem"]')?.textContent).toContain('Alpha');
+  } finally {await act(async()=>root.unmount());host.remove();localStorage.clear();vi.useRealTimers();vi.unstubAllGlobals();}
+});
 it('combines favorites, tags, and state filters and resets an empty result', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); localStorage.clear(); list.mockResolvedValue(logs); pending.mockResolvedValue([]);
   setCaptureFavorite('/Alpha.log', true); setCaptureTags('/Alpha.log', 'baseline'); setCaptureTags('/Beta.log', 'candidate');

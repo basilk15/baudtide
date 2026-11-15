@@ -1,5 +1,7 @@
 # Unreleased
 
+- Save named capture-library views and restore their query, complete-search scope, state, sort, favorite and tag filters together. Manage up to 24 local views inline, with confirmed removal and storage recovery guidance; captures and bundles remain unchanged.
+
 - Favorite saved captures and organize them with local tags. Combine favorite/tag filters with search, capture state, and sorting; edit tags inline with visible storage-error and retry guidance. Raw captures and portable bundles are unchanged.
 
 - Browse a built-in example gallery from Saved logs at any time. Preview synthetic temperature and motor recordings, import independent local copies with timing and notes, and open them in Visualize. The motor example includes a column decoder.

@@ -10,6 +10,8 @@ import { restoreCaptureBundleMetadata } from '../../lib/captures/captureBundleRe
 import { loadTelemetryDecoderProfiles, type TelemetryDecoderProfile } from '../../lib/telemetry/telemetryDecoders';
 import { CaptureBundleReview } from './CaptureBundleReview';
 import { ExampleCaptureGallery } from './ExampleCaptureGallery';
+import { CaptureViewsControls } from './CaptureViewsControls';
+import type { CaptureViewFilters } from '../../lib/captures/captureViews';
 import { CaptureOrganizationControls } from './CaptureOrganizationControls';
 import { CaptureOrganizationReadError, loadCaptureOrganization, removeCaptureOrganization, setCaptureFavorite, setCaptureTags, type CaptureOrganizationLibrary } from '../../lib/captures/captureOrganization';
 
@@ -22,8 +24,8 @@ type SavedLogsScreenProps = {
   onOpenInVisualize: (log: SavedLog) => void;
 };
 
-type LogStateFilter = 'all' | 'active' | 'completed' | 'attention';
-type LogSort = 'newest' | 'oldest' | 'largest' | 'name';
+type LogStateFilter = CaptureViewFilters['state'];
+type LogSort = CaptureViewFilters['sort'];
 
 const logStateFilterLabels: Record<LogStateFilter, string> = {
   all: 'All',
@@ -592,7 +594,7 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
         <ThemedSelect value={sort} options={logSortOptions} placeholder="Newest first" label="Sort saved logs" compact onChange={(value) => setSort(value as LogSort)} />
         {hasActiveOrganization && <button className="sd-saved-log-reset" type="button" onClick={resetOrganization}>Reset organization</button>}
       </div>
-      <div className="bt-capture-local-filters" role="group" aria-label="Local capture filters"><button type="button" className="sd-secondary-button" aria-pressed={favoritesOnly} disabled={organizationUnavailable} onClick={() => setFavoritesOnly(!favoritesOnly)}>Favorites</button><label>Tag<select ref={organizationFilter} aria-label="Filter captures by tag" value={tagFilter} disabled={organizationUnavailable} onChange={event => setTagFilter(event.target.value)}><option value="">All tags</option>{tagOptions.map(tag => <option key={tag} value={tag}>{tag}</option>)}</select></label><span>Tags and favorites stay local to this installation.</span></div>
+      <CaptureViewsControls filters={{ query, fullSearch, state: stateFilter, sort, favoritesOnly, tag: tagFilter }} filtersUnavailable={organizationUnavailable} onApply={filters => { setQuery(filters.query); setFullSearch(filters.fullSearch); setStateFilter(filters.state); setSort(filters.sort); setFavoritesOnly(filters.favoritesOnly); setTagFilter(filters.tag); }}><button type="button" className="sd-secondary-button" aria-pressed={favoritesOnly} disabled={organizationUnavailable} onClick={() => setFavoritesOnly(!favoritesOnly)}>Favorites</button><label>Tag<select ref={organizationFilter} aria-label="Filter captures by tag" value={tagFilter} disabled={organizationUnavailable} onChange={event => setTagFilter(event.target.value)}><option value="">All tags</option>{tagOptions.map(tag => <option key={tag} value={tag}>{tag}</option>)}</select></label></CaptureViewsControls>
     </section>
     {activeSearchResponse && <p className="sd-saved-logs-search-note">{describeSearchResponse(activeSearchResponse)}</p>}
 
