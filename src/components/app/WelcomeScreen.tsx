@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { Activity, ArrowRight, Radio, ShieldCheck } from 'lucide-react';
 import './home-screen.css';
 import './welcome-motion.css';
+import { useDocumentVisible } from '../../hooks/useDocumentVisible';
+import { useReducedMotion } from '../../hooks/useReducedMotion';
 
 type WelcomeScreenProps = { nativeEnabled: boolean; onConnect: () => void; onExplore: () => void };
 
@@ -57,11 +59,14 @@ function smoothPath(points: ChartPoint[]) {
 /** The first-run surface; connection setup itself stays in the shared dialog. */
 export function WelcomeScreen({ nativeEnabled, onConnect, onExplore }: WelcomeScreenProps) {
   const [signalFrame, setSignalFrame] = useState(0);
+  const documentVisible = useDocumentVisible();
+  const reducedMotion = useReducedMotion();
 
   useEffect(() => {
+    if (!documentVisible || reducedMotion) return;
     const timer = window.setInterval(() => setSignalFrame((frame) => frame + 1), 650);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [documentVisible, reducedMotion]);
 
   const primaryPoints = makeTelemetryPoints(signalFrame, 'primary');
   const secondaryPoints = makeTelemetryPoints(signalFrame, 'secondary');

@@ -1,23 +1,30 @@
 import { useEffect, useState } from 'react';
 import baudTideMark from '../../assets/signaldeck-mark.png';
+import { useReducedMotion } from '../../hooks/useReducedMotion';
 import './app-startup-screen.css';
 
 type AppStartupScreenProps = {
+  ready: boolean;
   onComplete: () => void;
 };
 
-/** A short branded handoff before the interactive workspace becomes available. */
-export function AppStartupScreen({ onComplete }: AppStartupScreenProps) {
+/** A short setup handoff; a stalled backend must not hide help and recovery UI. */
+export function AppStartupScreen({ ready, onComplete }: AppStartupScreenProps) {
   const [isLeaving, setLeaving] = useState(false);
+  const reducedMotion = useReducedMotion();
 
   useEffect(() => {
-    const leaveTimer = window.setTimeout(() => setLeaving(true), 1_750);
-    const completeTimer = window.setTimeout(onComplete, 2_100);
-    return () => {
-      window.clearTimeout(leaveTimer);
-      window.clearTimeout(completeTimer);
-    };
-  }, [onComplete]);
+    setLeaving(ready);
+    if (!ready) {
+      // This only dismisses the splash. App keeps connection recovery guarded
+      // until the underlying settings/session requests actually settle.
+      const escapeTimer = window.setTimeout(onComplete, 1000);
+      return () => window.clearTimeout(escapeTimer);
+    }
+    if (reducedMotion) { onComplete(); return; }
+    const completeTimer = window.setTimeout(onComplete, 140);
+    return () => window.clearTimeout(completeTimer);
+  }, [ready, reducedMotion, onComplete]);
 
   return <main className={`sd-startup-screen${isLeaving ? ' is-leaving' : ''}`} aria-label="Launching BaudTide">
     <div className="sd-startup-grid" aria-hidden="true" />

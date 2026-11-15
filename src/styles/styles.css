@@ -72,25 +72,13 @@ button { cursor: pointer; }
   transform: translateY(-1px);
 }
 
-.sd-session-panel {
-  transition: transform .24s cubic-bezier(.22, .75, .24, 1);
-}
-
-.sd-session-panel.is-entering {
-  transform: translateY(5px);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .sd-session-tab,
   .sd-session-tab-close,
-  .sd-session-view-switch button,
-  .sd-session-panel {
+  .sd-session-view-switch button {
     transition-duration: .01ms;
   }
 
-  .sd-session-panel.is-entering {
-    transform: none;
-  }
 }
 @media (max-width:860px){.sd-session-monitors.is-tiled{grid-template-columns:1fr}}@media (max-width:760px){.sd-session-monitors.is-tiled{max-height:none;overflow:visible;padding:0;border:0;background:transparent}.sd-session-monitors.is-tiled .sd-monitor{padding:24px 18px}.sd-session-monitors.is-tiled .sd-terminal-output{height:48vh;min-height:180px}}@media (max-width:560px){.sd-sessions-workspace-header{align-items:flex-start;flex-direction:column}.sd-sessions-workspace-actions{width:100%;justify-content:space-between;flex-wrap:wrap}.sd-session-view-switch{order:3;width:100%}.sd-session-view-switch button{flex:1}.sd-sessions-empty-panel{align-items:flex-start;padding:21px}}
 .theme-light .sd-session-view-switch{border-color:#cad7e3;background:#eef4f8}.theme-light .sd-session-view-switch button{color:#607388}.theme-light .sd-session-view-switch button:hover{background:#e2ebf1;color:#26394e}.theme-light .sd-session-view-switch button.is-selected{background:#d8f0e9;color:#176d5c;box-shadow:inset 0 0 0 1px #8fcaba}.theme-light .sd-session-monitors.is-tiled .sd-session-panel{border-color:#cbd9e4}

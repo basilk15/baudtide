@@ -1,15 +1,12 @@
 .bt-home-copy,
 .bt-home-visual,
 .bt-home-paths {
-  animation: bt-home-enter .5s var(--ease-out) both;
+  animation: bt-home-enter .16s var(--ease-out) backwards;
 }
 
-.bt-home-visual { animation-delay: 70ms; }
-.bt-home-paths { animation-delay: 135ms; }
-
 @keyframes bt-home-enter {
-  from { opacity: 0; transform: translateY(12px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: .9; }
+  to { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -16,7 +16,7 @@
 
 .sd-startup-screen.is-leaving {
   pointer-events: none;
-  animation: sd-startup-exit .35s cubic-bezier(.4, 0, 1, 1) forwards;
+  animation: sd-startup-exit .14s ease-out forwards;
 }
 
 .sd-startup-grid {
@@ -54,7 +54,7 @@
   justify-items: center;
   padding: 28px 24px 120px;
   text-align: center;
-  animation: sd-startup-enter .7s cubic-bezier(.16, 1, .3, 1) both;
+  animation: sd-startup-enter .14s ease-out backwards;
 }
 
 .sd-startup-mark-wrap {
@@ -80,7 +80,7 @@
   height: 100%;
   object-fit: contain;
   filter: drop-shadow(0 20px 33px #001822ba);
-  animation: sd-startup-mark-settle .8s .08s cubic-bezier(.16, 1, .3, 1) both;
+  animation: sd-startup-mark-settle .14s ease-out backwards;
 }
 
 .sd-startup-wordmark {
@@ -108,7 +108,7 @@
   display: grid;
   gap: 11px;
   width: min(220px, calc(100vw - 48px));
-  animation: sd-startup-enter .7s .24s cubic-bezier(.16, 1, .3, 1) both;
+  animation: sd-startup-enter .14s ease-out backwards;
 }
 
 .sd-startup-loader-copy {
@@ -145,7 +145,7 @@
   border-radius: inherit;
   background: linear-gradient(90deg, #5acbb0, #9af1d4);
   box-shadow: 0 0 13px #65dbbe8c;
-  animation: sd-startup-progress 1.75s cubic-bezier(.3, .04, .2, 1) both;
+  animation: sd-startup-progress .9s linear infinite;
 }
 
 @keyframes sd-startup-enter {
