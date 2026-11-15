@@ -115,7 +115,7 @@ export function PreferencesScreen({ preferences, nativeEnabled, onSave, onThemeP
 
   return (
     <section className="sd-preferences" aria-labelledby="preferences-heading">
-      <div className="sd-screen-heading"><span className="sd-section-icon"><Settings2 size={19} /></span><div><p>APPLICATION SETTINGS</p><h1 id="preferences-heading">Preferences</h1><small>{nativeEnabled ? 'Saved locally in BaudTide’s desktop settings file.' : 'Saved locally in this browser preview when browser storage is available.'}</small></div></div>
+      <div className="sd-screen-heading"><span className="sd-section-icon"><Settings2 size={19} /></span><div><h1 id="preferences-heading">Preferences</h1><small>{nativeEnabled ? 'Saved locally in BaudTide’s desktop settings file.' : 'Saved locally in this browser preview when browser storage is available.'}</small></div></div>
       <div className="sd-settings-grid">
         <fieldset className="sd-settings-card"><legend>Serial defaults</legend>
           <label>Default baud rate<ThemedSelect label="Default baud rate" value={String(draft.serial.baudRate)} onChange={(value) => update({ baudRate: Number(value) }, 'serial')} placeholder="Select a baud rate" options={['9600', '57600', '115200', '230400'].map((value) => ({ value, label: `${Number(value).toLocaleString()} baud` }))} /></label>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, ArrowRight, Radio, ShieldCheck, Sparkles } from 'lucide-react';
+import { Activity, ArrowRight, Radio, ShieldCheck } from 'lucide-react';
 import './home-screen.css';
 import './welcome-motion.css';
 
@@ -63,7 +63,6 @@ export function WelcomeScreen({ nativeEnabled, onConnect, onExplore }: WelcomeSc
     return () => window.clearInterval(timer);
   }, []);
 
-  const runtimeLabel = nativeEnabled ? 'Desktop bridge online' : 'Preview mode';
   const primaryPoints = makeTelemetryPoints(signalFrame, 'primary');
   const secondaryPoints = makeTelemetryPoints(signalFrame, 'secondary');
   const primaryPath = smoothPath(primaryPoints);
@@ -75,7 +74,6 @@ export function WelcomeScreen({ nativeEnabled, onConnect, onExplore }: WelcomeSc
   return <section className="bt-home" aria-labelledby="welcome-title">
     <div className="bt-home-main">
       <div className="bt-home-copy">
-        <div className="bt-home-kicker"><span><Sparkles size={14} /> BaudTide workspace</span><span className={`bt-home-kicker-status ${nativeEnabled ? 'is-ready' : ''}`}><i />{runtimeLabel}</span></div>
         <h1 id="welcome-title" className="bt-home-title">Bring every <em>signal</em> into focus.</h1>
         <p className="bt-home-intro">A calm, precise place to connect hardware, read the stream, and understand what your device is saying—one byte at a time.</p>
         <div className="bt-home-actions">

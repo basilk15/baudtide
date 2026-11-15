@@ -865,7 +865,7 @@
 }
 
 .signaldeck-shell .sd-monitor .sd-terminal-controls .sd-autoscroll-toggle.is-on .sd-autoscroll-switch::after {
-  background: var(--color-accent-ink);
+  background: var(--color-on-accent);
   transform: translateX(14px);
 }
 
@@ -926,5 +926,13 @@
     flex-wrap: wrap;
     justify-content: flex-start;
     min-width: 0;
+  }
+  .signaldeck-shell .sd-sessions-workspace-actions > .bt-workspace-manager {
+    order: 2;
+    flex-basis: 100%;
+  }
+  .signaldeck-shell .sd-sessions-workspace-actions > .sd-session-count {
+    order: 1;
+    margin-inline-start: auto !important;
   }
 }

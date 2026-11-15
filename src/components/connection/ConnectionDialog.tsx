@@ -283,7 +283,6 @@ export function ConnectionDialog({
             <div className="sd-dialog-icon"><Radio size={21} /></div>
             <button ref={closeButtonRef} className="sd-dialog-close" type="button" onClick={onClose} aria-label="Close connection dialog"><X size={18} /></button>
           </div>
-          <p className="sd-dialog-eyebrow">NEW LIVE TERMINAL</p>
           <h2 id={titleId}>Connect a device</h2>
           <p id={descriptionId} className="sd-dialog-subtitle">{nativeEnabled ? 'Choose a port and name the session. BaudTide will open it and start a raw local log immediately.' : 'Choose a port, name the session, and start monitoring. This browser preview does not open devices.'}</p>
           {initialSetupNotice && <p className="sd-dialog-setup-notice" role="status">{initialSetupNotice}</p>}

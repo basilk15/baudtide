@@ -25,7 +25,7 @@ function readableSize(bytes: number) {
 export function CaptureBundleReview({ captureName, sizeBytes, noteCount, timing, profiles, busy, error, onCancel, onExport }: Props) {
   const [decoder, setDecoder] = useState('');
   const dialog = useRef<HTMLElement>(null);
-  const cancel = useRef<HTMLButtonElement>(null);
+  const initialFocus = useRef<HTMLButtonElement>(null);
   const onCancelRef = useRef(onCancel);
   const busyRef = useRef(busy);
   onCancelRef.current = onCancel;
@@ -33,7 +33,7 @@ export function CaptureBundleReview({ captureName, sizeBytes, noteCount, timing,
 
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    cancel.current?.focus();
+    initialFocus.current?.focus({ preventScroll: true });
     const handleKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !busyRef.current) { event.preventDefault(); onCancelRef.current(); return; }
       if (event.key !== 'Tab') return;
@@ -52,7 +52,7 @@ export function CaptureBundleReview({ captureName, sizeBytes, noteCount, timing,
     <section className="bt-bundle-review" role="dialog" aria-modal="true" aria-labelledby="bundle-review-title" aria-describedby="bundle-review-description" aria-busy={busy} ref={dialog}>
       <header className="bt-bundle-header">
         <div><h2 id="bundle-review-title">Export capture bundle</h2><p id="bundle-review-description">Prepare a capture another BaudTide user can replay and inspect.</p></div>
-        <button className="bt-bundle-close" type="button" aria-label="Close export review" disabled={busy} onClick={onCancel}><X size={18} /></button>
+        <button ref={initialFocus} className="bt-bundle-close" type="button" aria-label="Close export review" disabled={busy} onClick={onCancel}><X size={18} /></button>
       </header>
       <div className="bt-bundle-body">
         <div className="bt-bundle-source"><span className="bt-bundle-source-icon"><FileText size={19} /></span><div><strong>{captureName}</strong><span>{readableSize(sizeBytes)} of raw output</span></div></div>
@@ -69,7 +69,7 @@ export function CaptureBundleReview({ captureName, sizeBytes, noteCount, timing,
         <div className="bt-bundle-privacy"><AlertTriangle size={17} /><p>Raw output and notes may contain sensitive information. Review them before sharing; they are included without redaction.</p></div>
         {error && <p className="bt-bundle-error" role="alert">{error}</p>}
       </div>
-      <footer className="bt-bundle-actions"><button ref={cancel} className="sd-secondary-button" type="button" disabled={busy} onClick={onCancel}>Cancel</button><button className="sd-primary-button" type="button" disabled={busy} onClick={() => onExport(decoder || null)}><Archive size={16} /> {busy ? 'Exporting…' : 'Export bundle'}</button></footer>
+      <footer className="bt-bundle-actions"><button className="sd-secondary-button" type="button" disabled={busy} onClick={onCancel}>Cancel</button><button className="sd-primary-button" type="button" disabled={busy} onClick={() => onExport(decoder || null)}><Archive size={16} /> {busy ? 'Exporting…' : 'Export bundle'}</button></footer>
     </section>
   </div>;
 }

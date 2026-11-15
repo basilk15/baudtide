@@ -17,6 +17,7 @@ describe('capture bundle export review', () => {
     expect(container.textContent).toContain('Board');
     expect(container.textContent).toContain('2 notes');
     expect(container.textContent).toContain('sensitive');
+    expect(document.activeElement).toBe(container.querySelector('[aria-label="Close export review"]'));
     const select = container.querySelector<HTMLSelectElement>('select')!;
     await act(async () => { select.value = 'sensor'; select.dispatchEvent(new Event('change', { bubbles: true })); });
     await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent?.includes('Export bundle'))!.click());

@@ -153,6 +153,8 @@ The palette is a cool neutral bench in both themes. Dark mode uses graphite-blue
 
 **The Semantic Continuity Rule.** Light mode preserves the same role hierarchy and lowers chroma; it is not a mechanical inversion of dark mode.
 
+Filled accent controls use `--color-on-accent`: dark ink in the dark theme, white in light and sage. Keep `--color-accent-ink` for text on soft accent surfaces. Check default and hover fills when changing either token.
+
 ## Typography
 
 **Display Font:** Ubuntu Sans (with Noto Sans and system UI fallbacks)  
@@ -172,7 +174,7 @@ The palette is a cool neutral bench in both themes. Dark mode uses graphite-blue
 
 **The Machine/Data Rule.** Mono type is evidence of machine data, not a general-purpose stylistic texture.
 
-**The Context-After-Heading Rule.** Screen, saved-log, feedback, welcome, and dialog context labels follow the heading and supporting subtitle in reading order. They must not return to decorative above-title eyebrow treatment.
+**Heading context.** Use the heading and supporting subtitle to orient the user. Omit labels that repeat the page name or task; retain extra context only when it adds information the user needs. Do not use decorative above-title eyebrow labels.
 
 ## Layout
 

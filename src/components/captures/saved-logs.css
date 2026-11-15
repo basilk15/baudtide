@@ -57,8 +57,8 @@
   width: 7px;
   height: 4px;
   content: '';
-  border-bottom: 2px solid var(--color-accent-ink);
-  border-left: 2px solid var(--color-accent-ink);
+  border-bottom: 2px solid var(--color-on-accent);
+  border-left: 2px solid var(--color-on-accent);
   opacity: 0;
   transform: rotate(-45deg) translateY(-1px);
 }

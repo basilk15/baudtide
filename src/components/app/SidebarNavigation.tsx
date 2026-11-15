@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import {
   CircleHelp,
   FileText,
@@ -46,6 +46,10 @@ export function SidebarNavigation({
   const [isCompact, setCompact] = useState(false);
   const [isDrawerOpen, setDrawerOpen] = useState(false);
   const [isDrawerMounted, setDrawerMounted] = useState(false);
+  const drawerId = useId();
+  const drawer = useRef<HTMLElement>(null);
+  const backdrop = useRef<HTMLDivElement>(null);
+  const menuTrigger = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (isDrawerOpen) {
@@ -56,6 +60,42 @@ export function SidebarNavigation({
     const timer = window.setTimeout(() => setDrawerMounted(false), 240);
     return () => window.clearTimeout(timer);
   }, [isDrawerOpen]);
+
+  useEffect(() => {
+    if (!isDrawerOpen || !isDrawerMounted || !drawer.current || !backdrop.current) return;
+    const panel = drawer.current;
+    const background = [...(backdrop.current.parentElement?.children ?? [])]
+      .filter((element): element is HTMLElement => element instanceof HTMLElement && element !== backdrop.current)
+      .map((element) => ({ element, inert: element.hasAttribute('inert') }));
+    background.forEach(({ element }) => { element.toggleAttribute('inert', true); });
+    panel.querySelector<HTMLButtonElement>('[aria-label="Close navigation"]')?.focus({ preventScroll: true });
+    const onKey = (event: KeyboardEvent) => {
+      // Keep window-level app shortcuts from opening a second surface behind the drawer.
+      event.stopPropagation();
+      if (event.key === 'Escape') {
+        event.preventDefault(); setDrawerOpen(false);
+      } else if (event.key === 'Tab') {
+        const controls = [...panel.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+        const first = controls[0], last = controls[controls.length - 1];
+        if (!panel.contains(document.activeElement) || (event.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+          event.preventDefault(); (event.shiftKey ? last : first)?.focus();
+        }
+      }
+    };
+    const desktop = window.matchMedia?.('(min-width: 761px)');
+    const onDesktop = () => { if (desktop?.matches) setDrawerOpen(false); };
+    document.addEventListener('keydown', onKey);
+    desktop?.addEventListener('change', onDesktop);
+    onDesktop();
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      desktop?.removeEventListener('change', onDesktop);
+      background.forEach(({ element, inert }) => { element.toggleAttribute('inert', inert); });
+      const desktopTarget = background.find(({ element }) => element.matches('.sd-sidebar'))?.element
+        .querySelector<HTMLButtonElement>('[aria-current="page"]');
+      (desktop?.matches ? desktopTarget ?? menuTrigger.current : menuTrigger.current)?.focus({ preventScroll: true });
+    };
+  }, [isDrawerOpen, isDrawerMounted]);
 
   const visit = (page: SignalDeckPage) => {
     onNavigate?.(page);
@@ -84,10 +124,10 @@ export function SidebarNavigation({
         </button>
       ))}
       <div className="sd-nav-divider" />
-      <button className="sd-nav-item" onClick={() => { onPreferences?.(); visit('preferences'); }}>
+      <button className={`sd-nav-item ${activePage === 'preferences' ? 'is-active' : ''}`} aria-current={activePage === 'preferences' ? 'page' : undefined} onClick={() => { onPreferences?.(); visit('preferences'); }}>
         <Settings2 size={18} aria-hidden="true" /><span>Preferences</span>
       </button>
-      <button className="sd-nav-item" onClick={() => { onHelp?.(); visit('help'); }}>
+      <button className={`sd-nav-item ${activePage === 'help' ? 'is-active' : ''}`} aria-current={activePage === 'help' ? 'page' : undefined} onClick={() => { onHelp?.(); visit('help'); }}>
         <CircleHelp size={18} aria-hidden="true" /><span>Help &amp; feedback</span>
       </button>
     </nav>
@@ -119,12 +159,12 @@ export function SidebarNavigation({
         <PanelLeftOpen size={18} aria-hidden="true" />
       </button>
 
-      <button className="sd-mobile-menu-button" onClick={() => setDrawerOpen(true)} aria-label="Open navigation">
+      <button ref={menuTrigger} className="sd-mobile-menu-button" onClick={() => setDrawerOpen(true)} aria-label="Open navigation" aria-expanded={isDrawerOpen} aria-controls={isDrawerMounted ? drawerId : undefined} aria-haspopup="dialog">
         <Menu size={20} />
       </button>
       {isDrawerMounted && (
-        <div className={`sd-drawer-backdrop ${isDrawerOpen ? 'is-open' : 'is-closing'}`} aria-hidden={!isDrawerOpen} inert={!isDrawerOpen} onMouseDown={() => setDrawerOpen(false)}>
-          <aside className={`sd-mobile-drawer ${isDrawerOpen ? 'is-open' : 'is-closing'}`} aria-label="Mobile navigation" onMouseDown={(event) => event.stopPropagation()}>
+        <div ref={backdrop} className={`sd-drawer-backdrop ${isDrawerOpen ? 'is-open' : 'is-closing'}`} aria-hidden={!isDrawerOpen} inert={!isDrawerOpen} onMouseDown={() => setDrawerOpen(false)}>
+          <aside ref={drawer} id={drawerId} role="dialog" aria-modal="true" className={`sd-mobile-drawer ${isDrawerOpen ? 'is-open' : 'is-closing'}`} aria-label="Mobile navigation" onMouseDown={(event) => event.stopPropagation()}>
             <div className="sd-drawer-heading"><button className="sd-sidebar-home" type="button" onClick={goHome} aria-label="Go to BaudTide home"><img className="sd-brand-mark" src={baudTideMark} alt="" /><span>baud<span>tide</span></span></button><button className="sd-icon-control" onClick={() => setDrawerOpen(false)} aria-label="Close navigation"><X size={19} /></button></div>
             {menu(true)}
             <p className="sd-sidebar-status">Local workspace</p>

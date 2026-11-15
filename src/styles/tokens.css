@@ -22,6 +22,7 @@
   --color-accent-strong: oklch(68% 0.14 172);
   --color-accent-soft: oklch(25% 0.058 172);
   --color-accent-ink: oklch(17% 0.035 172);
+  --color-on-accent: oklch(17% 0.035 172);
   --color-focus: oklch(84% 0.13 172);
   --color-info: oklch(74% 0.1 235);
   --color-warning: oklch(78% 0.13 78);
@@ -79,6 +80,7 @@
   --color-accent-strong: oklch(41% 0.12 172);
   --color-accent-soft: oklch(91.5% 0.045 172);
   --color-accent-ink: oklch(22% 0.05 172);
+  --color-on-accent: #fff;
   --color-focus: oklch(43% 0.14 172);
   --color-info: oklch(48% 0.11 235);
   --color-warning: oklch(52% 0.12 78);
@@ -106,6 +108,7 @@
   --color-accent-strong: #30563d;
   --color-accent-soft: #d5e3cf;
   --color-accent-ink: #243c2b;
+  --color-on-accent: #fff;
   --color-focus: #3d6b4d;
   --color-info: #386579;
   --color-warning: #85601d;

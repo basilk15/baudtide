@@ -66,7 +66,7 @@ export function CommandPalette({ actions = defaultActions, onAction }: CommandPa
     if (event.key === 'Enter' && filtered[selectedIndex]) { event.preventDefault(); execute(filtered[selectedIndex]); }
   };
   return <>
-    <button ref={trigger} className="sd-command-trigger" type="button" onClick={() => setOpen(true)} aria-haspopup="dialog" aria-expanded={open}><Search size={16} /><span>Search commands</span><kbd><Command size={11} />K</kbd></button>
+    <button ref={trigger} className="sd-command-trigger" type="button" onClick={() => setOpen(true)} aria-label="Search commands" aria-haspopup="dialog" aria-expanded={open}><Search size={16} /><span>Search commands</span><kbd><Command size={11} />K</kbd></button>
     {open && createPortal(<div className="sd-palette-backdrop" onMouseDown={close}><section className="sd-command-palette" role="dialog" aria-modal="true" aria-label="Command palette" onMouseDown={(e) => e.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') close(); }}>
       <div className="sd-palette-search"><Search size={18} /><input ref={input} value={query} onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0); }} onKeyDown={onInputKeyDown} placeholder="Search actions, terminals, or logs…" role="combobox" aria-expanded="true" aria-controls="sd-palette-results" aria-activedescendant={filtered[selectedIndex] ? `sd-palette-action-${filtered[selectedIndex].id}` : undefined} /><button type="button" onClick={close} aria-label="Close command palette"><X size={17} /></button></div>
       <p className="sd-palette-note">Use keyboard commands to navigate BaudTide.</p>

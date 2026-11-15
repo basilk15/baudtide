@@ -294,7 +294,7 @@ textarea,
   border: 1px solid var(--color-accent);
   border-radius: var(--radius-control);
   background: var(--color-accent);
-  color: var(--color-accent-ink);
+  color: var(--color-on-accent);
   box-shadow: none;
   transition: background-color var(--dur-short) var(--ease-out), border-color var(--dur-short) var(--ease-out), transform var(--dur-short) var(--ease-out);
 }
@@ -598,6 +598,9 @@ button:disabled,
 .signaldeck-breadcrumb strong {
   color: var(--color-ink-soft);
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .signaldeck-preview-label {
@@ -611,6 +614,10 @@ button:disabled,
   font-size: var(--text-xs);
   font-weight: 500;
   letter-spacing: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .signaldeck-preview-label.native {
@@ -621,6 +628,7 @@ button:disabled,
 
 .signaldeck-topbar-actions {
   gap: var(--space-xs);
+  flex-shrink: 0;
 }
 
 .signaldeck-content {
@@ -643,7 +651,17 @@ button:disabled,
 }
 
 .signaldeck-content > :not([hidden]) {
-  animation: bt-workbench-enter var(--dur-medium) var(--ease-out) both;
+  /* Release the opacity stacking context when entry ends so dialogs cover the header. */
+  animation: bt-workbench-enter var(--dur-medium) var(--ease-out) backwards;
+}
+
+/* A modal must cover navigation as well as its originating page. */
+.signaldeck-main:has([aria-modal="true"]) {
+  isolation: auto;
+}
+
+.signaldeck-content > :has([aria-modal="true"]) {
+  animation: none;
 }
 
 @keyframes bt-workbench-enter {
@@ -747,7 +765,7 @@ button:disabled,
   border: 1px solid var(--color-accent);
   border-radius: var(--radius-control);
   background: var(--color-accent);
-  color: var(--color-accent-ink);
+  color: var(--color-on-accent);
   font-size: var(--text-sm);
   font-weight: 700;
   text-decoration: none;
@@ -762,7 +780,7 @@ button:disabled,
 .sd-github-button:hover:not(.is-disabled) {
   border-color: var(--color-focus);
   background: var(--color-focus);
-  color: var(--color-accent-ink);
+  color: var(--color-on-accent);
   transform: translateY(-1px);
   box-shadow: none;
 }
@@ -1794,6 +1812,14 @@ button:disabled,
   }
 }
 
+/* Keep the command and navigation targets separate on compact windows. */
+@media (max-width: 380px) {
+  .sd-mobile-brand,
+  .signaldeck-topbar .sd-profile-trigger {
+    display: none;
+  }
+}
+
 @media (max-width: 480px) {
   .signaldeck-content {
     padding-inline: var(--space-sm);
@@ -1838,7 +1864,7 @@ button:disabled,
 
 @media (prefers-reduced-motion: reduce) {
   .signaldeck-content > :not([hidden]) {
-    animation: bt-workbench-fade 120ms linear both;
+    animation: bt-workbench-fade 120ms linear backwards;
   }
 
   .signaldeck-shell *,
