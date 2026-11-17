@@ -5,7 +5,7 @@
 <h1 align="center">BaudTide</h1>
 
 <p align="center">
-  Your serial bench, in one place.
+  Serial monitoring and telemetry analysis for embedded development.
 </p>
 
 <p align="center">
@@ -13,50 +13,38 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-1f6f61?style=flat-square" alt="MIT license" /></a>
 </p>
 
-BaudTide is an open-source Linux desktop serial monitor for ESP32, Arduino, and other serial devices. Connect multiple boards, turn serial output into charts, and save your setup for the next debugging session.
+BaudTide is an open-source Linux desktop app for monitoring ESP32, Arduino, and other serial devices. Capture serial output, visualize telemetry, and compare bench experiments locally.
 
-## Made for the bench
+## Features
 
-- **Multiple devices, one workspace.** Discover ports and monitor boards in tabs or side-by-side terminals. Send text or hex, save command presets, and repeat commands with an explicit Stop control. Save command sequences with response checks, timeouts, delays, and capture-linked step results.
-- **Signals from serial output.** Plot JSON, key/value, CSV, and TSV telemetry. Map custom numeric columns with reusable decoder profiles.
-- **Capture now, investigate later.** Keep searchable raw logs locally, replay recordings, inspect time ranges, and export selected telemetry to CSV or JSON.
-- **Share a reproducible capture.** Export a completed capture as a portable bundle with its receive timing, notes, and an optional decoder; import it on another BaudTide installation. Explore the built-in example gallery without hardware.
-- **Put events in context.** Inspect a watch breach in its capture, see nearby serial output and chart markers, and save timestamped notes about changes on the bench.
-- **Watches for long runs.** Set signal boundaries, sustained conditions, and recovery margins. Keep breach history across restarts and export it when needed.
-- **Messages that matter.** Save per-device text-match rules with cooldowns and optional desktop alerts. Log events persist locally and open the surrounding capture context from the notification inbox.
-- **Measure a firmware change.** Compare a baseline and candidate capture, match signals with the same units, and align on capture events. Inspect full-interval statistics and a shared measurement scale, then add optional acceptance checks and export a CSV summary. Checks and comparison settings are retained in saved analyses. Save individual comparison results locally to revisit their evidence or export them later.
-- **A setup worth saving.** Restore reviewed device connections, terminal layouts, decoders, and saved analyses. Identified USB devices can reconnect across port-name changes; ambiguous devices require review.
-- **Your bench on your phone.** Scan a QR code to view output on a trusted local network. Sharing is read-only by default; remote control is opt-in.
+- **Serial monitoring:** port discovery, multiple sessions, tabbed or split terminals, text/hex commands, presets, and repeat sending.
+- **Command sequences:** reusable steps with response checks, timeouts, delays, and capture-linked results.
+- **Telemetry:** JSON, key/value, CSV, and TSV parsing; custom decoder profiles; overlay or separate charts; time windows and recorded replay.
+- **Capture library:** searchable raw logs, favorites, tags, experiment titles and notes, saved filter views, and CSV inventories.
+- **Analysis:** timestamped markers, surrounding serial context, baseline/candidate comparisons, event alignment, interval statistics, acceptance checks, and saved results.
+- **Alerts:** signal boundaries, sustained conditions, recovery margins, text-match rules, cooldowns, persistent event history, and optional desktop notifications.
+- **Export and exchange:** selected telemetry as CSV/JSON, comparison summaries as CSV, and portable capture bundles with receive timing, event notes, and an optional decoder.
+- **Saved setups:** restore device settings, terminal layouts, decoders, and analyses; reconnect identified USB devices across port-name changes.
+- **LAN sharing:** QR pairing for phone access; read-only by default, with opt-in remote control.
+- **Appearance:** Dark, Light, and Sage themes.
 
-Explore synthetic recordings from **Saved logs → Examples**, even with an existing capture library. Preview a temperature spike or a motor speed step, import a local copy, then choose **Open imported capture** to inspect its signals, recorded timing, and note. The motor recording includes a custom column decoder. No hardware is required and no device is connected.
-
-Dark, Light, and Sage themes let you choose the workspace that suits your bench.
-
-### Organizing captures
-
-In **Saved logs**, use the star to favorite a capture or **Tags** to add labels such as `baseline`, `firmware v2`, or `bench a`. Combine **Favorites** and the **Tag** filter with the existing state filters, content search, and sorting. **Reset organization** clears the organization filters and restores the default sort.
-
-Tags use lowercase and support up to eight labels of 24 characters each. Tags and favorites persist locally in this installation; they do not change raw captures and are not included in portable bundles. Use the Tag selector to find labels; captured-content search continues to search native capture metadata and serial output.
-
-### Experiment notebooks, saved views, and inventories
-
-In **Saved logs**, choose **Add notebook** to record an experiment title (up to 80 characters) and notes (up to 4000 characters). The original session name and filename remain visible. **Find in notebooks and tags** filters this local metadata; the existing capture search still searches recorded serial output. Both filters can be combined.
-
-Use **Save current view** to keep a named combination of both searches, complete-capture search, state, sort, favorites, and tag filters. Choose a saved view and **Apply view** to restore it. Up to 20 views stay on this installation; removing a view leaves recordings intact.
-
-**Export inventory** reviews and downloads the currently filtered library as CSV, in the displayed order. It includes notebook text, organization labels, filenames, timestamps, state, baud rate, and byte counts. It excludes raw serial bytes and filesystem paths. Review notebook text before sharing.
-
-Notebooks and saved views are installation-local metadata. They do not rename raw files or travel in portable capture bundles. Clearing a notebook's title and notes removes its metadata.
+Try sample recordings without hardware: **Saved logs → Examples**.
 
 ## Download
 
-Get the **AppImage, DEB, or RPM** for Linux x86_64 from the [latest release](https://github.com/basilk15/baudtide/releases/latest).
+Linux x86_64: **[AppImage, DEB, and RPM](https://github.com/basilk15/baudtide/releases/latest)**.
 
-On Ubuntu/Debian, serial-device access may require membership in the `dialout` group and a new login.
+On Ubuntu/Debian, serial access may require membership in `dialout` and a new login.
+
+## Data and sharing
+
+Captures stay local. LAN sharing is opt-in. Review serial output and notes before sharing; exports are not automatically redacted.
+
+Tags, favorites, experiment notebooks, and library views stay in the local installation and are excluded from portable bundles. Bundles include capture-event notes; replay timing is approximate when recorded timing is incomplete.
 
 ## Development
 
-Requires **Node.js 22.13+**, **Rust**, and **`libudev-dev`** on Ubuntu/Debian.
+Requires **Node.js 22.13+**, **Rust** with `rustfmt` and `clippy`, and **`libudev-dev`** on Ubuntu/Debian.
 
 ```bash
 git clone https://github.com/basilk15/baudtide.git
@@ -65,49 +53,16 @@ npm ci
 npm run electron
 ```
 
-The launcher builds the native backend and starts the desktop app. `npm run dev` opens a browser preview without native serial access.
+The launcher builds the Rust backend and starts Electron. `npm run dev` provides a browser preview without serial access. Build and upload firmware separately.
 
-| Task | Command |
+| Command | Purpose |
 | --- | --- |
-| Formatting, linting, and production build | `npm run check` |
-| Frontend and native tests | `npm test` |
-| Telemetry parser and chart tests | `npm run test:telemetry` |
-| Production dependency audit | `npm run audit:prod` |
-| Linux release packages in `release/` | `npm run desktop:dist -- --publish never` |
-| Simulated serial device | `npm run simulate:serial` |
-| Supported telemetry format simulator | `npm run simulate:formats` |
-| Isolated desktop/PTY smoke server | `npm run smoke:desktop` |
-| Portable capture round-trip smoke check | `npm run smoke:bundle` |
+| `npm run check` | Formatting, linting, type checking, production build |
+| `npm test` | Frontend, Electron-service, and Rust tests |
+| `npm run audit:prod` | Production dependency audit |
+| `npm run simulate:serial` | Serial simulator; connect to its printed PTY at 115200 baud |
+| `npm run desktop:dist -- --publish never` | Build Linux packages in `release/` |
 
-For the simulated device, enter the printed `/dev/pts/N` path in BaudTide and use 115200 baud.
+[Repository guide](docs/repository.md) · [Design system](docs/design.md) · [Release notes](RELEASE_NOTES.md)
 
-### Sharing a capture
-
-In **Saved logs**, choose **Export bundle** on a completed capture, review its contents, optionally select a decoder, and choose where to save the `.btbundle` file. The recipient can use **Import bundle** to add an independent copy to their local library and open it in Visualize. If restoring notes or the decoder is interrupted, use the retry action shown in Saved logs. Bundles without complete recorded timing use approximate replay timing.
-
-Bundles are local files; BaudTide does not upload them. Review raw serial output and notes before sharing: they may contain credentials, device identifiers, or other sensitive information, and are not automatically redacted. The bundle does not add the original port path as metadata or connect to a device on import.
-
-## Repository layout
-
-```text
-src/
-  components/       UI grouped by app, connection, terminal, telemetry,
-                    captures, mobile, preferences, workspaces, and shared UI
-  hooks/            React hooks shared across screens
-  lib/              Domain logic grouped by captures, serial, telemetry,
-                    preferences, and workspaces; shared bridge/utilities at root
-  styles/           Global styles, design tokens, and themes
-  assets/           Application images
-electron/           Desktop bridge, worker services, and their tests
-src-native/         Rust serial backend and embedded mobile companion assets
-scripts/
-  desktop/          Development launcher and desktop integration
-  fixtures/         Python serial-device simulators
-  testing/          Desktop and watch smoke checks
-docs/               Design system and contributor guides
-build/icons/        Versioned packaging icons
-```
-
-Tests stay beside the code they exercise. Generated builds, caches, screenshots, and local tool reports are ignored. See [Repository guide](docs/repository.md) for where to add code and how to run the smoke checks, and [Design system](docs/design.md) for UI conventions.
-
-Built with **Electron, React, TypeScript, and Rust**. [Release notes](RELEASE_NOTES.md) · [MIT license](LICENSE).
+Built with **Electron, React, TypeScript, and Rust**. Licensed under [MIT](LICENSE).

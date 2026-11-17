@@ -53,6 +53,7 @@ The root `.gitignore` excludes these generated or machine-local files:
 - `node_modules/`, `dist/`, `release/`, native `target/` directories, and the generated `electron/watch-runtime/` bundle.
 - `.cache/`, TypeScript build metadata, Python bytecode, and legacy emitted Vite configuration files.
 - `output/`, browser automation state, coverage, test results, and Playwright reports.
+- Local agent planning/review artifacts in `docs/superpowers/` and execution state in `.superpowers/`.
 - Local design-tool reports/attachment state in `.hallmark/`, `.impeccable/`, and `.kanna/`.
 - Local environment files, package-manager diagnostics, and editor/OS temporary files. `.env.example` and `.env.*.example` remain shareable.
 

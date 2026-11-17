@@ -22,6 +22,10 @@ __pycache__/
 /.playwright-cli/
 /output/
 
+# Local agent plans, reviews, and execution state
+/docs/superpowers/
+/.superpowers/
+
 # Local design-tool reports and attachment state
 /.hallmark/
 /.impeccable/
