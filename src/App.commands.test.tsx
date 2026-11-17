@@ -113,3 +113,26 @@ it.each([
   expect(host.querySelector('[aria-label="Confirm disconnect"]')).toBeNull();
   expect(button('Disconnect').disabled).toBe(true);
 });
+
+it.each(['close', 'disconnect'])('stops repeat writes immediately on %s intent while the native request is pending', async (action) => {
+  await act(async () => root.render(<App />));
+  await act(async () => vi.advanceTimersByTimeAsync(140));
+  const input = host.querySelector<HTMLInputElement>('.sd-send-row input')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'PING');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await act(async () => button('Start repeating').click());
+  expect(writes).toEqual(['PING\n']);
+  if (action === 'close') {
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Close Board"]')!.click());
+  } else {
+    await act(async () => button('Disconnect').click());
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Confirm disconnect"] .sd-monitor-danger-button')!.click());
+  }
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  expect(writes).toEqual(['PING\n']);
+  await act(async () => rejectDisconnect(new Error('Backend unavailable')));
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+  expect(writes).toEqual(['PING\n']);
+});

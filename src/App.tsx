@@ -530,7 +530,7 @@ function App() {
   };
 
   const disconnectSession = async (sessionId: string) => {
-    monitorRefs.current[sessionId]?.stopCommandSequence?.();
+    monitorRefs.current[sessionId]?.stopCommands?.();
     const session = liveSessionsRef.current[sessionId];
     if (!session) return;
     // Disconnect is intentional, so cancel a pending automatic retry before
@@ -560,7 +560,7 @@ function App() {
   };
 
   const closeSession = async (sessionId: string) => {
-    monitorRefs.current[sessionId]?.stopCommandSequence?.();
+    monitorRefs.current[sessionId]?.stopCommands?.();
     const session = liveSessionsRef.current[sessionId];
     if (!session) return;
     const reconnectKey = invalidateSessionReconnectWork(sessionId, true, session);

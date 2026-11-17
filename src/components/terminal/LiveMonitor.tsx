@@ -237,7 +237,7 @@ export type LiveMonitorProps = {
 };
 
 export type LiveMonitorHandle = {
-  stopCommandSequence?: () => void;
+  stopCommands?: () => void;
   toggleDisplayPause: () => void;
   requestClear: () => void;
   focusFind: () => void;
@@ -330,6 +330,10 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   const stopSequenceRef = useRef<(() => void) | null>(null);
   const sendInFlightRef = useRef(false);
   const stopRepeatingRef = useRef<(() => void) | null>(null);
+  const stopCommands = () => {
+    stopSequenceRef.current?.();
+    stopRepeatingRef.current?.();
+  };
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
   const [isReconnecting, setReconnecting] = useState(false);
@@ -503,7 +507,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   }, [onNativeSessionStartupFailure]);
 
   const updateConnectionState = (state: MonitorConnectionState) => {
-    if (state !== 'connected') stopSequenceRef.current?.();
+    if (state !== 'connected') stopCommands();
     setConnectionState(state);
     onConnectionStateChangeRef.current?.(state);
   };
@@ -1036,7 +1040,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   };
 
   const disconnect = async () => {
-    stopSequenceRef.current?.();
+    stopCommands();
     try {
       await onDisconnect?.();
       flushFinalPartialLine();
@@ -1070,7 +1074,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   };
 
   const close = async () => {
-    stopSequenceRef.current?.();
+    stopCommands();
     flushFinalPartialLine();
     await onClose?.();
   };
@@ -1126,7 +1130,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
   };
 
   useImperativeHandle(ref, () => ({
-    stopCommandSequence: () => stopSequenceRef.current?.(),
+    stopCommands,
     toggleDisplayPause,
     requestClear: () => setShowClearConfirm(true),
     focusFind,
