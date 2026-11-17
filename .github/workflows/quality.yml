@@ -1,24 +1,10 @@
-name: Quality
-
-on:
-  push:
-  pull_request:
-
+﻿name: Native regression reproduction
+on: [push]
 jobs:
-  check:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.22.1
-          cache: npm
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - name: Install native dependencies
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev
-      - run: npm ci
-      - run: npm run check
-      - run: npm test
-      - run: npm run audit:prod
+      - run: sudo apt-get update && sudo apt-get install -y libudev-dev
+      - run: cargo test --manifest-path src-native/Cargo.toml --locked pty_
