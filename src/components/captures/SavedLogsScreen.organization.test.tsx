@@ -88,3 +88,22 @@ it('cleans explicit deletions and reports metadata cleanup failure without claim
     expect(remove).toHaveBeenCalledWith('/Beta.log');
   } finally { await act(async()=>root.unmount()); host.remove(); localStorage.clear(); vi.unstubAllGlobals(); }
 });
+
+it('returns focus to a surviving filter when a notebook edit hides its capture', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true); localStorage.clear(); list.mockResolvedValue(logs); pending.mockResolvedValue([]);
+  const {saveCaptureNotebook}=await import('../../lib/captures/captureNotebook');
+  saveCaptureNotebook('/Alpha.log',{title:'Thermal',notes:'initial'});
+  const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+  const change=async(el:HTMLInputElement,text:string)=>act(async()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(el,text);el.dispatchEvent(new Event('input',{bubbles:true}));});
+  try {
+    await act(async()=>root.render(<SavedLogsScreen nativeEnabled onRequestConnection={()=>{}} onReconnectWithSettings={()=>{}} onOpenInVisualize={()=>{}} />));
+    const query=host.querySelector<HTMLInputElement>('.bt-library-tools input[type="search"]')!;
+    await change(query,'Thermal');
+    expect(host.querySelectorAll('[role="listitem"]')).toHaveLength(1);
+    await act(async()=>host.querySelector<HTMLButtonElement>('[aria-label="Edit notebook for Alpha"]')!.click());
+    await change(host.querySelector<HTMLInputElement>('.bt-capture-notebook input')!,'Motor');
+    await act(async()=>host.querySelector('.bt-capture-notebook form')!.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
+    expect(host.querySelectorAll('[role="listitem"]')).toHaveLength(0);
+    expect(document.activeElement).toBe(host.querySelector('[aria-label="Filter captures by tag"]'));
+  } finally {await act(async()=>root.unmount());host.remove();localStorage.clear();vi.unstubAllGlobals();}
+});

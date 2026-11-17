@@ -16,3 +16,8 @@
 .bt-library-form strong { overflow-wrap:anywhere; }
 @media(max-width:720px) { .signaldeck-shell .sd-saved-log-row { grid-template-areas:'icon primary' 'icon meta' 'labels labels' 'notebook notebook' 'actions actions'; } }
 @media(max-width:480px) { .bt-library-tools :is(input,select,button),.bt-library-form :is(input,textarea,button),.bt-capture-notebook>button { min-height:44px; }.bt-library-tools input,.bt-library-form input,.bt-library-form textarea { font-size:16px; }.bt-library-form { padding:var(--space-sm); } }
+/* One continuous tool strip keeps the capture list close to its filters. */
+.bt-library-tools>label { flex-basis:280px; max-width:420px; }
+.bt-library-tools>p { flex:1 1 240px; }
+.bt-library-tools:has(.bt-library-form)>p { flex-basis:100%; }
+@media(max-width:480px) { .bt-library-tools>label { max-width:none; flex-basis:100%; } }

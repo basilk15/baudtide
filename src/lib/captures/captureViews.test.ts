@@ -17,3 +17,8 @@ it('rejects invalid filters, full libraries and corrupt data without overwrite',
   expect(()=>saveCaptureView('Run',filters,storage)).toThrow(/preserved/);
   expect(storage.getItem('baudtide.capture-views.v1')).toBe('broken');
 });
+it('retains existing saved views when persistence is unavailable',()=>{
+  const storage=memory();saveCaptureView('Baseline',filters,storage);
+  expect(()=>saveCaptureView('Candidate',filters,{...storage,setItem:()=>{throw Error('full');}})).toThrow(/could not be saved/);
+  expect(loadCaptureViews(storage).map(v=>v.name)).toEqual(['Baseline']);
+});

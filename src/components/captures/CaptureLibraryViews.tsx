@@ -17,7 +17,7 @@ export function CaptureLibraryViews({filters,onApply}:Props) {
   useEffect(()=>{if(editing)input.current?.focus();},[editing]);
   const close=()=>{setEditing(false);trigger.current?.focus();};
   return <section className="bt-library-tools" aria-label="Saved library views">
-    <label>Saved view<select value={selected} disabled={unavailable} onChange={event=>{setSelected(event.target.value);setRemoving(false);}}>
+    <label>Saved view<select aria-label="Saved view" value={selected} disabled={unavailable} onChange={event=>{setSelected(event.target.value);setRemoving(false);}}>
       <option value="">Choose a view</option>{views.map(v=><option key={v.name} value={v.name}>{v.name}</option>)}
     </select></label>
     <button type="button" className="sd-secondary-button" disabled={!selected || unavailable} onClick={()=>{const view=views.find(v=>v.name===selected);if(view)onApply(view.filters);}}>Apply view</button>

@@ -38,6 +38,16 @@ In **Saved logs**, use the star to favorite a capture or **Tags** to add labels 
 
 Tags use lowercase and support up to eight labels of 24 characters each. Tags and favorites persist locally in this installation; they do not change raw captures and are not included in portable bundles. Use the Tag selector to find labels; captured-content search continues to search native capture metadata and serial output.
 
+### Experiment notebooks, saved views, and inventories
+
+In **Saved logs**, choose **Add notebook** to record an experiment title (up to 80 characters) and notes (up to 4000 characters). The original session name and filename remain visible. **Find in notebooks and tags** filters this local metadata; the existing capture search still searches recorded serial output. Both filters can be combined.
+
+Use **Save current view** to keep a named combination of both searches, complete-capture search, state, sort, favorites, and tag filters. Choose a saved view and **Apply view** to restore it. Up to 20 views stay on this installation; removing a view leaves recordings intact.
+
+**Export inventory** reviews and downloads the currently filtered library as CSV, in the displayed order. It includes notebook text, organization labels, filenames, timestamps, state, baud rate, and byte counts. It excludes raw serial bytes and filesystem paths. Review notebook text before sharing.
+
+Notebooks and saved views are installation-local metadata. They do not rename raw files or travel in portable capture bundles. Clearing a notebook's title and notes removes its metadata.
+
 ## Download
 
 Get the **AppImage, DEB, or RPM** for Linux x86_64 from the [latest release](https://github.com/basilk15/baudtide/releases/latest).

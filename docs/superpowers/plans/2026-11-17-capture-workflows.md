@@ -15,19 +15,19 @@ Local-first; no raw file mutation; no runtime dependencies; preserve themes and 
 - CSV spreadsheet input: formula-like text stays inert.
 
 ### Task 1: Notebook
-- [ ] Write failing storage validation/persistence tests and editor interaction test.
-- [ ] Implement captureNotebook.ts, CaptureNotebook.tsx, styles and screen integration.
-- [ ] Verify focused tests, typecheck; commit.
+- [x] Write failing storage validation/persistence tests and editor interaction test.
+- [x] Implement captureNotebook.ts, CaptureNotebook.tsx, styles and screen integration.
+- [x] Verify focused tests, typecheck; commit.
 ### Task 2: Saved views
-- [ ] Write failing view round-trip, validation, duplicate and storage failure tests.
-- [ ] Implement captureViews.ts and CaptureLibraryViews.tsx, integrate complete filter state.
-- [ ] Verify focused tests and typecheck; commit.
+- [x] Write failing view round-trip, validation, duplicate and storage failure tests.
+- [x] Implement captureViews.ts and CaptureLibraryViews.tsx, integrate complete filter state.
+- [x] Verify focused tests and typecheck; commit.
 ### Task 3: Inventory
-- [ ] Write failing CSV escaping/order/metadata tests.
-- [ ] Implement captureInventory.ts and review/export component using filtered rows.
-- [ ] Verify focused tests, document capabilities; commit.
+- [x] Write failing CSV escaping/order/metadata tests.
+- [x] Implement captureInventory.ts and review/export component using filtered rows.
+- [x] Verify focused tests, document capabilities; commit.
 ### Task 4: Review and release
-- [ ] Full UI review with screenshots across core screens, themes and narrow layouts.
-- [ ] Self-review plus fresh code review; resolve substantial findings.
-- [ ] Run repository quality checks, tests and production audit.
+- [x] Full UI review with screenshots across core screens, themes and narrow layouts.
+- [x] Self-review plus fresh code review; resolve substantial findings.
+- [x] Run repository quality checks, tests and production audit.
 - [ ] Push feature branch for CI; after green CI and checking main has not advanced, fast-forward main.
