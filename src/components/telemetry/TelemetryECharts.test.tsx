@@ -9,6 +9,23 @@ const chart = vi.hoisted(() => ({ setOption: vi.fn(), on: vi.fn(), off: vi.fn(),
 vi.mock('echarts/core', async (original) => ({ ...await original<typeof import('echarts/core')>(), init: () => chart }));
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
 
+it.each(['lanes', 'compare'] as const)('shows the measured value after reconnect gaps in %s tooltips', async (mode) => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  const container = document.createElement('div'); document.body.append(container);
+  const root = createRoot(container);
+  const start = 1700000000000;
+  const samples: TelemetrySample[] = [20, 30, 40, 50].map((value, index) => ({ id: String(index), timestamp: new Date(start + index * 1000).toISOString(), nativeSessionId: 'test', sequence: index, format: 'json', schemaId: 'test', values: { temperature: { value } } }));
+  try {
+    await act(async () => root.render(<TelemetryCharts samples={samples} fields={[{ key: 'temperature', unit: 'C', formats: ['json'] }]} gaps={[{ id: 'gap', type: 'reconnect', timestamp: new Date(start + 1500).toISOString(), previousNativeSessionId: 'old', nextNativeSessionId: 'test', nextSequence: 2 }]} selectedFieldKeys={['temperature']} windowMs={0} paused mode={mode} />));
+    const option = chart.setOption.mock.calls[chart.setOption.mock.calls.length - 1][0];
+    const dataIndex = option.series[0].data.findIndex(([time]: [number, number | null]) => time === start + 2000);
+    const html = option.tooltip.formatter([{ seriesIndex: 0, seriesName: 'temperature', dataIndex, value: option.series[0].data[dataIndex] }]);
+    const tooltip = document.createElement('div'); tooltip.innerHTML = html;
+    expect(tooltip.querySelector('strong')?.firstChild?.textContent).toBe('40');
+  } finally { await act(async () => root.unmount()); container.remove(); }
+});
+
 it('coalesces live snapshots per frame, preserves spikes and gaps, and cancels pending work on unmount', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });

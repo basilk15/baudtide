@@ -718,7 +718,7 @@ struct ActiveSession {
     writer: SerialWriter,
     event_delivery: Arc<Mutex<SerialEventDelivery>>,
     mobile_replay: Arc<Mutex<MobileReplayBuffer>>,
-    reader_thread: JoinHandle<()>,
+    reader_thread: JoinHandle<CommandResult<()>>,
 }
 
 struct ReaderContext {
@@ -4932,16 +4932,31 @@ fn disconnect_serial_session(
         reader_thread,
         ..
     } = session;
-    let join_result = reader_thread
-        .join()
-        .map_err(|_| format!("Serial reader for {} stopped unexpectedly.", info.port));
-    join_result?;
+    let join_result = reader_thread.join().unwrap_or_else(|_| {
+        Err(format!("Serial reader for {} stopped unexpectedly.", info.port))
+    });
     stop_mobile_share_for_session(&state.mobile_shares, &info.id);
     // Wait for an in-flight write, then invalidate stale writer handles before
     // finalizing metadata and releasing the port.
-    close_serial_writer(writer.as_ref())?;
-    let message =
-        disconnect_status_message(finalize_log_index_state(&app, &info.id, "disconnected"));
+    let capture_result = join_result.and(close_serial_writer(writer.as_ref()));
+    let index_state = if capture_result.is_ok() {
+        "disconnected"
+    } else {
+        "error"
+    };
+    let finalization = finalize_log_index_state(&app, &info.id, index_state);
+    let message = match capture_result {
+        Ok(()) => disconnect_status_message(finalization),
+        Err(error) => {
+            let mut message = format!(
+                "Disconnected by user. Warning: the saved capture may be incomplete: {error}"
+            );
+            if let Err(error) = finalization {
+                message.push_str(&format!(" Metadata could not be finalized: {error}"));
+            }
+            message
+        }
+    };
     broadcast_mobile_workspace_status(
         &state.mobile_workspace_share,
         &info,
@@ -4970,7 +4985,7 @@ fn read_serial_loop(
     info: SessionInfo,
     stop: Arc<AtomicBool>,
     context: ReaderContext,
-) {
+) -> CommandResult<()> {
     let terminal_status = run_serial_capture_loop(
         reader,
         log_file,
@@ -4992,7 +5007,7 @@ fn read_serial_loop(
             deliver_serial_data(&context.app, &context.event_delivery, event);
         },
     );
-    if let Some((status, message)) = terminal_status {
+    if let Some((status, message)) = terminal_status.clone() {
         if remove_failed_session(&context.sessions, &info) {
             stop_mobile_share_for_session(&context.mobile_shares, &info.id);
             let index_state = if status == "storage-limit" {
@@ -5010,6 +5025,7 @@ fn read_serial_loop(
             emit_status(&context.app, &info, status, &message);
         }
     }
+    terminal_status.map_or(Ok(()), |(_, message)| Err(message))
 }
 
 /// Reads one physical serial capture until the port fails, storage is exhausted,
@@ -5037,7 +5053,7 @@ where
 
     while !stop.load(Ordering::Acquire) {
         match reader.read(&mut buffer) {
-            Ok(0) => continue,
+            Ok(0) => {}
             Ok(count) => {
                 let received_at = Utc::now();
                 let timing_sync_due = capture_durability_sync_is_due(last_durable_sync.elapsed());
@@ -5194,11 +5210,36 @@ where
                 break;
             }
         }
+        // Quiet ports still need to persist their last burst. A timeout is a
+        // scheduling opportunity, not a reason to defer persistence until the
+        // device produces another byte.
+        let sync_due = capture_durability_sync_is_due(last_durable_sync.elapsed());
+        if sync_due || last_flush.elapsed() >= CAPTURE_FLUSH_INTERVAL {
+            if let Err(error) = log.flush().and_then(|()| {
+                if sync_due {
+                    log.get_ref().sync_data()
+                } else {
+                    Ok(())
+                }
+            }) {
+                terminal_status =
+                    Some(("error", format!("Could not persist the raw log: {error}")));
+                break;
+            }
+            last_flush = Instant::now();
+            if sync_due {
+                last_durable_sync = Instant::now();
+            }
+            if let Some(writer) = &mut timing {
+                if let Err(error) = writer.flush(sync_due) {
+                    eprintln!("Capture timing stopped; raw logging continues: {error}");
+                    timing = None;
+                }
+            }
+        }
     }
     if let Err(error) = log.flush().and_then(|()| log.get_ref().sync_data()) {
-        if !stop.load(Ordering::Acquire) && terminal_status.is_none() {
-            terminal_status = Some(("error", format!("Could not finalize the raw log: {error}")));
-        }
+        terminal_status = Some(("error", format!("Could not finalize the raw log: {error}")));
     }
     if let Some(mut writer) = timing {
         if let Err(error) = writer.flush(true) {
@@ -5401,7 +5442,7 @@ mod tests {
             writer: Arc::new(Mutex::new(None)),
             event_delivery: Arc::new(Mutex::new(SerialEventDelivery::Live { next_sequence: 0 })),
             mobile_replay: Arc::new(Mutex::new(MobileReplayBuffer::default())),
-            reader_thread: thread::spawn(|| {}),
+            reader_thread: thread::spawn(|| Ok(())),
         }
     }
 
@@ -5842,6 +5883,65 @@ mod tests {
         let message = disconnect_status_message(Err("Could not decode saved-log metadata".into()));
         assert!(message.starts_with("Disconnected by user."));
         assert!(message.contains("metadata could not be finalized"));
+    }
+
+    #[test]
+    fn disconnect_releases_sessions_and_reports_reader_failure_without_losing_metadata() {
+        for failure in ["none", "write", "panic"] {
+            let root = std::env::temp_dir().join(format!("baudtide-stop-{}", Uuid::new_v4()));
+            let app = super::AppHandle::new(root.clone());
+            let scope = [test_workspace_session("session-1", "Bench", "/dev/ttyUSB0")];
+            let (share, receiver) = test_workspace_share_with_client(&scope);
+            let state = SerialState {
+                mobile_workspace_share: share,
+                ..SerialState::default()
+            };
+            let mut session = test_active_session("session-1");
+            session.reader_thread = thread::spawn(move || match failure {
+                "panic" => panic!("test reader failure"),
+                "write" => Err("Could not finalize the raw log: disk full".into()),
+                _ => Ok(()),
+            });
+            let stop = Arc::clone(&session.stop);
+            let writer = Arc::clone(&session.writer);
+            super::write_log_index_record(&app, &LogIndexRecord::new(&session.info)).unwrap();
+            state
+                .sessions
+                .lock()
+                .unwrap()
+                .insert("session-1".into(), session);
+
+            super::disconnect_serial_session(app.clone(), &state, "session-1".into()).unwrap();
+
+            assert!(stop.load(Ordering::Acquire));
+            assert!(state.sessions.lock().unwrap().is_empty());
+            assert!(state.closing_log_paths.lock().unwrap().is_empty());
+            assert!(writer.lock().unwrap().is_none());
+            let records = super::read_log_index_records(&app).unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(
+                records[0].state,
+                if failure == "none" {
+                    "disconnected"
+                } else {
+                    "error"
+                }
+            );
+            assert!(records[0].ended_at.is_some());
+            let payload: serde_json::Value = serde_json::from_str(
+                &receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(payload["status"], "disconnected");
+            let message = payload["message"].as_str().unwrap();
+            if failure == "none" {
+                assert!(!message.contains("incomplete"));
+            } else {
+                assert!(message.contains("incomplete"));
+            }
+            super::shutdown_mobile_workspace_share(&state.mobile_workspace_share);
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
@@ -6451,7 +6551,7 @@ mod tests {
                 .remove(session_id)
                 .expect("session should still exist until registration finishes");
             stop_mobile_share_for_session(&remover_shares, session_id);
-            removed.reader_thread.join().unwrap();
+            removed.reader_thread.join().unwrap().unwrap();
         });
 
         let exit_flag = Arc::clone(&server_exited);
@@ -7972,9 +8072,19 @@ fn shutdown_serial_sessions(app: &AppHandle, state: &SerialState) {
     for session in sessions {
         session.stop.store(true, Ordering::Release);
         let info = session.info.clone();
-        let _ = session.reader_thread.join();
-        let _ = close_serial_writer(session.writer.as_ref());
-        let _ = finalize_log_index_state(app, &info.id, "disconnected");
+        let result = session.reader_thread.join().unwrap_or_else(|_| {
+            Err(format!("Serial reader for {} stopped unexpectedly.", info.port))
+        });
+        let result = result.and(close_serial_writer(session.writer.as_ref()));
+        let index_state = if result.is_ok() {
+            "disconnected"
+        } else {
+            "error"
+        };
+        if let Err(error) = result {
+            eprintln!("Saved capture may be incomplete: {error}");
+        }
+        let _ = finalize_log_index_state(app, &info.id, index_state);
     }
 }
 

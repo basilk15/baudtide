@@ -211,6 +211,11 @@ function chartOption({
   const isLanes = mode === 'lanes';
   const lastSeriesIndex = Math.max(0, series.length - 1);
   const rawRanges = series.map((currentSeries) => numericRange(currentSeries.points));
+  // Reconnect sentinels change rendered data indices. Timestamp identity keeps
+  // normalized hover values tied to their measurement, even after several gaps.
+  const rawValuesByTime = mode === 'compare' && !absoluteOverlay
+    ? aligned.values.map((values) => new Map(aligned.timestamps.map((timestamp, index) => [timestamp * 1_000, values[index]])))
+    : [];
 
   const laneTop = 4;
   const laneBottom = hasZoom ? 16 : 10;
@@ -478,9 +483,9 @@ function chartOption({
             const seriesIndex = Number.isInteger(item.seriesIndex)
               ? item.seriesIndex!
               : series.findIndex((currentSeries) => currentSeries.key === item.seriesName);
-            const dataIndex = Number.isInteger(item.dataIndex) ? item.dataIndex! : 0;
-            const rawValue = aligned.values[seriesIndex]?.[dataIndex];
-            const value = absoluteOverlay ? pair[1] : typeof rawValue === 'number' ? rawValue : pair[1];
+            const rawValue = rawValuesByTime[seriesIndex]?.get(pair[0]);
+            const value = isLanes || absoluteOverlay ? pair[1] : rawValue;
+            if (typeof value !== 'number') return '';
             const currentSeries = series[seriesIndex];
             const name = escapeHtml(readableFieldName(item.seriesName ?? 'signal'));
             const color = item.color ?? '#9fd6c5';

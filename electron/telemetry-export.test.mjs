@@ -141,6 +141,52 @@ describe('export lifecycle regressions', () => {
     await expect(assertExportDestinationSafe(path.join(directory, 'export.csv'), { directories: [managed] })).resolves.toBeUndefined();
     expect(await fs.readFile(raw, 'utf8')).toBe('capture');
   });
+
+  it.each(['capture.log', 'capture.log.timing'])('protects existing case aliases of %s without blocking distinct filenames', async (name) => {
+    const { assertExportDestinationSafe } = await import('./telemetry-export.mjs');
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'baudtide-export-case-'));
+    const protectedPath = path.join(directory, name);
+    const destination = path.join(directory, name.toUpperCase());
+    await fs.writeFile(protectedPath, 'original capture data');
+    const aliasesExistingFile = await fs.stat(destination).then(() => true, (error) => {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    });
+    const streams = new TelemetryExportStreams((target) => assertExportDestinationSafe(target, { files: [protectedPath] }));
+    try {
+      if (aliasesExistingFile) {
+        await expect(streams.begin(destination)).rejects.toThrow('raw capture');
+      } else {
+        const id = await streams.begin(destination);
+        await streams.append(id, 'separate export');
+        await streams.finish(id);
+        expect(await fs.readFile(destination, 'utf8')).toBe('separate export');
+      }
+      expect(await fs.readFile(protectedPath, 'utf8')).toBe('original capture data');
+    } finally { await streams.dispose(); }
+  });
+
+  it('allows replacing a final symlink without changing the protected file it points to', async (context) => {
+    const { assertExportDestinationSafe } = await import('./telemetry-export.mjs');
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'baudtide-export-file-link-'));
+    const raw = path.join(directory, 'capture.log');
+    const destination = path.join(directory, 'export.csv');
+    await fs.writeFile(raw, 'original capture');
+    try { await fs.symlink(raw, destination, 'file'); }
+    catch (error) {
+      if (process.platform === 'win32' && error.code === 'EPERM') return context.skip();
+      throw error;
+    }
+    const streams = new TelemetryExportStreams((target) => assertExportDestinationSafe(target, { files: [raw] }));
+    try {
+      const id = await streams.begin(destination);
+      await streams.append(id, 'exported telemetry');
+      await streams.finish(id);
+      expect(await fs.readFile(destination, 'utf8')).toBe('exported telemetry');
+      expect(await fs.readFile(raw, 'utf8')).toBe('original capture');
+      expect((await fs.lstat(destination)).isSymbolicLink()).toBe(false);
+    } finally { await streams.dispose(); }
+  });
 });
 
 describe('interrupted export opening', () => {

@@ -3,6 +3,13 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 async function canonicalDestination(filename) {
+  try {
+    // Resolve the existing filename's spelling on case-insensitive volumes.
+    // Publication replaces a final symlink itself, not the file it points to.
+    if (!(await fs.lstat(filename)).isSymbolicLink()) return await fs.realpath(filename);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
   return path.join(await fs.realpath(path.dirname(filename)), path.basename(filename));
 }
 

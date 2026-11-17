@@ -225,6 +225,77 @@ fn assert_contiguous_sequences(events: &[super::SerialDataEvent], starting_at: u
 }
 
 #[test]
+fn pty_quiet_capture_flushes_raw_and_timing_without_another_read() {
+    let mut pty = PtyPair::new();
+    let reader = open_serial(&pty, Duration::from_millis(50));
+    let mut capture = capture_file("quiet-burst");
+    let info = capture_info(&capture.path);
+    let log_file = capture.file.take().unwrap();
+    let timing = crate::capture_timing::TimingWriter::create(&capture.path).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let reader_stop = Arc::clone(&stop);
+    let quota = Arc::new(Mutex::new(CaptureQuota {
+        used_bytes: crate::capture_timing::HEADER_BYTES,
+        limit_bytes: 4096,
+        bundle_reserved_bytes: 0,
+    }));
+    // Queue the burst before starting the capture clock, avoiding scheduler
+    // delays between startup and the first read.
+    pty.master.write_all(b"quiet burst\n").unwrap();
+    let (events_tx, events_rx) = mpsc::channel();
+    let reader_thread = thread::spawn(move || {
+        run_serial_capture_loop(
+            reader,
+            log_file,
+            Some(timing),
+            &info,
+            reader_stop.as_ref(),
+            &quota,
+            |event| events_tx.send(event).unwrap(),
+        )
+    });
+    recv_events_until(&events_rx, 12, Duration::from_secs(2));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let persisted = loop {
+        let raw = std::fs::read(&capture.path).unwrap();
+        if raw == b"quiet burst\n"
+            && crate::capture_timing::read(&capture.path, 12, 12).is_some()
+        {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    stop.store(true, Ordering::Release);
+    assert_eq!(reader_thread.join().unwrap(), None);
+    assert!(persisted, "quiet captures must flush before they are stopped");
+}
+
+#[test]
+fn pty_user_stop_reports_failure_to_finalize_buffered_raw_bytes() {
+    let mut pty = PtyPair::new();
+    let reader = open_serial(&pty, Duration::from_millis(50));
+    let output = OpenOptions::new().write(true).open("/dev/full").unwrap();
+    let info = capture_info(Path::new("/dev/full"));
+    let stop = AtomicBool::new(false);
+    let quota = Arc::new(Mutex::new(CaptureQuota {
+        used_bytes: 0,
+        limit_bytes: 4096,
+        bundle_reserved_bytes: 0,
+    }));
+    pty.master.write_all(b"buffered tail\n").unwrap();
+    let result = run_serial_capture_loop(reader, output, None, &info, &stop, &quota, |_| {
+        // Stop synchronously after admission, before another read or flush.
+        stop.store(true, Ordering::Release);
+    });
+    let (status, message) = result.expect("failed finalization must survive a user stop");
+    assert_eq!(status, "error");
+    assert!(message.contains("raw log"));
+}
+
+#[test]
 fn pty_open_applies_requested_serial_configuration() {
     let pty = PtyPair::new();
     let port = open_serial(&pty, Duration::from_millis(75));
