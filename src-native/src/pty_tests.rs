@@ -258,9 +258,7 @@ fn pty_quiet_capture_flushes_raw_and_timing_without_another_read() {
     let deadline = Instant::now() + Duration::from_secs(2);
     let persisted = loop {
         let raw = std::fs::read(&capture.path).unwrap();
-        if raw == b"quiet burst\n"
-            && crate::capture_timing::read(&capture.path, 12, 12).is_some()
-        {
+        if raw == b"quiet burst\n" && crate::capture_timing::read(&capture.path, 12, 12).is_some() {
             break true;
         }
         if Instant::now() >= deadline {
@@ -270,7 +268,10 @@ fn pty_quiet_capture_flushes_raw_and_timing_without_another_read() {
     };
     stop.store(true, Ordering::Release);
     assert_eq!(reader_thread.join().unwrap(), None);
-    assert!(persisted, "quiet captures must flush before they are stopped");
+    assert!(
+        persisted,
+        "quiet captures must flush before they are stopped"
+    );
 }
 
 #[test]

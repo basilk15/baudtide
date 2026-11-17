@@ -4933,7 +4933,10 @@ fn disconnect_serial_session(
         ..
     } = session;
     let join_result = reader_thread.join().unwrap_or_else(|_| {
-        Err(format!("Serial reader for {} stopped unexpectedly.", info.port))
+        Err(format!(
+            "Serial reader for {} stopped unexpectedly.",
+            info.port
+        ))
     });
     stop_mobile_share_for_session(&state.mobile_shares, &info.id);
     // Wait for an in-flight write, then invalidate stale writer handles before
@@ -5928,10 +5931,9 @@ mod tests {
                 }
             );
             assert!(records[0].ended_at.is_some());
-            let payload: serde_json::Value = serde_json::from_str(
-                &receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
-            )
-            .unwrap();
+            let payload: serde_json::Value =
+                serde_json::from_str(&receiver.recv_timeout(Duration::from_secs(1)).unwrap())
+                    .unwrap();
             assert_eq!(payload["status"], "disconnected");
             let message = payload["message"].as_str().unwrap();
             if failure == "none" {
@@ -8073,7 +8075,10 @@ fn shutdown_serial_sessions(app: &AppHandle, state: &SerialState) {
         session.stop.store(true, Ordering::Release);
         let info = session.info.clone();
         let result = session.reader_thread.join().unwrap_or_else(|_| {
-            Err(format!("Serial reader for {} stopped unexpectedly.", info.port))
+            Err(format!(
+                "Serial reader for {} stopped unexpectedly.",
+                info.port
+            ))
         });
         let result = result.and(close_serial_writer(session.writer.as_ref()));
         let index_state = if result.is_ok() {
