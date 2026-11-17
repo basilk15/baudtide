@@ -13,6 +13,7 @@ import { ExampleCaptureGallery } from './ExampleCaptureGallery';
 import { CaptureOrganizationControls } from './CaptureOrganizationControls';
 import { CaptureOrganizationReadError, loadCaptureOrganization, removeCaptureOrganization, setCaptureFavorite, setCaptureTags, type CaptureOrganizationLibrary } from '../../lib/captures/captureOrganization';
 
+import { CaptureInventoryExport } from './CaptureInventoryExport';
 import { CaptureLibraryViews } from './CaptureLibraryViews';
 import { CaptureNotebook } from './CaptureNotebook';
 import { loadCaptureNotebooks, saveCaptureNotebook, removeCaptureNotebook, type CaptureNotebooks } from '../../lib/captures/captureNotebook';
@@ -616,6 +617,7 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
     }} />
     <div className="bt-library-tools"><label>Find in notebooks and tags<input type="search" value={notebookQuery} onChange={event => setNotebookQuery(event.target.value)} placeholder="Firmware, test conditions, or tag…" disabled={notebookUnavailable || organizationUnavailable} /></label><p>Filters local titles, notes, and tags. Use the capture search above for serial output.</p></div>
     {notebookError && <div className="bt-capture-organization-error" role="alert">{notebookError}<button type="button" className="sd-secondary-button" onClick={reloadNotebooks}>Retry notebooks</button></div>}
+    <CaptureInventoryExport logs={organizedLogs} notebooks={notebooks} organization={organization} disabled={isLoading || isSearching || notebookUnavailable || organizationUnavailable || !!error} onExport={() => setNotice('Inventory download requested.')} />
     {activeSearchResponse && <p className="sd-saved-logs-search-note">{describeSearchResponse(activeSearchResponse)}</p>}
 
     {isLoading || (isSearching && !activeSearchResponse) ? <div className="sd-saved-logs-loading"><LoaderCircle className="sd-spin" size={21} /> {isLoading ? 'Loading local captures…' : fullSearch ? 'Searching and refreshing the local text index…' : 'Searching local captures…'}</div>
