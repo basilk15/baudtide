@@ -560,6 +560,7 @@ function App() {
   };
 
   const closeSession = async (sessionId: string) => {
+    monitorRefs.current[sessionId]?.stopCommandSequence?.();
     const session = liveSessionsRef.current[sessionId];
     if (!session) return;
     const reconnectKey = invalidateSessionReconnectWork(sessionId, true, session);

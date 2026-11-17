@@ -824,6 +824,9 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
           if (event.status === 'disconnected') {
             flushFinalPartialLine();
             updateConnectionState('disconnected');
+            // A released port can still have an incomplete capture. Keep the
+            // backend's final persistence outcome instead of claiming success.
+            appendDisplayLine({ id: `disconnected-${sessionId}-${Date.now()}`, timestamp: currentTimestamp(), text: event.message, kind: 'system' });
           }
           if (event.status === 'connected') updateConnectionState('connected');
         }),
@@ -1039,7 +1042,6 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
       flushFinalPartialLine();
       updateConnectionState('disconnected');
       setShowDisconnectConfirm(false);
-      appendDisplayLine({ id: `disconnect-${Date.now()}`, timestamp: currentTimestamp(), text: 'Disconnected by user. Local log remains available.', kind: 'system' });
     } catch (error) {
       flushFinalPartialLine();
       const message = error instanceof Error ? error.message : 'Could not disconnect this serial session.';
@@ -1361,7 +1363,7 @@ export const LiveMonitor = forwardRef<LiveMonitorHandle, LiveMonitorProps>(funct
               ? 'Browser preview only · hex payloads are not transmitted · use two-digit bytes separated by spaces or commas'
               : `Browser preview only · ${lineEndingLabel(sendLineEnding)} selected for desktop sends · ↑/↓ recalls text commands`}</span>
         </form>
-        <CommandPresetsPanel stopRef={stopRepeatingRef} identity={commandIdentity ?? telemetrySessionKey ?? sessionId ?? sessionName} sessionId={sessionId} enabled={nativeSession && connectionState === 'connected' && displayActive && !isSequenceRunning}
+        <CommandPresetsPanel stopRef={stopRepeatingRef} identity={commandIdentity ?? telemetrySessionKey ?? sessionId ?? sessionName} sessionId={sessionId} enabled={nativeSession && connectionState === 'connected' && displayActive && documentVisible && !isSequenceRunning}
           draft={{ payload: outgoing, mode: sendMode, lineEnding: sendLineEnding }} onSend={transmitCommand} onRepeatingChange={setRepeating}
           onLoad={(command) => { setOutgoing(command.payload); setSendMode(command.mode); setSendLineEnding(command.lineEnding); setHistoryIndex(null); setSendError(null); }} />
         {nativeSession && commandIdentity && <CommandSequencePanel identity={commandIdentity} sessionId={sessionId} capturePath={capturePath} sourceName={sessionName}
