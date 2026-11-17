@@ -219,6 +219,24 @@ export function telemetryYDomain(points: readonly TelemetryChartPoint[]): Teleme
   return { min: minimum - padding, max: maximum + padding };
 }
 
+/** Rounded tick boundaries stay still through small changes in sensor extrema. */
+export function telemetryAxisDomain(points: readonly TelemetryChartPoint[]) {
+  const domain = telemetryYDomain(points);
+  if (!domain) return undefined;
+  const roughStep = (domain.max - domain.min) / 4;
+  const magnitude = 10 ** Math.floor(Math.log10(roughStep));
+  if (!Number.isFinite(roughStep) || !magnitude) return domain;
+  const fraction = roughStep / magnitude;
+  const step = (fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 2.5 ? 2.5 : fraction <= 5 ? 5 : 10) * magnitude;
+  // Trim floating-point noise without rounding away very small measurements.
+  const tidy = (value: number) => Number(value.toPrecision(14));
+  return {
+    min: tidy(Math.floor(domain.min / step) * step),
+    max: tidy(Math.ceil(domain.max / step) * step),
+    interval: step,
+  };
+}
+
 function pointsForField(field: TelemetryField, samples: readonly TimestampedSample[]) {
   const points: Array<TelemetryChartPoint & { sourceIndex: number }> = [];
   for (const { sample, timestampMs, sourceIndex } of samples) {

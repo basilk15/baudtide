@@ -7,8 +7,21 @@ import {
   groupTelemetryFieldsByUnit,
   prepareTelemetryCharts,
   telemetryYDomain,
+  telemetryAxisDomain,
   type TelemetryChartPoint,
 } from './telemetryChart';
+
+it('keeps rounded axes steady for small changes and contains signed, flat and tiny signals', () => {
+  const points = (values: number[]) => values.map((value, index) => ({ sampleId: String(index), timestampMs: index, value }));
+  expect(telemetryAxisDomain(points([23.8, 25.3]))).toEqual(telemetryAxisDomain(points([23.81, 25.31])));
+  for (const values of [[-5, 5], [24, 24], [0, 0], [0.000001, 0.000003], [-100, -91]]) {
+    const domain = telemetryAxisDomain(points(values))!;
+    expect(domain.min).toBeLessThan(Math.min(...values));
+    expect(domain.max).toBeGreaterThan(Math.max(...values));
+    expect(Number.isFinite(domain.min) && Number.isFinite(domain.max)).toBe(true);
+  }
+  expect(telemetryAxisDomain([])).toBeUndefined();
+});
 
 function sample(id: string, timestamp: string, values: Record<string, number>): TelemetrySample {
   return {

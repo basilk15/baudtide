@@ -16,7 +16,7 @@ import {
   formatTelemetryValue,
   prepareTelemetryCharts,
   telemetrySeriesColor,
-  telemetryYDomain,
+  telemetryAxisDomain,
 } from '../../lib/telemetry/telemetryChart';
 import './telemetry-charts.css';
 import { frameScheduler } from '../../lib/frameScheduler';
@@ -239,29 +239,29 @@ function chartOption({
 
   const yAxis = isLanes
     ? series.map((currentSeries, index) => {
-      const domain = telemetryYDomain(currentSeries.points) ?? { min: 0, max: 1 };
-      const color = colorForField(fields, currentSeries.key, isLight);
+      const domain = telemetryAxisDomain(currentSeries.points) ?? { min: 0, max: 1 };
       return {
         type: 'value' as const,
         gridIndex: index,
         min: domain.min,
         max: domain.max,
+        interval: 'interval' in domain ? domain.interval : undefined,
         scale: true,
         splitNumber: 3,
         position: 'left' as const,
         axisLine: { show: false },
         axisTick: { show: false },
         axisLabel: {
-          color,
+          color: palette.muted,
           fontFamily: CHART_DATA_FONT,
-          fontSize: 10,
+          fontSize: 11,
           margin: 9,
           hideOverlap: true,
           formatter: (value: number) => formatTelemetryValue(value),
         },
         splitLine: {
           show: true,
-          lineStyle: { color: palette.grid, type: 'dashed' as const, width: 1 },
+          lineStyle: { color: palette.grid, type: 'solid' as const, width: 1 },
         },
       };
     })
@@ -368,9 +368,9 @@ function chartOption({
       type: 'line' as const,
       xAxisIndex: isLanes ? seriesIndex : 0,
       yAxisIndex: isLanes ? seriesIndex : 0,
-      // A small curve removes the angular, bead-like appearance without
-      // hiding fast telemetry changes behind aggressive smoothing.
-      smooth: absoluteOverlay ? 0 : isLanes ? 0.14 : 0.1,
+      // Straight segments faithfully retain abrupt steps and isolated spikes.
+      // Round joins soften the stroke without inventing intermediate extrema.
+      smooth: false,
       showSymbol: false,
       showAllSymbol: false,
       symbol: 'circle',
@@ -388,11 +388,20 @@ function chartOption({
       // Keep the full line in one render pass so moving the pointer never
       // restarts progressive drawing underneath the tooltip.
       progressive: 0,
-      lineStyle: { color, width: isLanes ? 2.4 : 2.1 },
+      lineStyle: { color, width: 1.7, cap: 'round', join: 'round' },
+      // A restrained fill gives individual lanes depth; overlays stay clear.
+      areaStyle: isLanes ? {
+        origin: 'start',
+        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color },
+          { offset: 1, color: 'transparent' },
+        ]),
+        opacity: isLight ? 0.12 : 0.17,
+      } : undefined,
       itemStyle: { color },
       emphasis: {
         focus: 'series' as const,
-        lineStyle: { width: isLanes ? 3 : 2.8 },
+        lineStyle: { width: 2.2 },
       },
       data: lineData,
       markLine: (markerGaps.length || markers.length) && (isLanes || seriesIndex === 0) ? {
@@ -550,6 +559,7 @@ function EChartsSurface({ option, structureKey, ariaLabel, visible }: { option: 
   const visibleRef = useRef(visible);
   const [activated, setActivated] = useState(visible);
   const resizeWorkRef = useRef<ReturnType<typeof frameScheduler> | null>(null);
+  const paintWorkRef = useRef<ReturnType<typeof frameScheduler> | null>(null);
   const chartRef = useRef<ECharts | null>(null);
   const pendingOptionRef = useRef<EChartsOption>(option);
   const pendingStructureKeyRef = useRef('');
@@ -585,6 +595,11 @@ function EChartsSurface({ option, structureKey, ariaLabel, visible }: { option: 
     // disappearing-trace state that can otherwise occur mid-gesture.
     const chart = echarts.init(host, undefined, { renderer: 'canvas', useDirtyRect: false });
     chartRef.current = chart;
+    const paintWork = frameScheduler(() => {
+      if (scrollingRef.current) { scrollUpdatePendingRef.current = true; return; }
+      if (!zoomingRef.current) applyOption(pendingOptionRef.current, pendingStructureKeyRef.current);
+    });
+    paintWorkRef.current = paintWork;
     const handleDataZoom = () => {
       // Let ECharts own the gesture until it settles. Live samples continue
       // accumulating in the store, and the newest option is applied once the
@@ -642,6 +657,8 @@ function EChartsSurface({ option, structureKey, ariaLabel, visible }: { option: 
       if (zoomIdleTimerRef.current !== undefined) window.clearTimeout(zoomIdleTimerRef.current);
       resizeObserver.disconnect();
       resizeWork.cancel();
+      paintWork.cancel();
+      if (paintWorkRef.current === paintWork) paintWorkRef.current = null;
       if (resizeWorkRef.current === resizeWork) resizeWorkRef.current = null;
       chart.dispose();
       if (chartRef.current === chart) chartRef.current = null;
@@ -651,7 +668,7 @@ function EChartsSurface({ option, structureKey, ariaLabel, visible }: { option: 
   useEffect(() => {
     visibleRef.current = visible;
     if (visible) { setActivated(true); resizeWorkRef.current?.schedule(); }
-    else resizeWorkRef.current?.cancel();
+    else { resizeWorkRef.current?.cancel(); paintWorkRef.current?.cancel(); }
   }, [visible]);
 
   useEffect(() => {
@@ -660,7 +677,9 @@ function EChartsSurface({ option, structureKey, ariaLabel, visible }: { option: 
     if (scrollingRef.current) { scrollUpdatePendingRef.current = true; return; }
     if (zoomingRef.current) return;
     scrollUpdatePendingRef.current = false;
-    applyOption(option, structureKey);
+    // Mount synchronously; coalesce subsequent stream snapshots into one paint.
+    if (!structureKeyRef.current) applyOption(option, structureKey);
+    else paintWorkRef.current?.schedule();
   }, [applyOption, option, structureKey, visible, activated]);
 
   return <div ref={hostRef} className="bt-telemetry-echarts" role="img" aria-label={ariaLabel} />;
@@ -704,7 +723,7 @@ export const TelemetryCharts = memo(function TelemetryCharts({ samples, fields, 
         markers,
       })
       : null;
-    return { series, aligned: plotAligned, option };
+    return { series, aligned: plotAligned, option, range: numericRange(series.points) };
   }) : [], [mode, fields, isLight, theme, prepared.endMs, prepared.gaps, prepared.startMs, selectedSeries, timeline, markers]);
   const chartablePlots = plots.filter((plot) => plot.option && plot.aligned.timestamps.length);
   const overlayOption = useMemo(() => mode === 'compare' && aligned.timestamps.length ? chartOption({
@@ -786,9 +805,14 @@ export const TelemetryCharts = memo(function TelemetryCharts({ samples, fields, 
             </div>
             <div className="bt-telemetry-plot-readout">
               <strong>{plot.series.latest ? formatTelemetryValue(plot.series.latest.value) : '—'}</strong>
+              {plot.series.unit ? <small>{plot.series.unit}</small> : null}
               <span>latest</span>
             </div>
           </header>
+          {plot.range ? <div className="bt-telemetry-plot-summary" aria-label="Extrema in displayed window">
+            <span>Min <strong>{formatTelemetryValue(plot.range.min)}</strong></span>
+            <span>Max <strong>{formatTelemetryValue(plot.range.max)}</strong></span>
+          </div> : null}
           <div className="bt-telemetry-plot-canvas">
             <EChartsSurface
               visible={visible}
