@@ -13,6 +13,7 @@ import { ExampleCaptureGallery } from './ExampleCaptureGallery';
 import { CaptureOrganizationControls } from './CaptureOrganizationControls';
 import { CaptureOrganizationReadError, loadCaptureOrganization, removeCaptureOrganization, setCaptureFavorite, setCaptureTags, type CaptureOrganizationLibrary } from '../../lib/captures/captureOrganization';
 
+import { CaptureLibraryViews } from './CaptureLibraryViews';
 import { CaptureNotebook } from './CaptureNotebook';
 import { loadCaptureNotebooks, saveCaptureNotebook, removeCaptureNotebook, type CaptureNotebooks } from '../../lib/captures/captureNotebook';
 
@@ -610,6 +611,9 @@ export function SavedLogsScreen({ nativeEnabled, activeLogPath, onRequestConnect
       </div>
       <div className="bt-capture-local-filters" role="group" aria-label="Local capture filters"><button type="button" className="sd-secondary-button" aria-pressed={favoritesOnly} disabled={organizationUnavailable} onClick={() => setFavoritesOnly(!favoritesOnly)}>Favorites</button><label>Tag<select ref={organizationFilter} aria-label="Filter captures by tag" value={tagFilter} disabled={organizationUnavailable} onChange={event => setTagFilter(event.target.value)}><option value="">All tags</option>{tagOptions.map(tag => <option key={tag} value={tag}>{tag}</option>)}</select></label><span>Tags and favorites stay local to this installation.</span></div>
     </section>
+    <CaptureLibraryViews filters={{query, fullSearch, state:stateFilter, sort, favorites:favoritesOnly, tag:tagFilter, notebookQuery}} onApply={filters => {
+      setQuery(filters.query); setFullSearch(filters.fullSearch); setStateFilter(filters.state); setSort(filters.sort); setFavoritesOnly(filters.favorites); setTagFilter(filters.tag); setNotebookQuery(filters.notebookQuery); setNotice('Saved view applied.');
+    }} />
     <div className="bt-library-tools"><label>Find in notebooks and tags<input type="search" value={notebookQuery} onChange={event => setNotebookQuery(event.target.value)} placeholder="Firmware, test conditions, or tag…" disabled={notebookUnavailable || organizationUnavailable} /></label><p>Filters local titles, notes, and tags. Use the capture search above for serial output.</p></div>
     {notebookError && <div className="bt-capture-organization-error" role="alert">{notebookError}<button type="button" className="sd-secondary-button" onClick={reloadNotebooks}>Retry notebooks</button></div>}
     {activeSearchResponse && <p className="sd-saved-logs-search-note">{describeSearchResponse(activeSearchResponse)}</p>}
