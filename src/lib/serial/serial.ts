@@ -97,6 +97,8 @@ export type SerialStatusEvent = {
   port: string;
   status: 'connected' | 'disconnected' | 'error' | 'storage-limit';
   message: string;
+  /** Disconnect succeeded, but persisting the raw capture failed. */
+  captureError?: string;
 };
 
 type SerialDataHandler = (event: SerialDataEvent) => void;

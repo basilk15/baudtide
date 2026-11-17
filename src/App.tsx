@@ -45,6 +45,7 @@ import {
   startNativeSerialSession,
   type NativeSerialPort,
   type SerialDeviceIdentity,
+  type SerialStatusEvent,
 } from './lib/serial/serial';
 
 const pageNames: Record<SignalDeckPage, string> = {
@@ -175,8 +176,13 @@ function App() {
       publishNotification({ kind: 'alert', title: event.label, detail: `${event.sourceName} · ${event.note}`, captureEvent: event });
     });
     const unlistenInspect = listenDesktop<CaptureEvent>('bench-inspect', (event) => { setRequestedEvent({ event, revision: Date.now() }); setVisualizeVisited(true); setPage('visualize'); setWelcomeVisible(false); });
+    const unlistenSerial = listenDesktop<SerialStatusEvent>('serial-status', (event) => {
+      if (event.status === 'disconnected' && event.captureError) {
+        publishNotification({ kind: 'error', title: 'Capture may be incomplete', detail: event.message });
+      }
+    });
     void watchSnapshot().then((snapshot) => { if (mounted && snapshot.watches.length) setVisualizeVisited(true); }).catch(() => undefined);
-    return () => { mounted = false; unlisten(); unlistenLog(); unlistenInspect(); };
+    return () => { mounted = false; unlisten(); unlistenLog(); unlistenInspect(); unlistenSerial(); };
   }, [publishNotification]);
   const sessions = useMemo(() => Object.values(liveSessions), [liveSessions]);
   const visualizeSessions = useMemo(() => sessions.map<VisualizeSession>((session) => ({ id: session.id, uiKey: session.uiKey, sessionName: session.sessionName, port: session.port, connectionState: session.connectionState, capturePath: session.logPath, identity: session.workspaceIdentity, legacyIdentity: session.legacyWorkspaceIdentity, deviceIdentity: session.deviceIdentity, baudRate: session.baudRate, settings: session.settings })), [sessions]);

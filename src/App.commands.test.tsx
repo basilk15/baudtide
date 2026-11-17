@@ -6,13 +6,15 @@ import { defaultPreferences } from './lib/preferences/preferences';
 import { saveCommandSequences } from './lib/serial/commandSequences';
 import App from './App';
 
-const desktop = vi.hoisted(() => ({ invoke: vi.fn(), listeners: new Map<string, (event: unknown) => void>() }));
+const desktop = vi.hoisted(() => ({ invoke: vi.fn(), listeners: new Map<string, Set<(event: unknown) => void>>() }));
 vi.mock('./lib/desktop', () => ({
   isDesktopRuntime: () => true,
   invokeDesktop: desktop.invoke,
   listenDesktop: (name: string, callback: (event: unknown) => void) => {
-    desktop.listeners.set(name, callback);
-    return () => desktop.listeners.delete(name);
+    const listeners = desktop.listeners.get(name) ?? new Set<(event: unknown) => void>();
+    listeners.add(callback);
+    desktop.listeners.set(name, listeners);
+    return () => { listeners.delete(callback); };
   },
 }));
 
@@ -57,6 +59,10 @@ function button(text: string) {
   const result = [...host.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent?.trim() === text);
   if (!result) throw new Error(`Missing button: ${text}`);
   return result;
+}
+
+function emitStatus(event: Record<string, unknown>) {
+  desktop.listeners.get('serial-status')?.forEach((callback) => callback(event));
 }
 
 it('stops a delayed command sequence immediately when its tab closes while native disconnect is pending', async () => {
@@ -105,7 +111,7 @@ it.each([
   await act(async () => button('Disconnect').click());
   await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Confirm disconnect"] .sd-monitor-danger-button')!.click());
   // Native status is emitted before the disconnect RPC completes.
-  await act(async () => desktop.listeners.get('serial-status')!({ sessionId: 'native-1', port: '/dev/ttyUSB0', status: 'disconnected', message }));
+  await act(async () => emitStatus({ sessionId: 'native-1', port: '/dev/ttyUSB0', status: 'disconnected', message }));
   await act(async () => resolveDisconnect());
   await act(async () => vi.advanceTimersByTimeAsync(32));
   expect(host.textContent).toContain(message);
@@ -135,4 +141,26 @@ it.each(['close', 'disconnect'])('stops repeat writes immediately on %s intent w
   await act(async () => rejectDisconnect(new Error('Backend unavailable')));
   await act(async () => vi.advanceTimersByTimeAsync(2000));
   expect(writes).toEqual(['PING\n']);
+});
+
+it.each([true, false])('retains a capture error notification after tab close only when native reports a capture error (%s)', async (failed) => {
+  await act(async () => root.render(<App />));
+  await act(async () => vi.advanceTimersByTimeAsync(140));
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Close Board"]')!.click());
+  const message = failed
+    ? 'Disconnected by user. Warning: the saved capture may be incomplete: disk full'
+    : 'Disconnected by user. The saved raw log was kept.';
+  await act(async () => emitStatus({ sessionId: 'native-1', port: '/dev/ttyUSB0', status: 'disconnected', message,
+    ...(failed ? { captureError: 'disk full' } : {}) }));
+  await act(async () => resolveDisconnect());
+  expect(host.querySelector('[aria-label="Close Board"]')).toBeNull();
+  await act(async () => host.querySelector<HTMLButtonElement>('.sd-notification-trigger')!.click());
+  const notifications = host.querySelector('[aria-label="Notifications"][role="dialog"]')!;
+  if (failed) {
+    expect(notifications.textContent).toContain('Capture may be incomplete');
+    expect(notifications.textContent).toContain(message);
+    expect(notifications.querySelector('.sd-notice-icon.error')).not.toBeNull();
+  } else {
+    expect(notifications.textContent).not.toContain('Capture may be incomplete');
+  }
 });

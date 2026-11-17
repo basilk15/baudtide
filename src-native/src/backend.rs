@@ -586,6 +586,8 @@ struct SerialStatusEvent {
     port: String,
     status: &'static str,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capture_error: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -4942,6 +4944,7 @@ fn disconnect_serial_session(
     // Wait for an in-flight write, then invalidate stale writer handles before
     // finalizing metadata and releasing the port.
     let capture_result = join_result.and(close_serial_writer(writer.as_ref()));
+    let capture_error = capture_result.as_ref().err().cloned();
     let index_state = if capture_result.is_ok() {
         "disconnected"
     } else {
@@ -4966,7 +4969,13 @@ fn disconnect_serial_session(
         "disconnected",
         &message,
     );
-    emit_status(&app, &info, "disconnected", &message);
+    emit_status_with_capture_error(
+        &app,
+        &info,
+        "disconnected",
+        &message,
+        capture_error.as_deref(),
+    );
     Ok(info)
 }
 
@@ -8046,6 +8055,16 @@ fn open_log_file(path: &Path) -> CommandResult<File> {
 }
 
 fn emit_status(app: &AppHandle, info: &SessionInfo, status: &'static str, message: &str) {
+    emit_status_with_capture_error(app, info, status, message, None);
+}
+
+fn emit_status_with_capture_error(
+    app: &AppHandle,
+    info: &SessionInfo,
+    status: &'static str,
+    message: &str,
+    capture_error: Option<&str>,
+) {
     let _ = app.emit(
         "serial-status",
         SerialStatusEvent {
@@ -8053,6 +8072,7 @@ fn emit_status(app: &AppHandle, info: &SessionInfo, status: &'static str, messag
             port: info.port.clone(),
             status,
             message: message.into(),
+            capture_error: capture_error.map(str::to_owned),
         },
     );
 }
@@ -8792,6 +8812,28 @@ mod sidecar_protocol_tests {
         assert_eq!(event["event"], "serial-data");
         assert_eq!(event["payload"]["sessionId"], "session-1");
         assert!(event["payload"].get("session_id").is_none());
+    }
+
+    #[test]
+    fn disconnected_status_preserves_optional_capture_error_for_global_notifications() {
+        let mut payload = SerialStatusEvent {
+            session_id: "closed-session".into(),
+            port: "/dev/pts/1".into(),
+            status: "disconnected",
+            message: "Disconnected by user.".into(),
+            capture_error: None,
+        };
+        let successful = serde_json::to_value(&payload).unwrap();
+        assert!(successful.get("captureError").is_none());
+        payload.capture_error = Some("Could not finalize the raw log: disk full".into());
+        let failed = serde_json::to_value(&payload).unwrap();
+        assert_eq!(failed["status"], "disconnected");
+        assert_eq!(failed["sessionId"], "closed-session");
+        assert_eq!(
+            failed["captureError"],
+            "Could not finalize the raw log: disk full"
+        );
+        assert!(failed.get("capture_error").is_none());
     }
 
     #[test]
