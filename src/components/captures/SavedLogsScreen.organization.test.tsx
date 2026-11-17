@@ -11,7 +11,9 @@ const logs = ['Alpha', 'Beta'].map((name,i) => ({ path:`/${name}.log`, fileName:
 it('applies a saved view through real library filters without auto-applying it at startup', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); localStorage.clear(); list.mockResolvedValue(logs); pending.mockResolvedValue([]);
   setCaptureFavorite('/Alpha.log',true); setCaptureTags('/Alpha.log','baseline');
-  saveCaptureView('Baseline checks',{query:'',fullSearch:true,state:'completed',sort:'name',favoritesOnly:true,tag:'baseline'});
+  const { saveCaptureNotebook } = await import('../../lib/captures/captureNotebook');
+  saveCaptureNotebook('/Alpha.log', { title: 'Alpha', notes: 'firmware v2' });
+  saveCaptureView('Baseline checks',{query:'',fullSearch:true,state:'completed',sort:'name',favoritesOnly:true,tag:'baseline',notebookQuery:'firmware v2'});
   const host=document.createElement('div'); document.body.append(host); const root=createRoot(host);
   try {
     await act(async()=>root.render(<SavedLogsScreen nativeEnabled onRequestConnection={()=>{}} onReconnectWithSettings={()=>{}} onOpenInVisualize={()=>{}} />));
@@ -21,6 +23,7 @@ it('applies a saved view through real library filters without auto-applying it a
     expect(host.querySelectorAll('[role="listitem"]')).toHaveLength(1);
     expect(host.querySelector('[role="listitem"]')?.textContent).toContain('Alpha');
     expect(host.querySelector<HTMLInputElement>('[type="checkbox"]')!.checked).toBe(true);
+    expect(host.querySelector<HTMLInputElement>('.bt-library-tools input[type="search"]')!.value).toBe('firmware v2');
     expect(host.querySelector<HTMLSelectElement>('[aria-label="Filter captures by tag"]')!.value).toBe('baseline');
     expect(host.querySelector('[aria-label="Sort saved logs"]')?.textContent).toContain('Name A');
     const reset=[...host.querySelectorAll('button')].find(b=>b.textContent==='Reset organization')!;
@@ -32,7 +35,7 @@ function loadViewCount(){return JSON.parse(localStorage.getItem('baudtide.captur
 it('restores a nonempty view query and runs the saved complete-search scope', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);vi.useFakeTimers();localStorage.clear();list.mockResolvedValue(logs);pending.mockResolvedValue([]);search.mockClear();
   search.mockResolvedValue({results:[{log:logs[0],metadataMatch:true,contentMatchCount:0,contentMatches:[],contentSearchTruncated:false}],fullSearch:true,truncated:false,resultLimitReached:false,scannedLogCount:2,scannedBytes:200,indexedLogCount:2,indexRebuiltLogCount:0,indexFallbackLogCount:0,indexUpdateLimited:false});
-  saveCaptureView('Search baseline',{query:'Alpha',fullSearch:true,state:'completed',sort:'oldest',favoritesOnly:false,tag:''});
+  saveCaptureView('Search baseline',{query:'Alpha',fullSearch:true,state:'completed',sort:'oldest',favoritesOnly:false,tag:'',notebookQuery:''});
   const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
   try {
     await act(async()=>root.render(<SavedLogsScreen nativeEnabled onRequestConnection={()=>{}} onReconnectWithSettings={()=>{}} onOpenInVisualize={()=>{}} />));
@@ -126,4 +129,23 @@ it('cleans explicit deletions and reports metadata cleanup failure without claim
     expect(host.textContent).toContain('Capture deleted, but local tags and favorites could not be cleaned up');
     expect(remove).toHaveBeenCalledWith('/Beta.log');
   } finally { await act(async()=>root.unmount()); host.remove(); localStorage.clear(); vi.unstubAllGlobals(); }
+});
+
+it('returns focus to a surviving filter when a notebook edit hides its capture', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true); localStorage.clear(); list.mockResolvedValue(logs); pending.mockResolvedValue([]);
+  const {saveCaptureNotebook}=await import('../../lib/captures/captureNotebook');
+  saveCaptureNotebook('/Alpha.log',{title:'Thermal',notes:'initial'});
+  const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+  const change=async(el:HTMLInputElement,text:string)=>act(async()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(el,text);el.dispatchEvent(new Event('input',{bubbles:true}));});
+  try {
+    await act(async()=>root.render(<SavedLogsScreen nativeEnabled onRequestConnection={()=>{}} onReconnectWithSettings={()=>{}} onOpenInVisualize={()=>{}} />));
+    const query=host.querySelector<HTMLInputElement>('.bt-library-tools input[type="search"]')!;
+    await change(query,'Thermal');
+    expect(host.querySelectorAll('[role="listitem"]')).toHaveLength(1);
+    await act(async()=>host.querySelector<HTMLButtonElement>('[aria-label="Edit notebook for Alpha"]')!.click());
+    await change(host.querySelector<HTMLInputElement>('.bt-capture-notebook input')!,'Motor');
+    await act(async()=>host.querySelector('.bt-capture-notebook form')!.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
+    expect(host.querySelectorAll('[role="listitem"]')).toHaveLength(0);
+    expect(document.activeElement).toBe(host.querySelector('[aria-label="Filter captures by tag"]'));
+  } finally {await act(async()=>root.unmount());host.remove();localStorage.clear();vi.unstubAllGlobals();}
 });

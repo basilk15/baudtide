@@ -2,13 +2,52 @@ import { describe, expect, it } from 'vitest';
 import { captureViewMatches, CaptureViewsReadError, loadCaptureViews, removeCaptureView, saveCaptureView, type CaptureViewFilters } from './captureViews';
 
 const key = 'baudtide.capture-views.v1';
-const filters: CaptureViewFilters = { query: 'motor', fullSearch: true, state: 'completed', sort: 'oldest', favoritesOnly: true, tag: 'baseline' };
+const filters: CaptureViewFilters = { query: 'motor', fullSearch: true, state: 'completed', sort: 'oldest', favoritesOnly: true, tag: 'baseline', notebookQuery: 'firmware' };
 function memory(raw: string | null = null) {
   let value = raw;
   return { getItem: (k: string) => k === key ? value : null, setItem: (k: string, v: string) => { if (k === key) value = v; } };
 }
 
 describe('saved capture views', () => {
+  it('reads upstream views without overwriting storage and migrates every filter on the next explicit change', () => {
+    const upstreamFilters = { query: 'panic', fullSearch: true, state: 'attention', sort: 'oldest', favorites: true, tag: 'bench a', notebookQuery: 'firmware v2' };
+    const name = `Long  upstream ${'x'.repeat(45)}`;
+    const raw = JSON.stringify({ version: 1, views: [{ name, filters: upstreamFilters }, { name: 'Second', filters: upstreamFilters }] });
+    const storage = memory(raw);
+    const loaded = loadCaptureViews(storage);
+    expect(loaded[0]).toMatchObject({ name, filters: { query: 'panic', fullSearch: true, state: 'attention', sort: 'oldest', tag: 'bench a', notebookQuery: 'firmware v2', favoritesOnly: true } });
+    expect(loaded[0].filters).not.toHaveProperty('favorites');
+    expect(loaded[0].id).toBeTruthy();
+    expect(loadCaptureViews(storage).map(view => view.id)).toEqual(loaded.map(view => view.id));
+    expect(storage.getItem(key)).toBe(raw);
+    const remaining = removeCaptureView(loaded[1].id, storage);
+    expect(remaining).toHaveLength(1);
+    expect(loadCaptureViews(storage)).toEqual(remaining);
+    expect(remaining[0].name).toBe(name);
+    expect(remaining[0].filters).toMatchObject({ notebookQuery: 'firmware v2', favoritesOnly: true });
+  });
+
+  it('reads local views predating notebooks with their identities and filters intact', () => {
+    const { notebookQuery: _notebook, ...oldFilters } = filters;
+    const raw = JSON.stringify({ version: 1, views: [{ id: 'local-view', name: 'Local view', filters: oldFilters }] });
+    const storage = memory(raw);
+    expect(loadCaptureViews(storage)[0]).toEqual({ id: 'local-view', name: 'Local view', filters: { ...filters, notebookQuery: '' } });
+    expect(storage.getItem(key)).toBe(raw);
+  });
+
+  it('assigns legacy identities without colliding with existing local views and preserves upstream tag values', () => {
+    const { favoritesOnly, ...sharedFilters } = filters;
+    const storage = memory(JSON.stringify({ version: 1, views: [
+      { name: 'Upstream', filters: { ...sharedFilters, favorites: favoritesOnly, tag: 'Mixed Case' } },
+      { id: 'legacy-0', name: 'Local', filters },
+    ] }));
+    const loaded = loadCaptureViews(storage);
+    expect(new Set(loaded.map(view => view.id)).size).toBe(2);
+    expect(loaded[1].id).toBe('legacy-0');
+    saveCaptureView('New', filters, storage);
+    expect(loadCaptureViews(storage).slice(0, 2)).toEqual(loaded);
+    expect(removeCaptureView(loaded[0].id, storage).map(view => view.name)).toEqual(['Local', 'New']);
+  });
   it('round-trips all filters, normalizes names and returns independent snapshots', () => {
     const storage = memory();
     expect(loadCaptureViews(storage)).toEqual([]);
@@ -26,8 +65,8 @@ describe('saved capture views', () => {
 
   it('rejects duplicates and invalid names or filters without changing existing views', () => {
     const storage = memory(); saveCaptureView('Bench A', filters, storage); const before = storage.getItem(key);
-    for (const name of ['', '  ', 'x'.repeat(49), 'bad\nname', ' bench a ']) expect(() => saveCaptureView(name, filters, storage)).toThrow();
-    for (const change of [{ query: 'x'.repeat(2001) }, { state: 'unknown' }, { sort: 'size' }, { fullSearch: 1 }, { favoritesOnly: 'yes' }, { tag: 'Mixed Case' }, { tag: 'two,tags' }]) {
+    for (const name of ['', '  ', 'x'.repeat(61), 'bad\nname', ' bench a ']) expect(() => saveCaptureView(name, filters, storage)).toThrow();
+    for (const change of [{ query: 'x'.repeat(2001) }, { notebookQuery: 'x'.repeat(4001) }, { state: 'unknown' }, { sort: 'size' }, { fullSearch: 1 }, { favoritesOnly: 'yes' }, { tag: 'Mixed Case' }, { tag: 'two,tags' }]) {
       expect(() => saveCaptureView('New view', { ...filters, ...change } as CaptureViewFilters, storage)).toThrow();
     }
     expect(storage.getItem(key)).toBe(before);
@@ -38,6 +77,7 @@ describe('saved capture views', () => {
     const bad = ['{broken', JSON.stringify({ version: 2, views: [] }), JSON.stringify({ version: 1, views: [null] }),
       JSON.stringify({ version: 1, views: [row, row] }), JSON.stringify({ version: 1, views: [row, { ...row, id: 'b', name: 'bench a' }] }),
       JSON.stringify({ version: 1, views: [{ ...row, filters: { ...filters, tag: 12 } }] }),
+      JSON.stringify({ version: 1, views: [{ ...row, filters: { ...filters, notebookQuery: null } }] }),
       JSON.stringify({ version: 1, views: [{ ...row, id: '' }] })];
     for (const raw of bad) {
       const storage = memory(raw);
@@ -71,7 +111,7 @@ describe('saved capture views', () => {
 
   it('reopens a full library whose valid queries expand when JSON-escaped', () => {
     const storage = memory();
-    const escaped = { ...filters, query: '\u0001'.repeat(2000), tag: '"'.repeat(24) };
+    const escaped = { ...filters, query: '\u0001'.repeat(2000), notebookQuery: '\u0001'.repeat(4000), tag: '"'.repeat(24) };
     for (let i = 0; i < 24; i++) saveCaptureView(`View ${i} ${'"'.repeat(38)}`, escaped, storage);
     const loaded = loadCaptureViews(storage);
     expect(loaded).toHaveLength(24);

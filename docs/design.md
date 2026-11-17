@@ -293,3 +293,9 @@ The phone frame is a purposeful exception. It may retain device-specific silhoue
 - **Don't** combine a heavy shadow with ordinary bordered work surfaces.
 - **Don't** apply pill geometry to ordinary buttons, panels, or long controls.
 - **Don't** remove the functional phone frame from the mobile companion preview or reuse that device framing elsewhere.
+
+### Capture experiment tools
+
+- Notebook editing stays inline with each capture. Explicit Save and Cancel, visible focus, and retained drafts on storage errors keep edits predictable. Optional experiment titles sit above the original session identity.
+- Saved views, notebook search, and inventory export extend the ruled library toolbar. CSV review explains which metadata leaves the application before download.
+- These controls use semantic theme tokens across Dark, Light, and Sage. At 480px and below, fields and actions meet the 44px target and text fields use 16px type. Long notes wrap inside the capture row.

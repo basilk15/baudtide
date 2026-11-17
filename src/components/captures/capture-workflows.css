@@ -1,0 +1,23 @@
+.bt-capture-notebook { grid-area:notebook; min-width:0; }
+.signaldeck-shell .sd-saved-log-row { grid-template-areas:'icon primary meta' 'icon labels labels' 'icon notebook notebook' 'icon actions actions'; }
+.bt-library-form { display:grid; gap:var(--space-sm); padding:var(--space-md); border:1px solid var(--color-border); border-radius:var(--radius-control); background:var(--color-app-raised); }
+.bt-library-form label { display:grid; gap:var(--space-xs); color:var(--color-ink-soft); font-size:var(--text-xs); }
+.bt-library-form input,.bt-library-form textarea,.bt-library-tools input,.bt-library-tools select { min-width:0; width:100%; box-sizing:border-box; min-height:40px; padding:var(--space-xs) var(--space-sm); border:1px solid var(--color-border); border-radius:var(--radius-control); background:var(--color-surface); color:var(--color-ink); font:inherit; }
+.bt-library-form textarea { resize:vertical; line-height:1.5; }
+.bt-library-form p,.bt-library-tools p { margin:0; font-size:var(--text-xs); color:var(--color-ink-muted); line-height:1.5; }
+.bt-library-form [role="alert"],.bt-library-tools [role="alert"] { color:var(--color-danger); }
+.bt-library-form>div { display:flex; flex-wrap:wrap; gap:var(--space-xs); }
+.bt-notebook-excerpt { margin:var(--space-xs) 0; color:var(--color-ink-muted); font-size:var(--text-xs); white-space:pre-wrap; overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.bt-library-tools { display:flex; flex-wrap:wrap; align-items:end; gap:var(--space-sm); min-width:0; padding:var(--space-sm) 0; border-bottom:1px solid var(--color-border-subtle); }
+.bt-library-tools label { display:grid; gap:var(--space-xs); min-width:0; flex:1 1 200px; font-size:var(--text-xs); color:var(--color-ink-soft); }
+.bt-library-tools .bt-library-form,.bt-library-tools>p { flex-basis:100%; }
+.bt-library-tools input:focus-visible,.bt-library-tools select:focus-visible,.bt-library-form :is(input,textarea,button):focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
+.bt-library-tools button { white-space:normal; }
+.bt-library-form strong { overflow-wrap:anywhere; }
+@media(max-width:720px) { .signaldeck-shell .sd-saved-log-row { grid-template-areas:'icon primary' 'icon meta' 'labels labels' 'notebook notebook' 'actions actions'; } }
+@media(max-width:480px) { .bt-library-tools :is(input,select,button),.bt-library-form :is(input,textarea,button),.bt-capture-notebook>button { min-height:44px; }.bt-library-tools input,.bt-library-form input,.bt-library-form textarea { font-size:16px; }.bt-library-form { padding:var(--space-sm); } }
+/* One continuous tool strip keeps the capture list close to its filters. */
+.bt-library-tools>label { flex-basis:280px; max-width:420px; }
+.bt-library-tools>p { flex:1 1 240px; }
+.bt-library-tools:has(.bt-library-form)>p { flex-basis:100%; }
+@media(max-width:480px) { .bt-library-tools>label { max-width:none; flex-basis:100%; } }

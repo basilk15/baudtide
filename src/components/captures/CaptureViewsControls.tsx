@@ -9,7 +9,7 @@ const sorts = { newest: 'Newest first', oldest: 'Oldest first', largest: 'Larges
 
 function describe(filters: CaptureViewFilters) {
   const query = filters.query.length > 80 ? `${filters.query.slice(0, 80)}…` : filters.query;
-  return [states[filters.state], filters.favoritesOnly && 'Favorites', filters.tag && `Tag: ${filters.tag}`, sorts[filters.sort],
+  return [states[filters.state], filters.favoritesOnly && 'Favorites', filters.tag && `Tag: ${filters.tag}`, sorts[filters.sort], filters.notebookQuery && `Notebook: ${filters.notebookQuery.slice(0, 80)}${filters.notebookQuery.length > 80 ? '?' : ''}`,
     (filters.fullSearch || query) && (filters.fullSearch ? 'Complete capture search' : 'Quick search'), query && `Search: “${query}”`].filter(Boolean).join(' · ');
 }
 
@@ -61,9 +61,9 @@ export function CaptureViewsControls({ filters, onApply, filtersUnavailable = fa
         catch (reason) { report(reason); input.current?.focus(); }
       }}>
         <div className="bt-capture-view-current"><strong>Current filters</strong><p title={filters.query}>{describe(filters)}</p></div>
-        <div className="bt-capture-view-save"><label htmlFor={`${id}-name`}>View name<input ref={input} id={`${id}-name`} name="capture-view-name" autoComplete="off" maxLength={48} value={name} onChange={event => setName(event.target.value)} placeholder="Baseline checks" aria-describedby={`${id}-help${error ? ` ${id}-error` : ''}`} /></label><button type="submit" className="sd-primary-button" disabled={unavailable}>Save view</button></div>
+        <div className="bt-capture-view-save"><label htmlFor={`${id}-name`}>View name<input ref={input} id={`${id}-name`} name="capture-view-name" autoComplete="off" maxLength={60} value={name} onChange={event => setName(event.target.value)} placeholder="Baseline checks" aria-describedby={`${id}-help${error ? ` ${id}-error` : ''}`} /></label><button type="submit" className="sd-primary-button" disabled={unavailable}>Save view</button></div>
         {errorMessage}
-        <p id={`${id}-help`}>Up to 24 views, with unique names of 48 characters or fewer. Applying a view restores its search scope too.</p>
+        <p id={`${id}-help`}>Up to 24 views, with unique names of 60 characters or fewer. Applying a view restores its search scope too.</p>
       </form>
       {views.length ? <ul className="bt-capture-views-list" aria-label="Saved views">{views.map(view => <li key={view.id}>
         <div className="bt-capture-view-row"><div><strong>{view.name}</strong><p title={view.filters.query}>{describe(view.filters)}</p></div><div className="bt-capture-view-actions"><button type="button" className="sd-secondary-button" disabled={unavailable || filtersUnavailable} onClick={() => apply(view)}>Apply<span className="bt-capture-view-sr"> {view.name}</span></button><button type="button" className="sd-secondary-button" aria-label={`Remove saved view ${view.name}`} aria-expanded={pendingRemoval === view.id} disabled={unavailable} onClick={event => { removeTrigger.current = event.currentTarget; setPendingRemoval(pendingRemoval === view.id ? '' : view.id); }}>Remove</button></div></div>

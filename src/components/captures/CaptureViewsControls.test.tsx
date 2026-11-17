@@ -5,7 +5,7 @@ import { expect, it, vi } from 'vitest';
 import { CaptureViewsControls } from './CaptureViewsControls';
 import { loadCaptureViews, saveCaptureView, type CaptureViewFilters } from '../../lib/captures/captureViews';
 
-const filters: CaptureViewFilters = { query: 'motor', fullSearch: true, state: 'completed', sort: 'name', favoritesOnly: true, tag: 'baseline' };
+const filters: CaptureViewFilters = { query: 'motor', fullSearch: true, state: 'completed', sort: 'name', favoritesOnly: true, tag: 'baseline', notebookQuery: 'firmware' };
 it('saves explicitly, reapplies all fields, survives remounts, and confirms removal without changing captures', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); localStorage.clear();
   const host = document.createElement('div'); document.body.append(host); let root = createRoot(host); const apply = vi.fn();
