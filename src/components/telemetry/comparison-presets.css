@@ -1,0 +1,41 @@
+.bt-presets { margin-top: 12px; min-width: 0; }
+.bt-presets-trigger { gap: 6px; }
+.bt-presets-trigger svg:last-child { transition: transform var(--motion-fast) var(--motion-ease); }
+.bt-presets-trigger svg.is-open { transform: rotate(180deg); }
+.bt-presets-panel { margin-top: 12px; padding: 16px 0; border-top: 1px solid var(--color-border-subtle); border-bottom: 1px solid var(--color-border-subtle); font-size: 13px; min-width: 0; }
+.bt-presets-intro { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.bt-presets h5 { font-size: 13px; margin: 0; line-height: 1.5; }
+.bt-presets-intro > span, .bt-presets-row span, .bt-presets-hint, .bt-presets-empty, .bt-presets-preview dt { color: var(--color-ink-muted); font-size: 12px; }
+.bt-presets-hint { margin: 4px 0 0; max-width: 70ch; }
+.bt-presets-save { display: flex; align-items: flex-end; gap: 10px; margin-top: 16px; }
+.bt-presets-save label { flex: 1; max-width: 360px; min-width: 0; display: grid; gap: 6px; font-size: 12px; }
+.bt-presets-save input { width: 100%; min-width: 0; box-sizing: border-box; }
+.bt-presets-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.bt-presets-save button { flex-shrink: 0; }
+.bt-presets-list { list-style: none; margin: 16px 0 0; padding: 0; }
+.bt-presets-list > li { border-top: 1px solid var(--color-border-subtle); }
+.bt-presets-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px 0; }
+.bt-presets-row > div:first-child { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
+.bt-presets-row > .bt-presets-actions { flex-shrink: 0; }
+.bt-presets-notice:empty { display: none; }
+.bt-presets-notice { color: var(--color-accent); margin: 12px 0 0; }
+.bt-presets-empty { margin: 16px 0 0; }
+.bt-presets-confirm { padding: 0 0 12px; }
+.bt-presets-confirm p { margin: 0 0 10px; overflow-wrap: anywhere; }
+.bt-presets-preview { border-top: 1px solid var(--color-border-subtle); padding-top: 16px; }
+.bt-presets-preview h5 { overflow-wrap: anywhere; }
+.bt-presets-preview dl { display: grid; gap: 8px; margin: 12px 0; }
+.bt-presets-preview dl > div { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 12px; }
+.bt-presets-preview dd { margin: 0; overflow-wrap: anywhere; }
+.bt-presets-limits { padding-left: 20px; margin: 12px 0; font: 12px/1.8 var(--font-data); overflow-wrap: anywhere; }
+.bt-presets-preview p { margin: 10px 0; max-width: 70ch; line-height: 1.6; }
+.bt-presets-preview > .bt-presets-actions { margin-top: 14px; }
+@media (max-width: 480px) {
+  .bt-presets-intro { flex-wrap: wrap; gap: 4px; }
+  .bt-presets-save { align-items: stretch; flex-direction: column; }
+  .bt-presets-save label { max-width: none; }
+  .bt-presets-row { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .bt-presets button, .bt-presets input { min-height: 44px; }
+  .bt-presets-preview dl > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+}
+@media (prefers-reduced-motion: reduce) { .bt-presets-trigger svg:last-child { transition: none; } }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle2, CircleHelp, Plus, XCircle } from 'lucide-react';
 import type { CheckBinding, CheckEvaluation, CheckMeasure, CheckMetric, ComparisonCheck, ComparisonCheckSet } from '../../lib/captures/comparisonChecks';
 import { ThemedSelect } from '../ui/ThemedSelect';
+import { ComparisonCheckPresets } from './ComparisonCheckPresets';
 import './comparison-checks.css';
 
 const metricNames: Record<CheckMetric, string> = { min: 'Minimum', max: 'Maximum', mean: 'Mean', deviation: 'Std. deviation' };
@@ -16,11 +17,13 @@ function displayPrecision(limit: number, observed: number | null | undefined) {
 export const checkBindingsMatch = (a: CheckBinding | undefined, b: CheckBinding | null) => Boolean(a && b && a.baselineField === b.baselineField && a.candidateField === b.candidateField && a.unit === b.unit);
 
 type Draft = Omit<ComparisonCheck, 'limit'> & { limit: string };
-export function ComparisonChecks({ checkSet, binding, evaluation, busy, onChange, onDraftChange }: {
+export function ComparisonChecks({ checkSet, binding, evaluation, busy: operationBusy, onChange, onDraftChange }: {
   checkSet?: ComparisonCheckSet; binding: CheckBinding | null; evaluation: CheckEvaluation | null; busy: boolean;
   onChange: (next: ComparisonCheckSet | undefined) => void; onDraftChange: (editing: boolean) => void;
 }) {
   const [draft, setDraft] = useState<Draft | null>(null); const [error, setError] = useState(''); const [confirmRebind, setConfirmRebind] = useState(false); const [removing, setRemoving] = useState<string | null>(null);
+  const [reviewingPreset, setReviewingPreset] = useState(false);
+  const busy = operationBusy || reviewingPreset;
   const addRef = useRef<HTMLButtonElement>(null); const limitRef = useRef<HTMLInputElement>(null); const draftBinding = useRef<CheckBinding | null>(null); const rowEdits = useRef(new Map<string, HTMLButtonElement>());
   const matches = !checkSet || checkBindingsMatch(checkSet.binding, binding);
   useEffect(() => { if (draft) limitRef.current?.focus(); }, [draft?.id]);
@@ -47,6 +50,7 @@ export function ComparisonChecks({ checkSet, binding, evaluation, busy, onChange
   const unit = (measure: CheckMeasure) => measure === 'percent' ? '%' : (checkSet?.binding.unit ?? binding?.unit) || 'no unit';
   return <section className="bt-checks" aria-labelledby="bt-checks-title">
     <div className="bt-checks-heading"><div><h4 id="bt-checks-title">Acceptance checks</h4><p>Set optional limits for this comparison. Results apply to recorded data.</p></div><button ref={addRef} type="button" className="sd-secondary-button" disabled={busy || !!draft || !!removing || !binding || !matches || (checkSet?.checks.length ?? 0) >= 8} onClick={() => edit()}><Plus size={14} /> Add check</button></div>
+    <ComparisonCheckPresets checkSet={checkSet} binding={binding} canSave={Boolean(checkSet && matches)} busy={operationBusy || !!draft || !!removing || confirmRebind} onApply={onChange} onReviewChange={reviewing => { setReviewingPreset(reviewing); onDraftChange(reviewing || !!draft || !!removing); }} />
     {!checkSet && !draft && <p className="bt-checks-empty">No checks configured. Add a limit to assess this comparison.</p>}
     {checkSet && !matches && <div className="bt-checks-warning"><AlertTriangle size={16} /><div><strong>Checks suspended</strong><p>The selected signals or units differ from the saved checks. Rebind them before evaluating.</p>{binding && !confirmRebind && <button type="button" className="sd-secondary-button" disabled={busy || !!draft} onClick={() => setConfirmRebind(true)}>Rebind checks</button>}{confirmRebind && binding && <div><p>Change unit from {checkSet.binding.unit || 'unspecified'} to {binding.unit || 'unspecified'}? Numeric limits remain unchanged and are not converted.</p><button autoFocus type="button" className="sd-secondary-button" onClick={() => { onChange({ ...checkSet, binding }); setConfirmRebind(false); }}>Confirm rebind</button> <button type="button" className="sd-secondary-button" onClick={() => setConfirmRebind(false)}>Cancel</button></div>}</div></div>}
     {checkSet && <><div className="bt-checks-overall" aria-live="polite"><strong>{evaluation ? ({ pass: 'Pass', fail: 'Fail', inconclusive: 'Inconclusive', none: 'No checks configured' })[evaluation.status] : matches ? 'Run comparison to evaluate' : 'Evaluation suspended'}</strong><span>{checkSet.checks.length} / 8 checks</span></div><ul className="bt-checks-list">{checkSet.checks.map((check, index) => {
